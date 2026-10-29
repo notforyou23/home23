@@ -9,6 +9,7 @@ interface MessageRow {
   channelKind: 'direct' | 'group';
   actorKind: 'owner' | 'bot'; displayName: string; content: string; ts: string;
   sourceSequence: number; scheduled: number;
+  replyToMessageId: string | null;
 }
 
 /** Core alone projects committed contact. Private model prompts are never a
@@ -20,10 +21,10 @@ export function createResidentContactProjection(database: M11Database, directory
   let cursor = saved?.eventSequence ?? 0;
   let lastCheckAt = 0;
   if (!Number.isSafeInteger(cursor) || cursor < 0) throw new Error('Invalid resident contact cursor');
-  const seen = new Map<string, Map<string, { digest: string; hasChannelKind: boolean }>>();
+  const seen = new Map<string, Map<string, { digest: string; hasChannelKind: boolean; hasReplyTo: boolean }>>();
   for (const slug of residents) {
     if (!/^[a-z][a-z0-9-]*$/.test(slug)) throw new Error('Invalid contact resident');
-    const ids = new Map<string, { digest: string; hasChannelKind: boolean }>();
+    const ids = new Map<string, { digest: string; hasChannelKind: boolean; hasReplyTo: boolean }>();
     const path = join(directory, `${slug}.jsonl`);
     if (existsSync(path)) {
       const raw = readFileSync(path, 'utf8');
@@ -32,7 +33,7 @@ export function createResidentContactProjection(database: M11Database, directory
         const value = JSON.parse(line);
         if (typeof value.contactId !== 'string') throw new Error('Invalid resident contact identity');
         ids.set(value.contactId, { digest: createHash('sha256').update(line).digest('hex'),
-          hasChannelKind: Object.hasOwn(value, 'channelKind') });
+          hasChannelKind: Object.hasOwn(value, 'channelKind'), hasReplyTo: Object.hasOwn(value, 'replyToMessageId') });
       }
     }
     seen.set(slug, ids);
@@ -45,6 +46,7 @@ export function createResidentContactProjection(database: M11Database, directory
     const message = database.readOne<MessageRow>(`SELECT m.id, m.channel_id AS channelId, c.kind AS channelKind,
       h.id AS conversationId, m.author_principal_id AS principalId, m.author_kind AS actorKind,
       m.author_display_name AS displayName, m.body_text AS content, m.created_at AS ts,
+      m.reply_to_message_id AS replyToMessageId,
       e.sequence AS sourceSequence, EXISTS(SELECT 1 FROM events s WHERE s.aggregate_kind='scheduled_channel_run'
         AND s.aggregate_version=1 AND json_extract(s.payload_json,'$.messageId')=m.id) AS scheduled
       FROM messages m JOIN channels c ON c.id=m.channel_id
@@ -60,7 +62,8 @@ export function createResidentContactProjection(database: M11Database, directory
       actor: { principalId: message.principalId, kind: message.actorKind, displayName: message.displayName },
       voice: message.actorKind === 'owner' ? 'jtr' : message.principalId === residentPrincipalId ? 'self' : 'peer',
       role: message.principalId === residentPrincipalId ? 'assistant' : 'user',
-      content: message.content, ts: message.ts, channelKind: message.channelKind };
+      content: message.content, ts: message.ts, channelKind: message.channelKind,
+      ...(message.replyToMessageId ? { replyToMessageId: message.replyToMessageId } : {}) };
     const line = JSON.stringify(value);
     const digest = createHash('sha256').update(line).digest('hex');
     const ids = seen.get(slug)!;
@@ -68,9 +71,10 @@ export function createResidentContactProjection(database: M11Database, directory
       const previous = ids.get(value.contactId)!;
       // Older committed contacts did not include channel kind. Preserve their
       // bytes on replay; consumers can resolve the channel through Core.
-      const { channelKind: _channelKind, ...legacyValue } = value;
-      const replayDigest = previous.hasChannelKind ? digest
-        : createHash('sha256').update(JSON.stringify(legacyValue)).digest('hex');
+      const legacyValue = { ...value } as Record<string, unknown>;
+      if (!previous.hasChannelKind) delete legacyValue.channelKind;
+      if (!previous.hasReplyTo) delete legacyValue.replyToMessageId;
+      const replayDigest = createHash('sha256').update(JSON.stringify(legacyValue)).digest('hex');
       if (previous.digest !== replayDigest) throw new Error(`Resident contact changed: ${value.contactId}`);
       return;
     }
@@ -78,7 +82,7 @@ export function createResidentContactProjection(database: M11Database, directory
     appendFileSync(path, `${line}\n`, { mode: 0o600 });
     const fd = openSync(path, 'r');
     try { fsyncSync(fd); } finally { closeSync(fd); }
-    ids.set(value.contactId, { digest, hasChannelKind: true });
+    ids.set(value.contactId, { digest, hasChannelKind: true, hasReplyTo: Object.hasOwn(value, 'replyToMessageId') });
   }
 
   return {

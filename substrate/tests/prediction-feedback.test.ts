@@ -28,6 +28,11 @@ function lobe(deltas: ProposedStateDelta[]): LobeAdapter {
 }
 function packet(seed: SeedProcess) { return buildPacket([seed.getCell(cellId) as SituationCell], dispositions); }
 function chain(dir: string) { return readFileSync(join(dir, 'seed-ledger.jsonl'), 'utf8').trim().split('\n').map(s => JSON.parse(s)); }
+function failedWitness(seed: SeedProcess, id: string, at: string) {
+  seed.transition({ eventId: id, sourceAuthority: 'home23.event-ledger', sourceRef: `external:watcher:${id}`, category: 'observation',
+    targetCellId: cellId, producedAt: at, payload: { head: 'The watcher process was removed: it cannot increase contact tension during this six hour window.' } });
+  return { evidenceRefs: [id], resolutionReason: 'The collected removal of the watcher process falsifies the claimed contact-tension increase.' };
+}
 
 test('failed repetitions stop creating obligations; newer evidenced revision and unrelated curiosity remain possible', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'seed-feedback-'));
@@ -36,10 +41,10 @@ test('failed repetitions stop creating obligations; newer evidenced revision and
   const recruit = (deltas: ProposedStateDelta[], at: string) => seed.recruitLobe(lobe(deltas), packet(seed), at);
   const first = await recruit([append(claim)], '2026-09-26T00:00:00Z');
   const firstId = (first.applied[0]?.delta as { predictionId: string }).predictionId;
-  await recruit([{ cellId, field: 'predictions.resolve', authority: 'propose', delta: { predictionId: firstId, error: 0.9 } }], '2026-09-26T00:10:00Z');
+  await recruit([{ cellId, field: 'predictions.resolve', authority: 'propose', delta: { predictionId: firstId, error: 0.9, ...failedWitness(seed, 'failure-one', '2026-09-26T00:09:00Z') } }], '2026-09-26T00:10:00Z');
   const second = await recruit([append(repeat)], '2026-09-26T01:00:00Z');
   const secondId = (second.applied[0]?.delta as { predictionId: string }).predictionId;
-  await recruit([{ cellId, field: 'predictions.resolve', authority: 'propose', delta: { predictionId: secondId, error: 0.95 } }], '2026-09-26T01:10:00Z');
+  await recruit([{ cellId, field: 'predictions.resolve', authority: 'propose', delta: { predictionId: secondId, error: 0.95, ...failedWitness(seed, 'failure-two', '2026-09-26T01:09:00Z') } }], '2026-09-26T01:10:00Z');
   const context = packet(seed);
   assert.equal(context.resolvedPredictions?.length, 2);
   assert.match(buildLobePrompt(context), /resolvedPredictions/);
@@ -140,8 +145,10 @@ test('checkpoint twins continue through feedback admission and intention closure
   cpSync(original, copied, { recursive: true });
   const b = SeedProcess.restore(copied);
   assert.equal(a.getState().stateHash, b.getState().stateHash);
+  const witness = failedWitness(a, 'paired-failure', '2026-09-26T00:59:00Z');
+  failedWitness(b, 'paired-failure', '2026-09-26T00:59:00Z');
   const continuation: ProposedStateDelta[] = [
-    { cellId, field: 'predictions.resolve', authority: 'propose', delta: { predictionId: id, error: 0.95 } },
+    { cellId, field: 'predictions.resolve', authority: 'propose', delta: { predictionId: id, error: 0.95, ...witness } },
     { cellId, field: 'intentions.resolve', authority: 'propose', delta: { tensionId: a.getCell(cellId)?.intentions[0]?.tensionId, reason: 'The hypothesis failed; release the pressure and follow a different question.' } },
   ];
   await a.recruitLobe(lobe(continuation), packet(a), '2026-09-26T01:00:00Z');

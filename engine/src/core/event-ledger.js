@@ -67,7 +67,7 @@ class EventLedger {
       ts: timestamp,
       actor: opts.actor || 'engine',
       invocation_id: opts.invocationId,
-      payload: payload || {},
+      payload: { ...(payload || {}), learningVersion: payload?.learningVersion ?? 2 },
     };
     this._append(envelope);
     return envelope;
@@ -193,7 +193,8 @@ class EventLedger {
   _append(envelope) {
     if (!this.ready) return;
     try {
-      fs.appendFileSync(this.ledgerPath, JSON.stringify(envelope) + '\n', 'utf8');
+      fs.appendFileSync(this.ledgerPath, JSON.stringify({ ...envelope,
+        payload: { ...(envelope.payload || {}), learningVersion: envelope.payload?.learningVersion ?? 2 } }) + '\n', 'utf8');
     } catch (err) {
       this.logger?.warn?.('[event-ledger] append failed', { error: err?.message });
     }

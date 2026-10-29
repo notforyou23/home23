@@ -134,7 +134,7 @@ test('resolution bands: accurate corroborates, wrong loosens provisionally, ambi
   assert.equal(applyResolutionPlasticity(emptyDevelopment(), anyCell, 'pred_4', Number.NaN), null, 'no error, no lesson');
 });
 
-test('end-to-end: a lobe resolving a prediction produces a resolution.v1 development receipt', async (t) => {
+test('end-to-end: witnessed prediction resolution produces a versioned decision-time learning receipt', async (t) => {
   const dir = makeDir(t);
   const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 614 });
   for (let i = 0; i < 8; i++) {
@@ -161,6 +161,8 @@ test('end-to-end: a lobe resolving a prediction produces a resolution.v1 develop
   await seed.recruitLobe(predictor, outcome.packet, '2026-08-08T02:10:00.000Z');
   const predictionId = seed.getCell(cellId)?.predictions[0]?.predictionId;
   assert.ok(predictionId !== undefined);
+  seed.transition(ev({ eventId: 'pressure-result', sourceAuthority: 'home23.event-ledger', sourceRef: 'sensor.pressure:result',
+    targetCellId: cellId, producedAt: '2026-08-08T03:15:00.000Z', payload: { head: 'Pressure will fall: the pressure measurement fell from 1013 to 1008 hPa.' } }));
 
   const devBefore = devReceipts(dir).length;
   const stateHashBefore = seed.getState().stateHash;
@@ -168,7 +170,7 @@ test('end-to-end: a lobe resolving a prediction produces a resolution.v1 develop
   const resolver: LobeAdapter = {
     id: 'lobe.r', modelId: 't', provider: 't',
     invoke: () => Promise.resolve(lobeResult([
-      { cellId, field: 'predictions.resolve', delta: { predictionId, error: 0.05 }, authority: 'propose' },
+      { cellId, field: 'predictions.resolve', delta: { predictionId, error: 0.05, evidenceRefs: ['pressure-result'], resolutionReason: 'The collected pressure measurement after the horizon shows the forecast fall.' }, authority: 'propose' },
     ])),
   };
   // Past the prediction's 1h horizon: the premature-resolution law admits a
@@ -179,7 +181,7 @@ test('end-to-end: a lobe resolving a prediction produces a resolution.v1 develop
   const receipts = devReceipts(dir);
   assert.equal(receipts.length, devBefore + 1, 'exactly one development receipt from the resolution');
   const receipt = receipts[receipts.length - 1] as { rule: string; predictionId: string; predictionError: number; lobeSeq: number };
-  assert.equal(receipt.rule, 'resolution.v1');
+  assert.equal(receipt.rule, 'resolution.v2');
   assert.equal(receipt.predictionId, predictionId);
   assert.equal(receipt.predictionError, 0.05);
   assert.ok(receipt.lobeSeq > 0, 'the receipt cites the lobe receipt it came from');
@@ -191,15 +193,17 @@ test('end-to-end: a lobe resolving a prediction produces a resolution.v1 develop
   const p2: LobeAdapter = {
     id: 'lobe.p2', modelId: 't', provider: 't',
     invoke: () => Promise.resolve(lobeResult([
-      { cellId, field: 'predictions.append', delta: { claim: 'another', confidence: 0.6, horizon: '1h' }, authority: 'propose' },
+      { cellId, field: 'predictions.append', delta: { claim: 'another pressure observation', confidence: 0.6, horizon: '1h' }, authority: 'propose' },
     ])),
   };
   await seed.recruitLobe(p2, outcome.packet, '2026-08-08T02:30:00.000Z');
   const pred2 = seed.getCell(cellId)?.predictions.find((p) => p.resolvedAt === undefined)?.predictionId;
+  seed.transition(ev({ eventId: 'pressure-ambiguous', sourceAuthority: 'home23.event-ledger', sourceRef: 'sensor.pressure:ambiguous',
+    targetCellId: cellId, producedAt: '2026-08-08T03:35:00.000Z', payload: { head: 'Another pressure observation is inconclusive: sensors disagree.' } }));
   const ambiguous: LobeAdapter = {
     id: 'lobe.a', modelId: 't', provider: 't',
     invoke: () => Promise.resolve(lobeResult([
-      { cellId, field: 'predictions.resolve', delta: { predictionId: pred2, error: 0.5 }, authority: 'propose' },
+      { cellId, field: 'predictions.resolve', delta: { predictionId: pred2, error: 0.5, evidenceRefs: ['pressure-ambiguous'], resolutionReason: 'The collected pressure sensors disagree, leaving the forecast ambiguous.' }, authority: 'propose' },
     ])),
   };
   const before = devReceipts(dir).length;

@@ -232,7 +232,7 @@ function buildLivedItems(checkpoint: { cells: SeedCell[]; ledgerSeq: number }, t
   // Dated via resolution receipts (predictionId → seq) where the tail has them.
   const resolutionSeqById = new Map<string, number>();
   for (const line of tail) {
-    if (line.category === 'development' && line.payload['rule'] === 'resolution.v1') {
+    if (line.category === 'development' && ['resolution.v1', 'resolution.v2'].includes(String(line.payload['rule']))) {
       const id = line.payload['predictionId'];
       if (typeof id === 'string') resolutionSeqById.set(id, line.seq);
     }
@@ -243,11 +243,13 @@ function buildLivedItems(checkpoint: { cells: SeedCell[]; ledgerSeq: number }, t
       predIndex += 1;
       const claim = p.claim;
       if (p.resolvedAt !== undefined && typeof p.error === 'number') {
-        const verdict = p.error <= 0.3
-          ? `reality agreed (error ${p.error.toFixed(2)})`
+        const verdict = p.resolutionEvidence?.verificationStatus === 'assessed'
+          ? `you assessed it ${p.error <= 0.3 ? 'supported' : p.error >= 0.7 ? 'failed' : 'partly supported'} (provisional model assessment, error ${p.error.toFixed(2)}; not independent verification)`
+          : p.error <= 0.3
+          ? `historical recorded grade: supported (error ${p.error.toFixed(2)}; independent verification unavailable)`
           : p.error >= 0.7
-            ? `reality said no (error ${p.error.toFixed(2)})`
-            : `reality partly agreed (error ${p.error.toFixed(2)})`;
+            ? `historical recorded grade: failed (error ${p.error.toFixed(2)}; independent verification unavailable)`
+            : `historical recorded grade: partly supported (error ${p.error.toFixed(2)}; independent verification unavailable)`;
         items.push({
           key: `resolution:${cell.id}:${predIndex}`,
           kind: 'resolution',

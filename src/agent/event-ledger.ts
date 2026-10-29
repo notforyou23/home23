@@ -17,6 +17,7 @@ import { appendFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { EventEnvelope } from '../types.js';
+import { appendSeedProjectionOnce } from '../../shared/seed-source-projection.cjs';
 
 export class EventLedger {
   private ledgerPath: string;
@@ -24,6 +25,15 @@ export class EventLedger {
   constructor(brainDir: string) {
     mkdirSync(brainDir, { recursive: true });
     this.ledgerPath = join(brainDir, 'event-ledger.jsonl');
+  }
+
+  /** Required decision evidence. Unlike diagnostic logging, failure is visible
+   * to the selector before it applies an optional choice. Retained retries must
+   * reuse their identity and omit newUnique. */
+  emitDurable(event: EventEnvelope, options?: { newUnique?: boolean }): void {
+    const timestamp = event.timestamp ?? new Date().toISOString();
+    appendSeedProjectionOnce(this.ledgerPath, { ...event, timestamp, ts: event.ts ?? timestamp,
+      payload: { ...event.payload, learningVersion: event.payload.learningVersion ?? 2 } }, options);
   }
 
   /**
@@ -37,6 +47,7 @@ export class EventLedger {
         const timestamp = e.timestamp ?? new Date().toISOString();
         return JSON.stringify({
           ...e,
+          payload: { ...e.payload, learningVersion: e.payload.learningVersion ?? 2 },
           timestamp,
           ts: e.ts ?? timestamp,
         });
@@ -66,7 +77,7 @@ export class EventLedger {
       actor: opts?.actor ?? 'system',
       thread_id: opts?.threadId,
       object_id: opts?.objectId,
-      payload,
+      payload: { ...payload, learningVersion: payload.learningVersion ?? 2 },
     };
     this.emit(event);
     return event;

@@ -5,9 +5,11 @@ const path = require('path');
 const crypto = require('crypto');
 const { semanticObservationBucket } = require('./discovery-engine');
 const { writeFileDurableSync } = require('../utils/durable-write');
+const { evaluateLearnedDecision, normalizeLearningDecision } = require('../../../shared/seed-learning.cjs');
 
 const SCHEMA = 'home23.owner-attention.v1';
 const INTENT_SCHEMA = 'home23.owner-attention-intent.v1';
+const LEARNED_INTENT_SCHEMA = 'home23.owner-attention-intent.v2';
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const isMachine = channel => /^machine\./.test(channel || '') || channel === 'os.pm2';
 
@@ -95,9 +97,34 @@ function describeMachine(obs) {
     availability: condition && severity !== null ? 'available' : 'unavailable' };
 }
 
+function learningDecisionsFor(intent) {
+  // Hard policy still owns criticality, recovery, dedupe and provenance.
+  // A routine learned preference must never become a general alert mute.
+  if (intent.attention?.kind !== 'problem' || !intent.conditions.length
+      || intent.conditions.some(item => item.severity >= 2)) return [];
+  const measurementRefs = new Set(intent.conditions.map(item => item.sourceRef));
+  // These producers attest pressure/load/capacity, not the presence or
+  // absence of operational impact. Learn only about measurement-only
+  // commentary. Any additional owner, Work, execution or unknown evidence
+  // keeps the authored consequence judgment; it is never treated as noise.
+  if (intent.contextRefs.length || intent.evidenceRefs.some(ref => !measurementRefs.has(ref))) return [];
+  return intent.conditions.filter(item => item.availability === 'available'
+      && /^(?:machine\.(?:memory|cpu|disk|swap))(?::|$)/.test(item.topic))
+    .map(item => normalizeLearningDecision({
+      schema: 'home23.learning-decision.v1', decisionId: `${intent.deliveryId}:${item.topic}`,
+      scope: `owner.outreach:${/^[a-zA-Z0-9_.:-]+$/.test(item.topic) ? item.topic
+        : `${item.topic.split(':')[0]}:${hash(item.topic).slice(0, 16)}`}`, criterion: 'owner-value',
+      tags: ['unsolicited', 'routine', 'attention:problem', 'context:measurement-only',
+        item.severity > 0 ? 'mild' : 'normal', 'impact:unestablished', item.condition],
+      sourceRefs: intent.evidenceRefs,
+      ...(intent.observedAt ? { observedAt: intent.observedAt } : {}),
+    })).filter(Boolean);
+}
+
 class OwnerOutreachPolicy {
-  constructor({ brainDir } = {}) {
+  constructor({ brainDir, readLearning = null } = {}) {
     this.file = brainDir ? path.join(brainDir, 'owner-attention.json') : null;
+    this.readLearning = typeof readLearning === 'function' ? readLearning : null;
   }
 
   _load() {
@@ -155,13 +182,24 @@ class OwnerOutreachPolicy {
     const conditions = machineEvidence(candidate, memory, outreach.evidenceRefs).map(describeMachine);
     const machineRefs = new Set(conditions.map(item => item.sourceRef));
     const contextRefs = (outreach.attention?.evidenceRefs || []).filter(ref => !machineRefs.has(ref));
-    return { schema: INTENT_SCHEMA, deliveryId, fingerprint: hash([outreach.text.replace(/\s+/g, ' ').trim(), [...outreach.evidenceRefs].sort()]),
+    const observedAt = new Date().toISOString();
+    const intent = { schema: LEARNED_INTENT_SCHEMA, deliveryId, fingerprint: hash([outreach.text.replace(/\s+/g, ' ').trim(), [...outreach.evidenceRefs].sort()]),
       conditions, attention: outreach.attention || null, contextRefs,
-      text: outreach.text, evidenceRefs: outreach.evidenceRefs };
+      text: outreach.text, evidenceRefs: outreach.evidenceRefs, observedAt };
+    intent.learningDecisions = learningDecisionsFor(intent);
+    // The existing durable outbox retains these exact bytes before source
+    // projection. A retry never creates a new event ID or observation time.
+    intent.learningDecisionEvents = intent.learningDecisions.map(decision => ({
+      event_id: crypto.randomUUID(), event_type: 'LearningDecisionObserved',
+      session_id: `owner-outreach:${deliveryId}`, object_id: decision.decisionId,
+      timestamp: observedAt, ts: observedAt, actor: 'engine-owner-outreach',
+      payload: { learningVersion: 2, ...decision },
+    }));
+    return intent;
   }
 
-  _judge(state, intent, { retry = false } = {}) {
-    if (!intent || intent.schema !== INTENT_SCHEMA || typeof intent.deliveryId !== 'string'
+  _judgeAuthored(state, intent, { retry = false } = {}) {
+    if (!intent || ![INTENT_SCHEMA, LEARNED_INTENT_SCHEMA].includes(intent.schema) || typeof intent.deliveryId !== 'string'
       || !/^[a-f0-9]{64}$/.test(intent.fingerprint || '') || !Array.isArray(intent.conditions)
       || !Array.isArray(intent.evidenceRefs) || !Array.isArray(intent.contextRefs)) {
       return { allow: false, status: 'unavailable', reason: 'attention_intent_unavailable' };
@@ -194,6 +232,33 @@ class OwnerOutreachPolicy {
     return { allow: false, status: 'suppressed', reason: 'unchanged_or_unactionable_machine_condition' };
   }
 
+  _judge(state, intent, options = {}) {
+    const authored = this._judgeAuthored(state, intent, options);
+    const reserved = intent?.deliveryId && state.deliveries[hash(intent.deliveryId)];
+    if (reserved) return { ...authored, ...(reserved.learning ? { learning: reserved.learning } : {}) };
+    if (!authored.allow || intent.schema !== LEARNED_INTENT_SCHEMA) return authored;
+    // Recompute scope from the validated structured intent. Caller-supplied
+    // learningDecisions are evidence to retain, never authority to broaden it.
+    const decisions = learningDecisionsFor(intent);
+    if (!decisions.length) return authored;
+    let snapshot;
+    try { snapshot = this.readLearning?.() || null; }
+    catch { snapshot = null; }
+    const evaluations = decisions.map(decision => ({ decision,
+      ...evaluateLearnedDecision(snapshot, { scope: decision.scope, tags: decision.tags }) }));
+    const learning = {
+      version: 1, available: evaluations.every(item => item.available),
+      ...(Number.isSafeInteger(snapshot?.seq) ? { seq: snapshot.seq } : {}),
+      lessonIds: [...new Set(evaluations.flatMap(item => item.lessonIds))],
+      sourceRefs: [...new Set(evaluations.flatMap(item => item.sourceRefs))],
+      adjustment: Math.min(...evaluations.map(item => item.adjustment)), decisions,
+    };
+    if (evaluations.some(item => item.suppress)) {
+      return { ...authored, allow: false, status: 'suppressed', reason: 'learned_scoped_attenuation', learning };
+    }
+    return { ...authored, learning };
+  }
+
   preview(intent) {
     try { return this._judge(this._load(), intent); }
     catch (error) { return { allow: false, status: 'unavailable', reason: 'attention_state_unavailable', detail: String(error.message || error).slice(0, 300) }; }
@@ -213,7 +278,8 @@ class OwnerOutreachPolicy {
       return decision;
     }
     const reservedAt = new Date().toISOString();
-    state.deliveries[key] = { deliveryId: intent.deliveryId, requestHash, intentHash, reservedAt, reason: decision.reason, status: 'pending' };
+    state.deliveries[key] = { deliveryId: intent.deliveryId, requestHash, intentHash, reservedAt, reason: decision.reason, status: 'pending',
+      ...(decision.learning ? { learning: decision.learning } : {}) };
     state.fingerprints[intent.fingerprint] = intent.deliveryId;
     for (const condition of intent.conditions) {
       const topicKey = hash(condition.topic);

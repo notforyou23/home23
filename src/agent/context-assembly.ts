@@ -24,6 +24,9 @@ import { composeLivedFacts } from '../substrate/lived-facts.js';
 import { semanticMatchScore } from '../substrate/semantic-match.js';
 import { activeAttentionRecipeId, admitsPairScore, resolveAttentionPolicy } from '../substrate/encoder-attention-policy.js';
 import { resolveSubstrateStateDir } from './session-bootstrap.js';
+import { currentTurnSubject } from '../substrate/turn-relevance.js';
+import { readSeedLearning, evaluateLearnedDecision } from '../substrate/learning-state.js';
+import type { LearningSnapshot } from '../../shared/seed-learning.cjs';
 import { classifyOwnerConversation, hasConversationTimeIntent } from '../../shared/owner-conversation-policy.cjs';
 
 const require = createRequire(import.meta.url);
@@ -84,6 +87,8 @@ interface AssemblyConfig {
    * carried-state block every turn when set. */
   substrateStateDir?: string;
   substrateBudget?: number;
+  /** Read-only dependency for deterministic decision comparisons. */
+  readLearning?: typeof readSeedLearning;
   /** Rendering policy is independent of whether background distillation is enabled. */
   ownerDistill?: OwnerDistillConfig;
   /** When true, skip automatic pre-turn brain retrieval (retrieval-eval isolation). */
@@ -162,6 +167,7 @@ export interface OperationalSurfaceGateInput {
   anchors: readonly string[];
   semanticEmbed?: (t: string) => number[] | null;
   recipeId?: string | null;
+  learning?: LearningSnapshot;
 }
 
 /**
@@ -170,21 +176,26 @@ export interface OperationalSurfaceGateInput {
  * on the surface's anchors (triggered-surface pattern).
  */
 export function shouldLoadOperationalSurface(input: OperationalSurfaceGateInput): boolean {
-  // Same load conditions as DOMAIN_SURFACES / FACTS@seed (first-turn wake-up,
-  // brain/trigger cues, or degraded retrieval that must not starve the turn).
-  if (input.isFirstTurn || input.degraded || input.brainCueCount > 0 || input.triggerCount > 0) {
-    return true;
-  }
+  return operationalSurfaceDecision(input).allow;
+}
 
+export function operationalSurfaceDecision(input: OperationalSurfaceGateInput) {
   const anchorText = `${input.label}: ${input.anchors.join(', ')}`;
   const policy = resolveAttentionPolicy(input.recipeId);
-  const score = semanticMatchScore(input.turnText, anchorText, input.semanticEmbed, {
+  const subject = currentTurnSubject(input.turnText, [{ role: 'user', content: input.matchText }]);
+  const score = semanticMatchScore(subject, anchorText, input.semanticEmbed, {
     recipeId: input.recipeId,
   });
-  if (score !== null) return admitsPairScore(score, policy);
-
-  const hay = input.matchText.toLowerCase();
-  return input.anchors.some(anchor => hay.includes(anchor.toLowerCase()));
+  const relevant = score !== null ? admitsPairScore(score, policy)
+    : input.anchors.some(anchor => subject.toLowerCase().includes(anchor.toLowerCase()));
+  const current = input.turnText.toLowerCase();
+  const asksForResult = /\b(?:finish\w*|complet\w*|deliver\w*|results?|outputs?|status|progress|receipts?|reports?|done|succeed\w*|fail\w*)\b/i.test(input.turnText);
+  const requestVerb = /\b(?:show|list|read|check|summari[sz]e|brief|describe|explain|review|outline|report)\b/i.test(input.turnText);
+  const explicit = input.anchors.some(anchor => current.includes(anchor.toLowerCase()))
+    || (relevant && (asksForResult || requestVerb));
+  const tags = ['operational', input.label.toLowerCase(), explicit ? 'requested' : 'automatic'];
+  const learned = evaluateLearnedDecision(input.learning, { scope: 'foreground.context', tags });
+  return { allow: relevant && (explicit || !learned.suppress), relevant, explicit, tags, learned };
 }
 
 // ─── Surface Loading ────────────────────────────────────
@@ -778,6 +789,7 @@ export async function assembleContext(
   signal?: AbortSignal,
 ): Promise<AssemblyResult> {
   const events: EventEnvelope[] = [];
+  const durablyRecorded = new Set<string>();
   const onCap: OnAwarenessCap = cap => {
     events.push({ event_id: randomUUID(), event_type: 'SituationalAwarenessCapped', session_id: config.sessionId,
       timestamp: new Date().toISOString(), actor: 'assembly', payload: {
@@ -1099,8 +1111,9 @@ export async function assembleContext(
     brainCueCount: brainCues.length,
     triggerCount: triggerMatches.length,
     turnText: userText,
-    matchText: triggerMatchText,
+    matchText: recentTurns.filter(turn => turn.role === 'user').slice(-2).map(turn => turn.content).join('\n'),
     semanticEmbed: config.semanticEmbed,
+    learning: substrateStateDir ? (config.readLearning ?? readSeedLearning)(substrateStateDir) : undefined,
   };
   const projectRoot = projectRootFromWorkspace(config.workspacePath);
   const agentName = agentNameFromWorkspace(config.workspacePath);
@@ -1116,18 +1129,46 @@ export async function assembleContext(
     });
   }
 
-  if (shouldLoadOperationalSurface({
-    ...opsGateBase,
-    label: 'WORKERS',
-    anchors: WORKER_MEANING_ANCHORS,
-  })) {
+  const opsDecision = (label: string, anchors: readonly string[]) => {
+    const decision = operationalSurfaceDecision({ ...opsGateBase, label, anchors });
+    const decisionId = `context:${randomUUID()}`;
+    const event: EventEnvelope = { event_id: decisionId, event_type: 'LearningDecisionObserved', session_id: config.sessionId,
+      timestamp: new Date().toISOString(), actor: 'assembly', payload: {
+        schema: 'home23.learning-decision.v1', decisionId, scope: 'foreground.context',
+        tags: decision.tags, criterion: 'owner-value', sourceRefs: [`surface:${label}`],
+        choice: decision.allow ? 'admit' : 'omit', relevant: decision.relevant, explicit: decision.explicit,
+        learning: decision.learned,
+      } };
+    if (decision.relevant) {
+      if (ledger) {
+        try {
+          ledger.emitDurable(event, { newUnique: true });
+          durablyRecorded.add(event.event_id);
+        } catch (error) {
+          // Keep directly requested information available. Discretionary
+          // operational context waits rather than making an unrecorded choice.
+          decision.allow = decision.explicit && decision.relevant;
+          decision.learned.adjustment = 0;
+          events.push({ ...event, event_type: 'LearningDecisionProjectionDeferred', payload: {
+            decisionId, scope: 'foreground.context', requested: decision.explicit,
+            reason: error instanceof Error ? error.message : String(error),
+          } });
+          return decision;
+        }
+      }
+      events.push(event);
+    }
+    return decision;
+  };
+  const workerDecision = opsDecision('WORKERS', WORKER_MEANING_ANCHORS);
+  if (workerDecision.allow) {
     try {
       const workerSection = buildWorkerContextSection(projectRoot, agentName);
       if (workerSection) {
         surfacesSelected.push('WORKERS');
         salienceItems.push({
           text: `\nRelevant context (WORKERS):\n${workerSection}`,
-          score: 0.9,
+          score: Math.min(1, Math.max(0, 0.9 + workerDecision.learned.adjustment * 0.2)),
           source: 'surface:WORKERS',
           surface: 'WORKERS',
           recovery: `${readSources([join(config.brainDir, 'worker-runs.jsonl')])}; list_files cwd=${JSON.stringify(join(projectRoot, 'instances', 'workers'))} pattern="*/worker.yaml"`,
@@ -1138,18 +1179,15 @@ export async function assembleContext(
     }
   }
 
-  if (shouldLoadOperationalSurface({
-    ...opsGateBase,
-    label: 'AGENCY',
-    anchors: AGENCY_MEANING_ANCHORS,
-  })) {
+  const agencyDecision = opsDecision('AGENCY', AGENCY_MEANING_ANCHORS);
+  if (agencyDecision.allow) {
     try {
       const agencySection = agencySnapshot ? renderAgencyContextSection(agencySnapshot) : '';
       if (agencySection) {
         surfacesSelected.push('AGENCY');
         salienceItems.push({
           text: `\nRelevant context (AGENCY):\n${agencySection}`,
-          score: 0.98,
+          score: Math.min(1, Math.max(0, 0.98 + agencyDecision.learned.adjustment * 0.2)),
           source: 'surface:AGENCY',
           surface: 'AGENCY',
           recovery: readSources([agencySnapshot!.statePath, join(agencySnapshot!.agencyDir, 'pursuits.jsonl')]),
@@ -1225,7 +1263,7 @@ export async function assembleContext(
         retrievalMs, retrievalPending, stage: 'fast',
       },
     });
-    if (ledger) ledger.emit(events);
+    if (ledger) ledger.emit(events.filter(event => !durablyRecorded.has(event.event_id)));
     return { block, degraded, brainCueCount: brainCues.length, triggerCount: triggerMatches.length,
       surfacesLoaded, events, sourceHealth, matchOutcome, retrievalError };
   };

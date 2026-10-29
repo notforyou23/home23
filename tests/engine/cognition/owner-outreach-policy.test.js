@@ -132,3 +132,135 @@ test('attention consequence references are constrained to the actual admitted me
   assert.equal(normalizeOwnerOutreach({ ...base, attention: { kind: 'connection', consequence: 'A useful connection to something you told me.', evidenceRefs: ['invented:ref'] } }, ['message:owner']), null);
   assert.ok(normalizeOwnerOutreach({ ...base, attention: { kind: 'connection', consequence: 'A useful connection to something you told me.', evidenceRefs: ['message:owner'] } }, ['message:owner']));
 });
+
+function quietRoutineMemoryLesson() {
+  return { version: 1, seq: 42, decisions: [], lessons: [{
+    lessonId: 'lesson:owner-routine-memory', scope: 'owner.outreach:machine.memory',
+    tags: ['unsolicited', 'routine', 'mild'], excludes: ['critical', 'requested'],
+    sourceRefs: ['message:owner-feedback'], value: -0.25, basis: 'owner-feedback', authority: 'owner',
+    criterion: 'owner-value', decisionId: 'outreach:earlier', createdAt: '2026-10-29T18:00:00Z',
+    corroborations: 0, active: true,
+  }] };
+}
+
+test('scoped Seed learning changes an otherwise eligible actual send with identical evidence and candidate', async t => {
+  const snapshot = quietRoutineMemoryLesson();
+  const observation = { channelId: 'machine.memory', sourceRef: 'mem:first-mild', payload: { pressureFreePct: 19 } };
+  const deliveries = [];
+  for (const [name, learning] of [['learned', snapshot], ['ablated', { ...snapshot, lessons: [] }]]) {
+    const policy = new OwnerOutreachPolicy({ brainDir: directory(t), readLearning: () => learning });
+    const data = intent(policy, { observation, deliveryId: 'outreach:same-choice', text: 'Mild memory pressure appeared; no failure has been observed.' });
+    const box = new OwnerOutreachOutbox(path.dirname(policy.file), async request => { deliveries.push({ name, request }); return { status: 'committed' }; }, { policy });
+    const result = await box.send(data.request, data.attentionIntent);
+    assert.equal(result.status, name === 'learned' ? 'suppressed' : 'committed');
+    if (name === 'learned') {
+      assert.equal(result.attentionDecision.reason, 'learned_scoped_attenuation');
+      assert.deepEqual(result.attentionDecision.learning.lessonIds, ['lesson:owner-routine-memory']);
+      assert.equal(result.attentionDecision.learning.seq, 42);
+    }
+  }
+  assert.deepEqual(deliveries.map(item => item.name), ['ablated'], 'only removing learned state changes this real transport callback');
+});
+
+test('learned routine scope transfers across wording without suppressing critical, mixed evidence or recovery paths', t => {
+  const policy = new OwnerOutreachPolicy({ brainDir: directory(t), readLearning: quietRoutineMemoryLesson });
+  for (const [id, text] of [['one', 'An initial mild pressure observation.'], ['two', 'There is a modest reclaimable-headroom change.']]) {
+    const data = intent(policy, { deliveryId: `outreach:${id}`, observation: { channelId: 'machine.memory', sourceRef: `mem:${id}`, payload: { pressureFreePct: 18 } }, text });
+    assert.equal(policy.preview(data.attentionIntent).allow, false);
+  }
+  const critical = intent(policy, { deliveryId: 'outreach:critical', observation: { channelId: 'machine.memory', sourceRef: 'mem:critical', payload: { pressureFreePct: 4 } } });
+  assert.equal(policy.reserve(critical.attentionIntent, critical.request).allow, true);
+  const recoveredObservation = { channelId: 'machine.memory', sourceRef: 'mem:recovery', payload: { pressureFreePct: 48 } };
+  policy.observe({ observation: recoveredObservation }, {});
+  const recovery = intent(policy, { deliveryId: 'outreach:recovery', observation: recoveredObservation, kind: 'recovery' });
+  assert.equal(policy.preview(recovery.attentionIntent).allow, true);
+  const mixed = intent(policy, { deliveryId: 'outreach:mixed', observation: { channelId: 'machine.memory', sourceRef: 'mem:mixed', payload: { pressureFreePct: 19 } },
+    refs: ['message:owner-project'], kind: 'connection' });
+  assert.equal(policy.preview(mixed.attentionIntent).allow, true, 'a meaningful machine/person connection is outside routine measurement commentary');
+  const watch = intent(policy, { deliveryId: 'outreach:watch', observation: { channelId: 'domain.health', sourceRef: 'health:watch', payload: {} }, refs: ['message:owner-cold'], kind: 'connection' });
+  assert.equal(policy.preview(watch.attentionIntent).allow, true);
+});
+
+test('real measurement producers establish measurement-only scope; other evidence and attention kinds retain authored judgment', async t => {
+  const { MemoryChannel } = await import('../../../engine/src/channels/machine/memory-channel.js');
+  const channel = new MemoryChannel({ platform: 'darwin', sampleRawMemory: () => ({ total: 1000, free: 10 }),
+    sampleDarwinPressure: async () => ({ source: 'memory_pressure -Q', freePct: 19, totalBytes: 1000 }) });
+  const observation = channel.verify(channel.parse((await channel.poll())[0]));
+  assert.equal(observation.payload.pressureFreePct, 19);
+  assert.equal('impact' in observation.payload || 'oomCount' in observation.payload, false, 'the actual producer does not attest impact absence');
+  const policy = new OwnerOutreachPolicy({ brainDir: directory(t), readLearning: quietRoutineMemoryLesson });
+  const routine = intent(policy, { observation });
+  assert.equal(policy.preview(routine.attentionIntent).allow, false);
+  assert.ok(routine.attentionIntent.learningDecisions[0].tags.includes('attention:problem'));
+  assert.ok(routine.attentionIntent.learningDecisions[0].tags.includes('context:measurement-only'));
+  assert.ok(routine.attentionIntent.learningDecisions[0].tags.includes('impact:unestablished'), 'lack of incident evidence is not a claim that no incident exists');
+  for (const kind of ['connection', 'decision', 'progress']) {
+    const mixed = intent(policy, { deliveryId: `outreach:${kind}`, observation, kind, refs: ['message:owner-next-action'] });
+    assert.equal(policy.preview(mixed.attentionIntent).allow, true, `routine feedback cannot suppress grounded ${kind} context`);
+    assert.deepEqual(mixed.attentionIntent.learningDecisions, []);
+  }
+  for (const evidenceRef of ['coordination.event:work-terminal', 'action-receipt:execution-failed']) {
+    const impacted = intent(policy, { deliveryId: `outreach:${evidenceRef}`, observation, refs: [evidenceRef] });
+    assert.equal(policy.preview(impacted.attentionIntent).allow, true, 'a nonmeasurement consequence basis retains the existing policy, even for problem contact');
+    assert.deepEqual(impacted.attentionIntent.learningDecisions, []);
+  }
+});
+
+test('an admitted delivery keeps its exact learning witness across uncertain completion and later learning', async t => {
+  let learning = { ...quietRoutineMemoryLesson(), lessons: [] };
+  const brainDir = directory(t);
+  const policy = new OwnerOutreachPolicy({ brainDir, readLearning: () => learning });
+  const data = intent(policy, { deliveryId: 'outreach:reserved-before-feedback', observation: { channelId: 'machine.memory', sourceRef: 'mem:mild', payload: { pressureFreePct: 19 } } });
+  policy.complete = () => { throw new Error('lost acknowledgement after acceptance'); };
+  const sent = [];
+  const transport = async request => { sent.push(request.deliveryId); return { status: 'committed' }; };
+  assert.equal((await new OwnerOutreachOutbox(brainDir, transport, { policy }).send(data.request, data.attentionIntent)).status, 'pending');
+  learning = quietRoutineMemoryLesson();
+  const restored = new OwnerOutreachPolicy({ brainDir, readLearning: () => learning });
+  const [result] = await new OwnerOutreachOutbox(brainDir, transport, { policy: restored }).retry();
+  assert.equal(result.status, 'committed');
+  assert.deepEqual(result.attentionDecision.learning.lessonIds, [], 'retry does not reinterpret an already reserved choice using a later lesson');
+  assert.deepEqual(sent, [data.request.deliveryId, data.request.deliveryId]);
+});
+
+test('structured disk scopes retain mount identity without broadening a lesson to other situations', t => {
+  let snapshot = { version: 1, available: true, lessons: [] };
+  const policy = new OwnerOutreachPolicy({ brainDir: directory(t), readLearning: () => snapshot });
+  const disk = mount => ({ channelId: 'machine.disk', sourceRef: `disk:${mount}`, payload: { mount, usagePct: 88 } });
+  const first = intent(policy, { observation: disk('/fixture/data'), deliveryId: 'outreach:data-disk' });
+  const decision = first.attentionIntent.learningDecisions[0];
+  assert.ok(decision, 'a path-bearing topic must still produce a bounded learning scope');
+  snapshot = { ...quietRoutineMemoryLesson(), lessons: [{ ...quietRoutineMemoryLesson().lessons[0], scope: decision.scope }] };
+  assert.equal(policy.preview(first.attentionIntent).allow, false);
+  const other = intent(policy, { observation: disk('/fixture/system'), deliveryId: 'outreach:system-disk' });
+  assert.notEqual(other.attentionIntent.learningDecisions[0].scope, decision.scope);
+  assert.equal(policy.preview(other.attentionIntent).allow, true, 'one mounted volume cannot silently teach another volume');
+});
+
+test('durable outreach intent recovers a failed decision append before sending, without duplicate witnesses', async t => {
+  const { appendSeedProjectionOnce } = require('../../../shared/seed-source-projection.cjs');
+  for (const crashAfterAppend of [false, true]) {
+    const brainDir = directory(t), policy = new OwnerOutreachPolicy({ brainDir });
+    const data = intent(policy, { deliveryId: `outreach:projection-${crashAfterAppend}`,
+      observation: { channelId: 'machine.memory', sourceRef: 'mem:real-basis', payload: { pressureFreePct: 19 } } });
+    const sent = [];
+    const transport = async request => { sent.push(request); return { status: 'committed' }; };
+    const broken = new OwnerOutreachOutbox(brainDir, transport, { policy,
+      appendDecision: (file, event, options) => {
+        if (crashAfterAppend) appendSeedProjectionOnce(file, event, options);
+        throw new Error('fixture interrupted decision projection');
+      } });
+    assert.equal((await broken.send(data.request, data.attentionIntent)).status, 'pending');
+    assert.equal(sent.length, 0, 'the message cannot escape before its source witness is durable');
+    const pendingFile = path.join(brainDir, 'owner-outreach-pending', fs.readdirSync(path.join(brainDir, 'owner-outreach-pending'))[0]);
+    const saved = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
+    assert.deepEqual(saved.attentionIntent.learningDecisionEvents, data.attentionIntent.learningDecisionEvents);
+    assert.equal(saved.decisionProjection.attempted.length, 1);
+    const [recovered] = await new OwnerOutreachOutbox(brainDir, transport, { policy: new OwnerOutreachPolicy({ brainDir }) }).retry();
+    assert.equal(recovered.status, 'committed');
+    assert.equal(sent.length, 1);
+    const witnesses = fs.readFileSync(path.join(brainDir, 'event-ledger.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+      .filter(row => row.event_type === 'LearningDecisionObserved');
+    assert.deepEqual(witnesses, data.attentionIntent.learningDecisionEvents, 'canonical identity and time survive both failure points');
+  }
+});

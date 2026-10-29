@@ -20,12 +20,21 @@ interface TriggerMatch {
 
 export class TriggerIndex {
   private entries: Array<{ memory: MemoryObject; trigger: TriggerCondition }> = [];
+  private store?: MemoryObjectStore;
+  private revision?: string;
 
   /**
    * Load all durable memories with triggers.
    */
   loadFrom(store: MemoryObjectStore): void {
-    const durable = store.getDurableWithTriggers();
+    this.store = store;
+    this.revision = store.triggerRevision();
+    let durable: MemoryObject[];
+    try { durable = store.getDurableWithTriggers(); }
+    catch {
+      this.entries = [];
+      return;
+    }
     this.entries = [];
     for (const obj of durable) {
       for (const trigger of obj.triggers) {
@@ -46,6 +55,14 @@ export class TriggerIndex {
     sessionId?: string,
     embed?: (text: string) => number[] | null,
   ): TriggerMatch[] {
+    if (this.store && this.store.triggerRevision() !== this.revision) {
+      try { this.loadFrom(this.store); }
+      catch {
+        // Current unreadable or retired memory cannot keep firing from cache.
+        this.entries = [];
+        this.revision = this.store.triggerRevision();
+      }
+    }
     const matches: TriggerMatch[] = [];
     const textLower = userText.toLowerCase();
 

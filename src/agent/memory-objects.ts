@@ -6,7 +6,7 @@
  * Includes confidence anti-theater constraints and checkpoint quality floor.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -496,6 +496,41 @@ export class MemoryObjectStore {
     return this.objects.filter(o => o.lifecycle_layer === layer);
   }
 
+  /** Fresh source outbox read; a long-lived process must also see another
+   * writer's pending projection. This does not promote or reinterpret it. */
+  readPendingSeedProjections(): MemoryObject[] {
+    let document: { objects?: MemoryObject[] };
+    try { document = JSON.parse(readFileSync(this.objectsPath, 'utf8')) as { objects?: MemoryObject[] }; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw new Error('Unreadable memory source projections');
+    }
+    if (!Array.isArray(document.objects)) throw new Error('Invalid memory source projections');
+    return document.objects.filter(object => {
+      const projection = (object as MemoryObject & { seed_projection?: { schema?: unknown; status?: unknown } })?.seed_projection;
+      return projection?.schema === 'home23.seed-source-projection.v1' && projection.status === 'pending';
+    });
+  }
+
+  /** A transport acknowledgement is not a new fact or a new assertion time.
+   * Only the matching source event's delivery metadata may change here. */
+  acknowledgeSeedProjection(memoryId: string, eventId: string, result: {
+    status: 'pending' | 'projected'; error?: string;
+  }): boolean {
+    return this.mutateObjects(objects => {
+      const object = objects.find(candidate => candidate.memory_id === memoryId) as (MemoryObject & {
+        seed_projection?: { schema?: unknown; status?: unknown; event?: { event_id?: unknown }; error?: string };
+      }) | undefined;
+      const projection = object?.seed_projection;
+      if (projection?.schema !== 'home23.seed-source-projection.v1' || projection.event?.event_id !== eventId) return false;
+      if (projection.status === 'projected' && result.status === 'pending') return true;
+      projection.status = result.status;
+      if (result.status === 'projected') delete projection.error;
+      else if (result.error) projection.error = result.error.slice(0, 600);
+      return true;
+    });
+  }
+
   /** Read current background distiller writes without mutating or trusting this instance's cache. */
   readOwnerConversationFacts(): MemoryObject[] {
     let document: { objects?: MemoryObject[] };
@@ -511,7 +546,21 @@ export class MemoryObjectStore {
   }
 
   getDurableWithTriggers(): MemoryObject[] {
-    return this.objects.filter(o => o.lifecycle_layer === 'durable' && o.triggers.length > 0);
+    if (!existsSync(this.objectsPath)) return [];
+    const document = JSON.parse(readFileSync(this.objectsPath, 'utf8')) as { objects?: MemoryObject[] };
+    if (!Array.isArray(document.objects)) throw new Error('Invalid triggered memory document');
+    return document.objects.filter(o => o?.lifecycle_layer === 'durable' && o.status === 'approved'
+      && !o.superseded_by?.length && Array.isArray(o.triggers) && o.triggers.length > 0);
+  }
+
+  /** Cheap revision witness for long-lived trigger readers; no store mutation. */
+  triggerRevision(): string {
+    try {
+      const stat = statSync(this.objectsPath, { bigint: true });
+      return `${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+    } catch (error) {
+      return `unavailable:${(error as NodeJS.ErrnoException).code ?? 'read'}`;
+    }
   }
 
   incrementReuse(memoryId: string): void {

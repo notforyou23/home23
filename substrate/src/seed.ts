@@ -67,9 +67,11 @@ import {
   QUIET_GAP_SECONDS,
 } from './plasticity.js';
 import type { LobeAdapter, ValidatedLobeResult, RejectedProposal } from './lobe.js';
-import { validateLobeResult, applyLobeDeltas, predictionIdFor } from './lobe.js';
+import { validateLobeResult, applyLobeDeltas, predictionIdFor, predictionOutcomeRefs } from './lobe.js';
 import type { WorkspacePacket, ProposedStateDelta } from './types.js';
 import type { ConcernState, Commitment, FormationInput, DueCrossing } from './concern.js';
+import { applyExperienceEvent, experienceCells } from './experience.js';
+import { consolidateLearning } from '../../shared/seed-learning.cjs';
 import {
   emptyConcern,
   cloneConcern,
@@ -717,8 +719,10 @@ export class SeedProcess {
     const gapSeconds = eventDeltaSeconds(this.lastTransitionAt, event.producedAt);
     if (gapSeconds > QUIET_GAP_SECONDS) {
       const stagedDev = cloneDevelopment(this.development);
-      const summaries = applyConsolidation(stagedDev);
-      if (summaries.length > 0) {
+      const summaries = applyConsolidation(stagedDev, event.producedAt);
+      const scopedCells = experienceCells(stagedDev, this.development);
+      const scopedChanged = Object.keys(scopedCells).length > 0;
+      if (summaries.length > 0 || scopedChanged) {
         this.commitReceipted(new Map(), {
           category: 'development',
           sourceAuthority: 'seed.internal',
@@ -729,6 +733,7 @@ export class SeedProcess {
             endedBy: event.eventId,
             cells: summaries,
             developmentMagnitude: developmentMagnitude(stagedDev),
+            ...(scopedChanged ? { experienceCells: scopedCells, learningVersion: 2 } : {}),
           },
         }, stagedDev);
         this._eventCount++;
@@ -741,6 +746,21 @@ export class SeedProcess {
       // lobe opportunity. In-memory only — a crash across the wake moment
       // loses the dream, never the consolidation, which is the durable half.
       this._pendingDream = { quietSeconds: gapSeconds };
+    }
+
+    // Prospective procedural learning ages on event time even in a home with
+    // continuous senses. This does not alter legacy quiet/sleep semantics.
+    // The shared timestamp prevents a quiet gap and this path double-aging.
+    const agedDevelopment = cloneDevelopment(this.development);
+    for (const plastic of Object.values(agedDevelopment)) if (plastic.experience) {
+      plastic.experience = consolidateLearning(plastic.experience, event.producedAt);
+    }
+    const agedCells = experienceCells(agedDevelopment, this.development);
+    if (Object.keys(agedCells).length) {
+      this.commitReceipted(new Map(), { category: 'development', sourceAuthority: 'seed.internal', sourceRef: this.seedId,
+        payload: { rule: 'experience-consolidation.v1', asOf: event.producedAt, endedBy: event.eventId,
+          experienceCells: agedCells, developmentMagnitude: developmentMagnitude(agedDevelopment) } }, agedDevelopment);
+      this._eventCount++; this.accounting.recordEvent(); this.accounting.setLedgerBytes(this.ledger.bytes);
     }
 
     // Stage the transition on a copy: developmental mutation must not proceed
@@ -790,7 +810,17 @@ export class SeedProcess {
     // everything else — a distinct 'development' record whose payload carries
     // the rule and the applied bounded changes. Deterministic given the
     // event stream: replay reproduces identical development.
-    if (event.category === 'correction' || event.category === 'consequence') {
+    if (event.payload['learningVersion'] !== undefined && event.payload['learningVersion'] !== 1) {
+      const stagedDev = cloneDevelopment(this.development);
+      const summary = event.payload['learningVersion'] === 2 ? applyExperienceEvent(stagedDev, event, cellId)
+        : { rule: 'experience.v1', applied: false, reason: 'unsupported_learning_version' };
+      if (summary) {
+        this.commitReceipted(new Map(), { category: 'development', sourceAuthority: 'seed.internal', sourceRef: this.seedId,
+          payload: { eventId: event.eventId, producedAt: event.producedAt, ...summary,
+            experienceCells: experienceCells(stagedDev, this.development), developmentMagnitude: developmentMagnitude(stagedDev) } }, stagedDev);
+        this._eventCount++; this.accounting.recordEvent(); this.accounting.setLedgerBytes(this.ledger.bytes);
+      }
+    } else if (event.category === 'correction' || event.category === 'consequence') {
       const stagedDev = cloneDevelopment(this.development);
       const committed = this.cells.get(cellId);
       if (committed !== undefined) {
@@ -1039,6 +1069,9 @@ export class SeedProcess {
     packet: WorkspacePacket,
     asOf: string,
     timeoutMs = 30_000,
+    /** Internal recovery supplies an already accepted immutable receipt.
+     * It bypasses model calls and new admission, not ledger/state checks. */
+    replayReceipt?: LedgerRecord,
   ): Promise<{
     seq: number;
     applied: ProposedStateDelta[];
@@ -1051,6 +1084,10 @@ export class SeedProcess {
     motorAuthorized?: { actSeq: number; commitmentId: string; message: string; idempotencyKey: string };
   }> {
     this.membrane.assert('lobe.recruit.model');
+    if (replayReceipt && (replayReceipt.category !== 'lobe' || replayReceipt.sourceAuthority !== 'seed.internal'
+        || replayReceipt.sourceRef !== lobe.id || replayReceipt.payload['asOf'] !== asOf)) throw new Error('invalid recorded lobe replay');
+    if (replayReceipt && (replayReceipt.seq !== this.ledger.currentSeq + 1
+        || (replayReceipt.stateHashBefore !== undefined && replayReceipt.stateHashBefore !== this.computeCurrentStateHash()))) throw new Error('recorded lobe replay does not match the current chain/state');
     // Derive continuity from actual committed receipts, with bounded I/O. These
     // ideas are not state, evidence, admission pressure, or action authority.
     const considerations: NonNullable<WorkspacePacket['recentConsiderations']> = [];
@@ -1072,6 +1109,11 @@ export class SeedProcess {
       }
     }
     packet = { ...packet, recentConsiderations: considerations.slice(-4) };
+    const outcomeRefs = Array.from(this.cells.values()).filter(cell => admitted.has(cell.id))
+      .flatMap(cell => cell.predictions.filter(prediction => prediction.resolvedAt === undefined)
+        .flatMap(prediction => predictionOutcomeRefs(this.cells.values(), prediction, asOf)))
+      .filter(ref => !packet.eventRefs.some(existing => existing.refId === ref.refId)).slice(0, 8);
+    if (outcomeRefs.length) packet = { ...packet, eventRefs: [...packet.eventRefs, ...outcomeRefs] };
 
     this.membrane.assert('local.state.write');
     this.membrane.assert('local.ledger.append');
@@ -1079,7 +1121,13 @@ export class SeedProcess {
 
     let result;
     try {
-      result = await Promise.race([
+      const advisory = replayReceipt?.payload['advisory'] as { observations?: unknown[]; interpretations?: unknown[]; predictions?: unknown[] } | undefined;
+      if (replayReceipt?.payload['error']) throw new Error(String(replayReceipt.payload['error']));
+      result = replayReceipt ? {
+        observations: advisory?.observations ?? [], interpretations: advisory?.interpretations ?? [], predictions: advisory?.predictions ?? [],
+        stateDeltas: replayReceipt.payload['appliedDeltas'] ?? [], candidateActions: [], candidateForms: [], evidenceRefs: [],
+        uncertainty: replayReceipt.payload['lobeUncertainty'], modelReceipt: replayReceipt.payload['modelReceipt'],
+      } : await Promise.race([
         lobe.invoke(packet),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(`lobe ${lobe.id} timed out after ${timeoutMs}ms`)), timeoutMs).unref?.(),
@@ -1091,7 +1139,7 @@ export class SeedProcess {
         category: 'lobe',
         sourceAuthority: 'seed.internal',
         sourceRef: lobe.id,
-        payload: { asOf, lobeId: lobe.id, modelId: lobe.modelId, provider: lobe.provider, error: message },
+        payload: replayReceipt ? structuredClone(replayReceipt.payload) : { asOf, lobeId: lobe.id, modelId: lobe.modelId, provider: lobe.provider, error: message },
       });
       this._eventCount++;
       this.accounting.recordEvent();
@@ -1099,7 +1147,11 @@ export class SeedProcess {
       return { seq: record.seq, applied: [], rejected: [], error: message };
     }
 
-    const validated = validateLobeResult(result, packet);
+    const captured = result as Parameters<typeof validateLobeResult>[0];
+    const validated: ValidatedLobeResult = replayReceipt ? {
+      accepted: { observations: captured.observations, interpretations: captured.interpretations, predictions: captured.predictions,
+        stateDeltas: captured.stateDeltas, actions: [] }, rejected: [], modelReceipt: captured.modelReceipt, uncertainty: captured.uncertainty,
+    } : validateLobeResult(captured, packet);
     // Build the asked-and-unanswered guard ONLY when a reach is outstanding —
     // the chain scan costs nothing on the overwhelming majority of
     // recruitments, where nothing has been asked.
@@ -1118,9 +1170,9 @@ export class SeedProcess {
       validated.accepted.stateDeltas,
       asOf,
       cloneCell,
-      guard,
-      { version: 1, occurrence: String(this.ledger.currentSeq + 1) },
-      (candidate) => {
+      replayReceipt ? undefined : guard,
+      replayReceipt ? undefined : { version: 1, occurrence: String(this.ledger.currentSeq + 1), learningVersion: 2 },
+      replayReceipt ? undefined : (candidate) => {
         // Exact collected statements can be large. Reject only the witness
         // that exceeds the cell ceiling; unrelated deltas remain applicable.
         try {
@@ -1131,14 +1183,17 @@ export class SeedProcess {
           return `owner claim state budget refused for ${candidate.id}: ${error.message}`;
         }
       },
+      replayReceipt !== undefined,
     );
+    if (replayReceipt && failed.length) throw new Error(`recorded lobe delta could not be replayed: ${failed.map(item => item.reason).join('; ')}`);
+    if (replayReceipt?.stateHashAfter !== undefined && this.computeStateHashWithMany(staged) !== replayReceipt.stateHashAfter) throw new Error('recorded lobe replay state hash mismatch');
     const rejected = [...validated.rejected, ...failed];
 
     const { record } = this.commitReceipted(staged, {
       category: 'lobe',
       sourceAuthority: 'seed.internal',
       sourceRef: lobe.id,
-      payload: {
+      payload: replayReceipt ? structuredClone(replayReceipt.payload) : {
         asOf,
         lobeId: lobe.id,
         modelId: lobe.modelId,
@@ -1180,10 +1235,18 @@ export class SeedProcess {
     // error-less resolutions develop nothing (the receipt above still has them).
     for (const delta of applied) {
       if (delta.field !== 'predictions.resolve') continue;
-      const body = delta.delta as { predictionId?: unknown; error?: unknown };
+      const body = delta.delta as { predictionId?: unknown; error?: unknown; learningVersion?: unknown };
       if (typeof body?.predictionId !== 'string' || typeof body?.error !== 'number') continue;
       const committed = this.cells.get(delta.cellId);
       if (committed === undefined) continue;
+      const pending = committed.predictions.find(prediction => prediction.predictionId === body.predictionId);
+      if (!replayReceipt && body.learningVersion === 2 && !pending?.eligibility) {
+        this.commitReceipted(new Map(), { category: 'development', sourceAuthority: 'seed.internal', sourceRef: this.seedId,
+          payload: { rule: 'resolution.v2', applied: false, reason: 'prediction_time_eligibility_unavailable',
+            predictionId: body.predictionId, lobeSeq: record.seq, asOf, verificationStatus: 'assessed' } });
+        this._eventCount++; this.accounting.recordEvent(); this.accounting.setLedgerBytes(this.ledger.bytes);
+        continue;
+      }
       const stagedDev = cloneDevelopment(this.development);
       const summary = applyResolutionPlasticity(stagedDev, committed, body.predictionId, Math.max(0, Math.min(1, body.error)));
       if (summary === null) continue;
@@ -1195,6 +1258,8 @@ export class SeedProcess {
           asOf,
           lobeSeq: record.seq,
           ...summary,
+          ...(summary.rule === 'resolution.v2' ? { verificationStatus: 'assessed' } : {}),
+          ...(summary.rule === 'resolution.v2' ? { experienceCells: experienceCells(stagedDev, this.development) } : {}),
           developmentMagnitude: developmentMagnitude(stagedDev),
         },
       }, stagedDev);

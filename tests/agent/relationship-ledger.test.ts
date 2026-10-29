@@ -493,6 +493,8 @@ test('retrieveForContext ranks correction over shared_reference, packs to budget
   }));
   const gone = ledger.addEntry(base({ type: 'thread', title: 'deploy old', statement: 'deploy stale', triggers: ['deploy'] }));
   ledger.remove(gone.id);
+  const unrelated = ledger.addEntry(base({ type: 'correction', title: 'Memory pressure incident',
+    statement: 'The process restarted after an OOM.', triggers: ['memory', 'pressure'], applies_to: ['machine'] }));
 
   const full = ledger.retrieveForContext('deploy', { budgetChars: 100_000, excludePrivacy: ['sensitive'] });
   assert.equal(full.entries[0]?.type, 'correction'); // outranks shared_reference
@@ -500,6 +502,7 @@ test('retrieveForContext ranks correction over shared_reference, packs to budget
   assert.ok(ids.includes(corr.id) && ids.includes(joke.id));
   assert.ok(!ids.includes(secret.id), 'sensitive excluded');
   assert.ok(!ids.includes(gone.id), 'removed excluded');
+  assert.ok(!ids.includes(unrelated.id), 'an unrelated high-weight correction cannot ride along');
   assert.ok(full.text.startsWith('[RELATIONSHIP — jerry]'));
 
   // Tight budget: only the header + first (correction) line fit.
@@ -515,6 +518,30 @@ test('retrieveForContext ranks correction over shared_reference, packs to budget
   ledger.markSurfaced([corr.id]);
   assert.equal(ledger.getEntry(corr.id)?.reuse_count, 1);
   assert.ok(ledger.getEntry(corr.id)?.last_surfaced);
+});
+
+test('relationship context admits the current subject and authenticated global instructions, not operational baggage', t => {
+  const brain = tmpBrain();
+  t.after(() => fs.rmSync(path.dirname(path.dirname(brain)), { recursive: true, force: true }));
+  const globalText = 'Correction: going forward, keep your replies concise.';
+  const ingress = { chatId: 'chat-1', messageRef: 'message:global', userText: globalText };
+  const ledger = new RelationshipLedger(brain, { now: clock(), idSuffix: counterSuffix(),
+    validateCorrectionIngress: candidate => JSON.stringify(candidate) === JSON.stringify(ingress) });
+  const global = ledger.addEntry(base({ type: 'correction', title: 'Concise replies', statement: globalText,
+    applies_to: ['global'] }), ingress);
+  const inferredGlobal = ledger.addEntry(base({ type: 'correction', title: 'Invented global machinery rule',
+    statement: 'Always report the planning queue count.', applies_to: ['global'] }));
+  const ops = ledger.addEntry(base({ type: 'correction', title: 'Waiting memory prediction',
+    statement: 'The process is waiting for a new memory sample.', applies_to: ['machine'], triggers: ['memory', 'process'] }));
+  const personal = ledger.addEntry(base({ type: 'thread', title: 'Tacoma and Tesla',
+    statement: 'The owner likes the Tacoma and still loves Tesla FSD.', triggers: ['Tacoma', 'Tesla'] }));
+  const haircut = ledger.retrieveForContext('Same haircut. How are you?', { budgetChars: 5000 });
+  assert.deepEqual(haircut.entries.map(entry => entry.id), [global.id]);
+  const followup = ledger.retrieveForContext('Exactly.', { budgetChars: 5000, recentSubject: 'Tacoma and Tesla FSD' });
+  assert.ok(followup.entries.some(entry => entry.id === personal.id));
+  assert.ok(followup.entries.some(entry => entry.id === global.id));
+  assert.ok(!followup.entries.some(entry => entry.id === ops.id || entry.id === inferredGlobal.id));
+  assert.ok(ledger.retrieveForContext('What about memory pressure?', { budgetChars: 5000 }).entries.some(entry => entry.id === ops.id));
 });
 
 test('maxEntries eviction drops closed entries before active, and never drops protected active', (t) => {

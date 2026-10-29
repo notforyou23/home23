@@ -12,7 +12,8 @@
 import { readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
-import { composeSeedNow } from '../substrate/seed-now.js';
+import { composeSeedNow, type SeedNowTurn } from '../substrate/seed-now.js';
+import { currentTurnSubject, relevantToTurn, OPERATIONAL_CONTEXT } from '../substrate/turn-relevance.js';
 
 export interface SituationalAwarenessConfig {
   bootstrap?: {
@@ -84,6 +85,7 @@ const GENERATOR_CONTRACT = [
 export function buildBootstrapBlock(
   workspacePath: string,
   cfg: SituationalAwarenessConfig | undefined,
+  turn?: SeedNowTurn,
 ): string | null {
   const reads = cfg?.bootstrap?.reads ?? DEFAULT_BOOTSTRAP_READS;
   const configuredBytes = cfg?.bootstrap?.maxBytesPerFile;
@@ -100,7 +102,7 @@ export function buildBootstrapBlock(
   const substrateStateDir = resolveSubstrateStateDir(workspacePath, cfg);
   if (substrateStateDir) {
     try {
-      const lived = composeSeedNow(substrateStateDir);
+      const lived = composeSeedNow(substrateStateDir, undefined, turn);
       if (lived) sections.push(`— NOW@seed (lived, from your chain) —\n${lived}`);
     } catch {
       // bootstrap never blocks a turn; absence over fabrication
@@ -116,6 +118,15 @@ export function buildBootstrapBlock(
       const source = readFileSync(filePath);
       const content = source.toString('utf8');
       if (!content.trim()) continue;
+      // NOW may also be an authored workspace map. Only an explicitly marked
+      // operational cache earns this omission; a filename alone is not proof.
+      const operationalCache = /(?:^|[/\\])NOW\.md$/i.test(filename)
+        && /^(?:#.*(?:operational|runtime|machine)|\s*(?:-\s*)?(?:Planning queue|Queue depth|PM2 processes|Machine memory|Cache expires:))/mi.test(content);
+      if (turn && operationalCache
+        && !relevantToTurn(OPERATIONAL_CONTEXT, currentTurnSubject(turn.turnText, turn.recentTurns), turn.semanticEmbed)) {
+        sections.push(`Optional operational cache ${JSON.stringify(filePath)} was not selected for this conversation. Recover when relevant with read_file(${JSON.stringify({ path: filePath })}).`);
+        continue;
+      }
       const preview = sourcePreview(content, maxBytes);
       const metadata = `Source: ${JSON.stringify(filePath)}; sha256=${createHash('sha256').update(source).digest('hex')}; original bytes=${source.length}; UTF-16 characters=${content.length}.`;
       if (preview.omittedStart === preview.omittedEnd) {

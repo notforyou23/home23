@@ -47,6 +47,8 @@ test('real Work receipt reaches the existing Seed mapper without converting queu
   const rows = f.read(); assert.equal(rows.length, 1);
   assert.equal(rows[0].payload.status, 'completed'); assert.equal(rows[0].payload.declaredStatus, 'succeeded');
   assert.equal(rows[0].payload.verificationStatus, 'unknown'); assert.equal(rows[0].payload.taskOutcomeVerified, false);
+  assert.equal(rows[0].payload.outcomeCriterion, 'execution', 'a terminal receipt does not independently verify owner-value or task accomplishment');
+  assert.equal(rows[0].payload.outcomeTrialId, `work:${work.id}:${binding.attemptId}`);
   assert.equal(rows[0].payload.attemptId, binding.attemptId); assert.equal(rows[0].timestamp, AT);
   assert.match(rows[0].payload.receiptDigest, /^[a-f0-9]{64}$/);
   assert.equal(existsSync(f.otherPath), false, 'another resident does not inherit this Work');
@@ -73,6 +75,7 @@ test('late current-attempt terminal evidence reaches Seed and stale attempts/too
   } }));
   await projection.pump(64);
   const rows = f.read(); assert.equal(rows.length, 2);
+  assert.equal(rows[0].payload.outcomeTrialId, rows[1].payload.outcomeTrialId, 'later evidence enriches one attempt, not a second independent outcome');
   assert.equal(rows[1].payload.evidenceStage, 'terminal_evidence');
   assert.match(rows[1].payload.head, /provider_failed_after_dispatch/);
   assert.doesNotMatch(JSON.stringify(rows), /wrong_tool_error|stale_attempt_error/);

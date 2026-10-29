@@ -14,6 +14,7 @@ actions:
       - Sauna
   refresh_sensor:
     enabled: true
+    learned_admission: autonomous_optional
     dry_run: false
     max_per_hour: 120
     handler: refresh-sensor
@@ -62,6 +63,7 @@ actions:
       - RECENT
   write_note:
     enabled: true
+    learned_admission: autonomous_optional
     dry_run: false
     max_per_hour: 40
     handler: write-note

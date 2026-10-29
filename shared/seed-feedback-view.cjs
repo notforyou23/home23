@@ -48,7 +48,8 @@ function projectFeedbackState(checkpoint, tail) {
           : Number.isInteger(body.predictionIndex)
             ? (matches(cell.predictions[body.predictionIndex]) ? body.predictionIndex : -1)
             : cell.predictions.findIndex(matches);
-        if (index >= 0) cell.predictions[index] = { ...cell.predictions[index], resolvedAt: asOf, error: body.error };
+        if (index >= 0) cell.predictions[index] = { ...cell.predictions[index], resolvedAt: asOf, error: body.error,
+          ...(body.learningVersion === 2 && body.resolutionEvidence ? { resolutionEvidence: body.resolutionEvidence } : {}) };
       } else if (delta.field === 'intentions.append' && typeof body.description === 'string') {
         const tensionId = body.feedbackVersion === 1 && typeof body.tensionId === 'string'
           ? body.tensionId : legacyId('tension', cell.id, body.description);

@@ -207,6 +207,8 @@ export interface ToolContext {
   };
   /** Loop-owned store whose correction validator is bound to active recorded turns. */
   memoryObjectStore?: MemoryObjectStore;
+  /** Runtime-owned Seed path for bounded decision/lesson recall. Never a model argument. */
+  seedStateDir?: string;
   /** Loop-owned curated working-relationship ledger (Step 30, Piece 2). */
   relationshipLedger?: RelationshipLedger | null;
   /** Loop-owned owner-distill session boundary configuration, used for read-only recall. */

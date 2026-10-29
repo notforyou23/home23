@@ -5,8 +5,9 @@
  *   1. Writes an `execute` receipt with the INTENT before running anything
  *   2. Validates against configs/action-allowlist.yaml (enabled + rate limit
  *      + optional allowed_targets + optional dry_run)
- *   3. Loads the handler module from engine/src/cognition/actions/<name>.js
- *   4. Runs the handler with a provided context object
+ *   3. For classified optional autonomous ACTs, consults target-scoped Seed
+ *      execution learning; a deferral records not_attempted, not a failure
+ *   4. Loads and runs the allowlisted handler with the supplied context
  *   5. Writes a second `execute` receipt with the OUTCOME
  *
  * Anything not in the allow-list — or anything the handler rejects — is
@@ -23,6 +24,7 @@ const crypto = require('crypto');
 const yaml = require('js-yaml');
 const { appendJsonlDurableSync } = require('../utils/durable-write');
 const { flushActionFeedback } = require('./action-feedback');
+const { readSeedLearning, evaluateLearnedDecision, executionTargetTag, normalizeLearningDecision } = require('../../../shared/seed-learning.cjs');
 
 const ALLOWLIST_PATH_ENV = 'HOME23_ACTION_ALLOWLIST';
 const DEFAULT_ALLOWLIST_PATH = path.join(__dirname, '..', '..', '..', 'configs', 'action-allowlist.yaml');
@@ -119,6 +121,10 @@ function loadHandler(handlerName) {
  * @param {Object} [opts.memory]          Optional memory graph for promote/prune handlers
  * @param {Object} [opts.goalSystem]      Optional goal system for create/break handlers
  * @param {Function} [opts.writeReceipt]  Optional function to write to evidence-receipts.jsonl
+ * @param {string} [opts.runtimeOrigin]  Runtime-only caller classification, not ACT JSON
+ * @param {boolean} [opts.ownerRequested] Runtime owner retry; never deferred by optional learning
+ * @param {boolean} [opts.criticalRecovery] Runtime recovery; never deferred by optional learning
+ * @param {Function} [opts.readLearning] Read-only Seed projection override for isolated callers/tests
  *
  * @returns {Promise<{status: string, detail?: string, memoryDelta?: Object}>}
  */
@@ -145,12 +151,34 @@ async function executeAction(opts) {
   const actionName = String(action.action).trim();
   const target = action.target ? String(action.target).trim() : null;
   const reason = action.reason ? String(action.reason).trim() : null;
+  const executionId = crypto.randomUUID();
+  const targetTag = executionTargetTag(target);
+  // Origin and request/recovery classification come from the caller, never
+  // from fields inside generated ACT JSON.
+  const executionContext = { targetTag, origin: opts.runtimeOrigin || (opts.agendaId ? 'agenda' : 'direct'),
+    optionalAuto: opts.runtimeOrigin === 'autonomous-thought' && !opts.agendaId
+      && opts.ownerRequested !== true && opts.criticalRecovery !== true };
+  const candidateDecision = executionContext.optionalAuto && targetTag ? normalizeLearningDecision({
+    schema: 'home23.learning-decision.v1', decisionId: `action:${executionId}`, scope: `execution:${actionName}`,
+    tags: ['execution', 'action', targetTag], criterion: 'execution', sourceRefs: [`action:${executionId}`], observedAt: ts,
+  }) : null;
+  const learningDecisionEvent = candidateDecision ? {
+    event_id: crypto.randomUUID(), event_type: 'LearningDecisionObserved', session_id: `action:${executionId}`,
+    object_id: executionId, actor: 'engine-action-dispatcher', timestamp: ts, ts,
+    payload: { ...candidateDecision, learningVersion: 2 },
+  } : null;
 
   // ── Provenance: intent receipt BEFORE touching anything ──
   const intentReceipt = {
     stage: 'execute',
     phase: 'intent',
-    executionId: crypto.randomUUID(),
+    executionId,
+    learningVersion: 2,
+    outcomeCriterion: 'execution',
+    outcomeTrialId: `action:${executionId}`,
+    executionContext,
+    executionAttempted: false,
+    ...(learningDecisionEvent ? { learningDecisionEvent } : {}),
     agendaId: opts.agendaId || null,
     action: actionName,
     target,
@@ -229,6 +257,37 @@ async function executeAction(opts) {
     return { status: 'dry_run', detail: 'dry_run' };
   }
 
+  // Optional self-initiated ACTs may defer a repeated unreliable choice, but
+  // learning cannot grant authority or alter an owed/critical execution.
+  // Unknown action classifications keep the existing dispatcher behavior.
+  let learning = null;
+  if (executionContext.optionalAuto && actionCfg.learned_admission === 'autonomous_optional' && targetTag) {
+    // The original intent retains the exact source witness. A failed source
+    // append leaves it in the existing projection cursor for recovery; no
+    // optional handler runs until this strict flush has acknowledged it.
+    try {
+      const projection = flushActionFeedback(brainDir);
+      if (projection.pendingBytes > 0) throw new Error('source projection still has pending receipts');
+    } catch (error) {
+      return finaliseNotAttempted(brainDir, intentReceipt,
+        `decision witness unavailable; handler not invoked: ${error.message}`, writeReceipt);
+    }
+    let snapshot;
+    try {
+      const stateDir = path.join(workspaceDir || path.join(brainDir, '..', 'workspace'), '..', 'substrate', 'seed-01');
+      snapshot = typeof opts.readLearning === 'function' ? opts.readLearning() : readSeedLearning(stateDir);
+    } catch { snapshot = null; }
+    const decision = candidateDecision;
+    if (decision) {
+      const evaluated = evaluateLearnedDecision(snapshot, { scope: decision.scope, tags: decision.tags, requiredTags: [targetTag] });
+      learning = { ...evaluated, ...(Number.isSafeInteger(snapshot?.seq) ? { seq: snapshot.seq } : {}) };
+      if (evaluated.suppress) {
+        return finaliseNotAttempted(brainDir, intentReceipt,
+          'optional autonomous action deferred by target-specific execution learning; handler not invoked', writeReceipt, learning);
+      }
+    }
+  }
+
   // ── Load handler ──
   const handler = loadHandler(actionCfg.handler);
   if (!handler || handler._loadError) {
@@ -250,7 +309,7 @@ async function executeAction(opts) {
       sensors, memory, goalSystem, artifactRegistry, logger,
     });
   } catch (err) {
-    return finaliseReject(brainDir, intentReceipt, 'handler_threw', err.message, writeReceipt);
+    return finaliseReject(brainDir, intentReceipt, 'handler_threw', err.message, writeReceipt, true);
   }
 
   recordExecution(actionName, now);
@@ -258,9 +317,11 @@ async function executeAction(opts) {
   const outcomeReceipt = {
     ...intentReceipt,
     phase: 'outcome',
+    executionAttempted: true,
     status: result?.status || 'unknown',
     detail: result?.detail || null,
     memoryDelta: result?.memoryDelta || null,
+    ...(learning ? { learning } : {}),
     source: 'execution_outcome',
     ts: new Date().toISOString(),
   };
@@ -274,13 +335,23 @@ async function executeAction(opts) {
     action: actionName, target, status: result?.status, detail: result?.detail,
   });
 
-  return result || { status: 'unknown' };
+  return result ? { ...result, ...(learning ? { learning } : {}) } : { status: 'unknown', ...(learning ? { learning } : {}) };
 }
 
-function finaliseReject(brainDir, intentReceipt, detailCode, extra, writeReceipt) {
+async function finaliseNotAttempted(brainDir, intentReceipt, detail, writeReceipt, learning = null) {
+  const outcome = { ...intentReceipt, phase: 'outcome', status: 'not_attempted', executionAttempted: false,
+    detail, ...(learning ? { learning } : {}), ts: new Date().toISOString(), source: 'decision_admission' };
+  outcome.timestamp = outcome.ts;
+  if (typeof writeReceipt === 'function') { try { await writeReceipt(outcome); } catch { /* original source receipt remains required */ } }
+  appendActionLog(brainDir, outcome);
+  return { status: 'not_attempted', detail, ...(learning ? { learning } : {}) };
+}
+
+function finaliseReject(brainDir, intentReceipt, detailCode, extra, writeReceipt, executionAttempted = false) {
   const outcome = {
     ...intentReceipt,
     phase: 'outcome',
+    executionAttempted,
     status: 'rejected',
     detail: extra ? `${detailCode}: ${extra}` : detailCode,
     source: 'execution_outcome',

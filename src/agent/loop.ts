@@ -36,6 +36,7 @@ import { ActivityLease, MAX_TIMER_DELAY_MS, type LeaseExpiryReason } from './act
 import { executeAndFormatTool } from './tool-result.js';
 import { MemoryManager } from './memory.js';
 import { resolveSubstrateStateDir } from './session-bootstrap.js';
+import { currentTurnSubject } from '../substrate/turn-relevance.js';
 import { appendDelegationInstruction, captureDelegationSnapshot } from './delegation-handoff.js';
 import type { OwnerDistillConfig } from '../types.js';
 import { relieveToolPressure } from './context-window.js';
@@ -56,6 +57,7 @@ import { EventLedger } from './event-ledger.js';
 import { TriggerIndex } from './trigger-index.js';
 import { MemoryObjectStore } from './memory-objects.js';
 import { RelationshipLedger } from './relationship-ledger.js';
+import { flushMemorySeedProjections } from './tools/promote.js';
 import { createExecutionOutputCapture } from './execution-output.js';
 import { DurableExecutionSteering, type ExactSteerRequest, type ExecutionControlReceipt } from './execution-control.js';
 import { TurnStore } from '../chat/turn-store.js';
@@ -1458,6 +1460,7 @@ export class AgentLoop {
       fileMachineAccess: turnRuntime?.delegatedTurn || turnRuntime?.delegatedContext || turnRuntime?.delegationOrigin
         ? turnRuntime.delegatedFileAuthority?.fileMachineAccess === true : this.toolContext.fileMachineAccess === true,
       memoryObjectStore: this.memoryStore,
+      seedStateDir: resolveSubstrateStateDir(this.workspacePath, this.situationalAwareness),
       relationshipLedger: this.relationshipLedger,
       ownerConversationSessionGapMinutes: this.ownerDistill?.sessionGapMinutes,
       parentWorkId: turnRuntime?.coordinationWorkDestination?.parentWorkId
@@ -1570,6 +1573,19 @@ export class AgentLoop {
         runContext.authenticatedUserMessage = { chatId, messageRef: userMessageRef, text: userText };
       }
 
+      // Retry durable source projections independently of whether the model
+      // chooses another memory tool. Application to Seed remains a later,
+      // separately receipted step; a source append does not claim learning.
+      try {
+        const relationship = this.relationshipLedger.flushSeedTeaching();
+        const memory = await flushMemorySeedProjections(runContext);
+        if (relationship.pending || memory.pending) this.eventLedger.record('SeedTeachingProjectionPending', chatId,
+          { relationship: relationship.pending, memory: memory.pending }, { actor: 'harness' });
+      } catch (error) {
+        this.eventLedger.record('SeedTeachingProjectionDeferred', chatId,
+          { reason: error instanceof Error ? error.message : String(error) }, { actor: 'harness' });
+      }
+
       let truncated = storedHistory.filter((record): record is StoredMessage => 'role' in record);
       let didTruncate = false;
       let recoveryBundle: string | null | undefined;
@@ -1609,7 +1625,11 @@ export class AgentLoop {
       if (!turnRuntime?.delegatedContext) {
         try {
           const { buildBootstrapBlock } = await import('./session-bootstrap.js');
-          const bootstrap = buildBootstrapBlock(this.workspacePath, this.situationalAwareness);
+          const bootstrap = buildBootstrapBlock(this.workspacePath, this.situationalAwareness, {
+            turnText: userText,
+            recentTurns: truncated.slice(-5).map(message => ({ role: message.role,
+              content: typeof message.content === 'string' ? message.content : stringifyContent(message.content as ContentBlock[]) })),
+          });
           if (bootstrap) {
             workspaceBootstrap = bootstrap;
             rawSystemPrompt += `\n\n${bootstrap}`;
@@ -1700,6 +1720,7 @@ export class AgentLoop {
             const rel = this.relationshipLedger.retrieveForContext(userText, {
               budgetChars: 1400,
               excludePrivacy: this.ownerDistill?.renderSensitive === false ? ['sensitive'] : [],
+              recentSubject: currentTurnSubject(userText, recentTurns),
             });
             if (rel.text && rel.entries.length > 0) {
               relationshipCount = rel.entries.length;

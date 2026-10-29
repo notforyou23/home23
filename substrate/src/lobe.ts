@@ -16,9 +16,10 @@
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import type { ClaimFeedback, FeedbackCell, FeedbackClaim } from '../../shared/prediction-feedback.cjs';
-const { getClaimFeedback, claimsRelated } = createRequire(import.meta.url)('../../shared/prediction-feedback.cjs') as {
+const { getClaimFeedback, claimsRelated, isExternalEvidenceRef } = createRequire(import.meta.url)('../../shared/prediction-feedback.cjs') as {
   getClaimFeedback: (cell: FeedbackCell, candidate: FeedbackClaim) => ClaimFeedback;
   claimsRelated: (a: string, b: string) => boolean;
+  isExternalEvidenceRef: (ref: RealityRef, criterion?: 'world' | 'execution' | 'owner-value') => boolean;
 };
 import type {
   WorkspacePacket,
@@ -232,10 +233,42 @@ export function predictionIdFor(cellId: string, claim: string, occurrence?: stri
 /** New recruitments opt into feedback admission. Historical receipts retain
  * their original interpretation when this option is absent; new receipts
  * carry their admitted occurrence ID and metadata explicitly. */
-export interface PredictionFeedbackAdmission { version: 1; occurrence: string; }
+export interface PredictionFeedbackAdmission { version: 1; occurrence: string; learningVersion?: 2; }
 
 function stringRefs(value: unknown): string[] {
   return Array.isArray(value) ? [...new Set(value.filter((v): v is string => typeof v === 'string' && v.length > 0))].slice(0, 8) : [];
+}
+function originalMessageId(ref: RealityRef): string | undefined {
+  return ref.messageId ?? /^conversation\.(?:jtr|self|jerry):coordination\.message:(.+)$/.exec(ref.sourceRef)?.[1];
+}
+
+/** Needed outcome witnesses can live in the protected owner lane while the
+ * prediction lives elsewhere. Selection and admission share the same bounded
+ * provenance/relevance test; unrelated new contact is not an answer. */
+export function predictionOutcomeRefs(cells: Iterable<SituationCell>, pending: Prediction, asOf: string): RealityRef[] {
+  const body = Array.from(cells);
+  const allRefs = body.flatMap(cell => cell.realityRefs);
+  const claimWords = new Set(pending.claim.toLowerCase().match(/[a-z]{4,}/g) ?? []);
+  const assertion = (head: string) => head.split(/(?<=[.!?])\s+/).filter(sentence => !sentence.trim().endsWith('?')
+    && !/^\s*(?:is|are|was|were|can|could|do|does|did|has|have|will|would|why|what|when|where|how)\b/i.test(sentence)).join(' ');
+  const cited = new Set([...(pending.evidenceRefs ?? []), ...(pending.eligibility?.sourceRefs ?? [])]);
+  const questions = new Set(allRefs.filter(ref => /^conversation\.(?:self|jerry):/.test(ref.sourceRef) && ref.head?.includes('?')
+    && [ref.refId, ref.sourceRef, originalMessageId(ref)].some(id => id && cited.has(id))).map(originalMessageId).filter(Boolean));
+  // A rare named subject can support an explicitly provisional assessment of
+  // a paraphrased owner report. It must be unambiguous among retained open
+  // expectations. Sentence-initial names/pronouns are not a broad owner key.
+  const subjects = [...pending.claim.matchAll(/\b[A-Z][A-Za-z0-9_-]{2,}\b/g)]
+    .filter(match => (match.index ?? 0) > 0 && !['The', 'This', 'That', 'Owner', 'You', 'His', 'Her', 'Their'].includes(match[0]))
+    .map(match => match[0]).filter(subject => body.flatMap(cell => cell.predictions).filter(prediction => prediction.resolvedAt === undefined
+      && new RegExp(`\\b${subject}\\b`).test(prediction.claim)).length <= 1);
+  return allRefs.filter(ref =>
+    isExternalEvidenceRef(ref, pending.outcomeCriterion ?? 'world')
+    && Date.parse(ref.observedAt) >= Date.parse(pending.createdAt) && Date.parse(ref.observedAt) <= Date.parse(asOf)
+    && assertion(ref.head ?? '').trim().length > 0
+    && (new Set((assertion(ref.head ?? '').toLowerCase().match(/[a-z]{4,}/g) ?? []).filter(word => claimWords.has(word))).size >= 2
+      || (/^conversation\.jtr:/.test(ref.sourceRef) && ref.replyToMessageId && questions.has(ref.replyToMessageId))
+      || (/^conversation\.jtr:/.test(ref.sourceRef) && subjects.some(subject => new RegExp(`\\b${subject}\\b`, 'i').test(assertion(ref.head ?? ''))))))
+    .sort((a, b) => b.observedAt.localeCompare(a.observedAt)).slice(0, 8);
 }
 
 /** Build a minimal witness from the actual admitted cell, never fields offered
@@ -248,7 +281,7 @@ function revisionEvidence(cell: SituationCell, candidate: FeedbackClaim, asOf: s
   const ref = cell.realityRefs.filter(r => wanted.has(r.refId))
     .sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt))[0];
   if (ref === undefined) return undefined;
-  return { version: 1, admittedAt: asOf,
+  return { version: 1, admissionVersion: 2, admittedAt: asOf,
     failedPredictionIds: feedback.failedPredictions.filter(p => p.resolvedAt === feedback.latestFailureAt)
       .map(p => p.predictionId).filter((id): id is string => typeof id === 'string'),
     refs: [{ ...ref }] };
@@ -274,6 +307,8 @@ export function applyLobeDeltas(
   /** Live admission checks a proposed owner witness against the configured
    * cell ceiling. Receipt replay does not repeat environment-dependent gates. */
   ownerClaimBudget?: (candidate: SituationCell) => string | null,
+  /** Trusted accepted-receipt replay only; never a model admission option. */
+  recordedReceiptReplay = false,
 ): { staged: Map<string, SituationCell>; applied: ProposedStateDelta[]; failed: RejectedProposal[] } {
   const staged = new Map<string, SituationCell>();
   const applied: ProposedStateDelta[] = [];
@@ -362,7 +397,8 @@ export function applyLobeDeltas(
     } else if (d.field === 'predictions.append') {
       const body = d.delta as { claim?: unknown; confidence?: unknown; horizon?: unknown;
         evidenceRefs?: unknown; revisesPredictionIds?: unknown; revisionReason?: unknown;
-        predictionId?: unknown; feedbackVersion?: unknown; revisionEvidence?: RevisionEvidence };
+        predictionId?: unknown; feedbackVersion?: unknown; revisionEvidence?: RevisionEvidence;
+        learningVersion?: unknown; eligibility?: Prediction['eligibility']; outcomeCriterion?: unknown };
       if (!boundedString(body?.claim) || !boundedConfidence(body?.confidence) || !boundedString(body?.horizon)) {
         failed.push({ kind: 'stateDelta', reason: 'predictions.append malformed' });
         continue;
@@ -371,6 +407,8 @@ export function applyLobeDeltas(
         evidenceRefs: stringRefs(body.evidenceRefs),
         revisesPredictionIds: stringRefs(body.revisesPredictionIds),
         ...(boundedString(body.revisionReason) ? { revisionReason: body.revisionReason.trim() } : {}),
+        ...(['world', 'execution', 'owner-value'].includes(String(body.outcomeCriterion)) ? { outcomeCriterion: body.outcomeCriterion as Prediction['outcomeCriterion'] }
+          : feedbackAdmission?.learningVersion === 2 || body.learningVersion === 2 ? { outcomeCriterion: 'world' as const } : {}),
       };
       if (feedbackAdmission !== undefined) {
         const feedback = getClaimFeedback(cell, { claim: body.claim, createdAt: asOf, ...metadata });
@@ -398,11 +436,24 @@ export function applyLobeDeltas(
         horizon: body.horizon, createdAt: asOf,
         ...(isNewReceipt ? metadata : {}),
         ...(evidence !== undefined ? { revisionEvidence: evidence } : {}),
+        ...(feedbackAdmission?.learningVersion === 2 ? { learningVersion: 2 as const,
+          outcomeCriterion: metadata.outcomeCriterion ?? 'world', eligibility: { version: 1 as const, cellId: cell.id,
+            createdAt: asOf, context: Array.from(cell.continuousState), sourceRefs: stringRefs(body.evidenceRefs) } }
+          : feedbackAdmission === undefined && body.learningVersion === 2 ? { learningVersion: 2 as const,
+            outcomeCriterion: metadata.outcomeCriterion ?? 'world', eligibility: body.eligibility } : {}),
       };
-      cell.predictions = [...cell.predictions.slice(-(MAX_PREDICTIONS_PER_CELL - 1)), prediction];
+      const predictions = [...cell.predictions.slice(-(MAX_PREDICTIONS_PER_CELL - 1)), prediction];
+      const predictionBudgetRefusal = ownerClaimBudget?.({ ...cell, predictions });
+      if (predictionBudgetRefusal) { failed.push({ kind: 'stateDelta', reason: predictionBudgetRefusal }); continue; }
+      cell.predictions = predictions;
       applied.push(isNewReceipt ? { ...d, delta: { claim: body.claim, confidence: body.confidence,
         horizon: body.horizon, ...metadata, feedbackVersion: 1, predictionId,
         ...(evidence !== undefined ? { revisionEvidence: evidence } : {}) } } : d);
+      if (prediction.learningVersion === 2) {
+        const admitted = applied[applied.length - 1];
+        if (admitted) admitted.delta = { ...(admitted.delta as Record<string, unknown>), learningVersion: 2,
+          eligibility: prediction.eligibility, outcomeCriterion: prediction.outcomeCriterion };
+      }
     } else if (d.field === 'intentions.append') {
       const body = d.delta as { description?: unknown; magnitude?: unknown; direction?: unknown; tensionId?: unknown; feedbackVersion?: unknown };
       const magnitude = body?.magnitude;
@@ -444,7 +495,8 @@ export function applyLobeDeltas(
         ? { ...t, open: false, closedAt: asOf, resolutionReason: body.reason as string } : t);
       applied.push(d);
     } else if (d.field === 'predictions.resolve') {
-      const body = d.delta as { predictionId?: unknown; error?: unknown; feedbackVersion?: unknown; predictionCreatedAt?: unknown; predictionIndex?: unknown };
+      const body = d.delta as { predictionId?: unknown; error?: unknown; feedbackVersion?: unknown; predictionCreatedAt?: unknown; predictionIndex?: unknown;
+        evidenceRefs?: unknown; resolutionReason?: unknown; resolutionEvidence?: Prediction['resolutionEvidence']; learningVersion?: unknown };
       const idx = cell.predictions.findIndex((p, i) => p.predictionId === body?.predictionId
         && (feedbackAdmission === undefined || p.resolvedAt === undefined)
         && (feedbackAdmission !== undefined || body.feedbackVersion !== 1 || (i === body.predictionIndex && p.createdAt === body.predictionCreatedAt)));
@@ -468,7 +520,7 @@ export function applyLobeDeltas(
       const pending = cell.predictions[idx] as Prediction;
       const dueAt = parseHorizon(pending.horizon, pending.createdAt);
       const errorValue = typeof err === 'number' && Number.isFinite(err) ? Math.max(0, Math.min(1, err)) : null;
-      if (dueAt !== null && Date.parse(asOf) < Date.parse(dueAt) && (errorValue === null || errorValue < RESOLUTION_WRONG_MIN)) {
+      if (!recordedReceiptReplay && dueAt !== null && Date.parse(asOf) < Date.parse(dueAt) && (errorValue === null || errorValue < RESOLUTION_WRONG_MIN)) {
         failed.push({
           kind: 'stateDelta',
           reason: `premature resolution refused: “${pending.claim.slice(0, 60)}” runs to ${dueAt} — only falsification (error >= ${RESOLUTION_WRONG_MIN}) may close a claim early`,
@@ -486,15 +538,32 @@ export function applyLobeDeltas(
         const blocked = resolutionGuard?.(String(body?.predictionId)) ?? null;
         if (blocked !== null) { failed.push({ kind: 'stateDelta', reason: blocked }); continue; }
       }
+      let resolutionEvidence: Prediction['resolutionEvidence'];
+      if (feedbackAdmission?.learningVersion === 2) {
+        const criterion = pending.outcomeCriterion ?? 'world';
+        const ids = stringRefs(body.evidenceRefs);
+        const available = predictionOutcomeRefs(cells.values(), pending, asOf);
+        const refs = ids.map(id => available.find(ref => ref.refId === id || originalMessageId(ref) === id));
+        if (!ids.length || refs.some(ref => ref === undefined) || !boundedString(body.resolutionReason) || body.resolutionReason.trim().length < 15) {
+          failed.push({ kind: 'stateDelta', reason: 'prediction resolution requires collected, claim-relevant outcome evidence matching its criterion and a resolutionReason; a model score or unrelated owner contact is insufficient' });
+          continue;
+        }
+        resolutionEvidence = { version: 1, refs: refs as RealityRef[], criterion, reason: body.resolutionReason.trim(), verificationStatus: 'assessed' };
+      } else if (feedbackAdmission === undefined && body.learningVersion === 2) resolutionEvidence = body.resolutionEvidence;
       const resolved: Prediction = {
         ...(cell.predictions[idx] as Prediction),
         resolvedAt: asOf,
         error: typeof err === 'number' && Number.isFinite(err) ? Math.max(0, Math.min(1, err)) : undefined,
+        ...(resolutionEvidence ? { resolutionEvidence } : {}),
       };
-      cell.predictions = cell.predictions.map((p, i) => (i === idx ? resolved : p));
+      const predictions = cell.predictions.map((p, i) => (i === idx ? resolved : p));
+      const resolutionBudgetRefusal = ownerClaimBudget?.({ ...cell, predictions });
+      if (resolutionBudgetRefusal) { failed.push({ kind: 'stateDelta', reason: resolutionBudgetRefusal }); continue; }
+      cell.predictions = predictions;
       applied.push(feedbackAdmission !== undefined ? { ...d, delta: {
         predictionId: pending.predictionId, error: resolved.error,
         feedbackVersion: 1, predictionCreatedAt: pending.createdAt, predictionIndex: idx,
+        ...(resolutionEvidence ? { learningVersion: 2, resolutionEvidence } : {}),
       } } : d);
     } else if (d.field === 'uncertainty.adjust') {
       const value = (d.delta as { value?: number }).value ?? 0;
@@ -611,7 +680,7 @@ export function buildLobePrompt(packet: WorkspacePacket): string {
     ] : []),
     ...(packet.occasion !== undefined ? [
       `ENDOGENOUS OCCASION — this recruitment was not caused by a contact or a cadence. The individual's OWN obligation dynamics crossed threshold${packet.occasion.overdue ? ' (overdue: the crossing was due earlier, materialized now)' : ''}: the commitment to resolve prediction ${packet.occasion.predictionId} — "${packet.occasion.claim}" — passed its horizon (${packet.occasion.horizon}) unanswered, and unresolved obligation reached q=${packet.occasion.q.toFixed(2)} at ${packet.occasion.crossedAt} (press ${packet.occasion.crossings + 1} of 3). Deliberate NOW, against the packet's actual evidence:`,
-      `  1. If the evidence answers the prediction, RESOLVE it: predictions.resolve {predictionId: "${packet.occasion.predictionId}", error: 0..1}. This discharges the obligation.`,
+      `  1. If collected evidence answers this prediction, RESOLVE it: predictions.resolve {predictionId: "${packet.occasion.predictionId}", error: 0..1, evidenceRefs: [actual refId], resolutionReason: "what the evidence establishes"}. This is a receipted assessment, not independent verification.`,
       '  2. If the evidence is insufficient and the question genuinely matters, you may propose ONE action: {"candidateActions": [{"actionId": "reach", "description": "<a concrete, bounded question or finding for jtr — his time is a real cost>", "capability": "operator.reach"}]}. Proposing does not warrant it — the Seed\'s own law decides.',
       '  3. If neither is warranted, silence is legitimate: return your best typed updates and let the obligation press again later, or resolve with an honest error estimate if the horizon has truly answered it.',
       '  Never manufacture a resolution to quiet the pressure. The obligation exists because the individual predicted; only reality or the operator settles it.',
@@ -648,8 +717,10 @@ export function buildLobePrompt(packet: WorkspacePacket): string {
     '',
     `stateDeltas fields allowed: ${LOBE_DELTA_ALLOWLIST.join(', ')}.`,
     'estimates.append delta: {claim, confidence, evidenceRefs, revisesPredictionIds?, revisionReason?}. predictions.append',
-    'delta: {claim, confidence, horizon, evidenceRefs?, revisesPredictionIds?, revisionReason?}. intentions.append delta: {description,',
-    'magnitude (0..1), direction}. intentions.resolve delta: {tensionId, reason}. predictions.resolve delta: {predictionId, error}.',
+    'delta: {claim, confidence, horizon, evidenceRefs?, revisesPredictionIds?, revisionReason?, outcomeCriterion?: "world"|"execution"|"owner-value"}. intentions.append delta: {description,',
+    'magnitude (0..1), direction}. intentions.resolve delta: {tensionId, reason}. predictions.resolve delta: {predictionId, error, evidenceRefs, resolutionReason}.',
+    'Resolution requires named collected outcome refs that address this claim and its criterion. An unrelated owner message, an owner question, silence, your own score, or task execution alone cannot prove accomplishment or owner value.',
+    'Your interpretation of evidence is an outcome assessment. It remains provisional; it is not an independently verified world fact. The runtime captures eligibility at prediction time and does not trust a model-supplied learning vector.',
     'uncertainty.adjust delta: {value in [-0.2, 0.2]}.',
     'Claims are bounded at 500 chars. You are proposing typed state changes to a',
     'governed process. Operational estimates and owner claims use the same typed admission path.',

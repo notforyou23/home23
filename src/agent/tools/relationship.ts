@@ -13,23 +13,46 @@
  */
 
 import type { ToolContext, ToolDefinition, ToolResult } from '../types.js';
+import { learningLessonId, readSeedLearning } from '../../../shared/seed-learning.cjs';
+import { resolveSubstrateStateDir } from '../session-bootstrap.js';
 import type {
   AuthenticatedCorrectionIngress,
   RelationshipEntryType,
   RelationshipLedger,
   RelationshipEntry,
+  RelationshipLearningFeedback,
 } from '../relationship-ledger.js';
 
 // The orchestrator adds `relationshipLedger` to ToolContext; we read it through
 // a widened view so this file never has to edit types.ts.
 type RelationshipToolContext = ToolContext & {
   relationshipLedger?: RelationshipLedger | null;
+  seedStateDir?: string;
 };
 
 const ENTRY_TYPES: RelationshipEntryType[] = [
-  'thread', 'promise', 'correction', 'decision', 'preference',
+  'thread', 'promise', 'correction', 'attenuation', 'decision', 'preference',
   'aversion', 'shared_reference', 'miss_repair', 'why_it_mattered',
 ];
+
+const LEARNING_INPUT_SCHEMA = {
+  type: 'object', description: 'Scoped conduct feedback. Never infer owner approval from silence or your own account.',
+  properties: {
+    schema: { type: 'string', enum: ['home23.learning-feedback.v1'] },
+    decisionId: { type: 'string', description: 'Required actual prior decision identity from relationship_recall learning=true. Feedback cannot invent a broader decision scope.' },
+    standing: { type: 'boolean', description: 'A linked preference can persist as a standing instruction. This never removes the actual decision witness requirement.' },
+    cellId: { type: 'string', description: 'Existing target situation; runtime validates it against the decision.' },
+    scope: { type: 'string', maxLength: 120, description: 'Exact decision scope, not all owner contact.' },
+    direction: { type: 'string', enum: ['attenuate', 'reinforce'] },
+    basis: { type: 'string', enum: ['owner-feedback'] },
+    tags: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 512 } },
+    excludes: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 512 } },
+    evidenceRefs: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 512 }, description: 'Original evidence references. Runtime adds the authenticated current owner message.' },
+    supersedes: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 512 }, description: 'Prior lesson identities explicitly revised by this feedback.' },
+    corroborates: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 512 }, description: 'Prior lessons supported by this same-scope observed result, not unrelated successes.' },
+  },
+  required: ['schema', 'scope', 'direction', 'basis', 'evidenceRefs'], additionalProperties: false,
+};
 
 const LEDGER_UNAVAILABLE =
   'Relationship ledger unavailable for this agent — cannot record or recall relationship context.';
@@ -60,6 +83,8 @@ function summarize(entry: RelationshipEntry): string {
     `Recorded relationship ${entry.type}: "${entry.title}" (${entry.id})`,
     `actor=${entry.actor} status=${entry.status} confidence=${entry.confidence.toFixed(2)} privacy=${entry.privacy_class}`,
     `statement: ${entry.statement}${why}`,
+    ...(entry.seed_projection ? [`source projection=${entry.seed_projection.status}; Seed application=not yet confirmed${entry.seed_projection.error ? ` (${entry.seed_projection.error})` : ''}`] : []),
+    ...(entry.learning && entry.seed_projection ? [`learning receipt identity: ${learningLessonId(entry.seed_projection.event.event_id, entry.learning.scope)} (application not yet confirmed)`] : []),
   ].join('\n');
 }
 
@@ -69,13 +94,14 @@ export const relationshipNoteTool: ToolDefinition = {
 - an unfinished thread you should pick back up (thread)
 - a commitment either side owes (promise)
 - a consequential correction jtr made (correction)
+- exact owner feedback that a particular behavior was noise (attenuation)
 - a decision reached together (decision)
 - a recurring preference or aversion (preference / aversion)
 - a shared reference / running joke / touchstone (shared_reference)
 - a prior miss and how it was repaired (miss_repair)
 - why something mattered, not just what happened (why_it_mattered)
 
-Corrections made in a real jtr turn are recorded with jtr authority automatically.`,
+For conduct learning, record the owner's exact current words and learning metadata identifying the actual prior decision, narrow scope, and exclusions. Use attenuation to reduce a behavior; correction with direction reinforce can retain explicit positive feedback. Facts and ordinary preferences do not become conduct teaching. Only authenticated owner feedback earns owner authority.`,
   input_schema: {
     type: 'object',
     properties: {
@@ -86,6 +112,7 @@ Corrections made in a real jtr turn are recorded with jtr authority automaticall
       applies_to: { type: 'string', description: 'Domain/topic tags (comma-separated or array)' },
       triggers: { type: 'string', description: 'Keyword cues that should resurface this (comma-separated or array)' },
       privacy: { type: 'string', enum: ['internal', 'personal', 'sensitive'], description: 'Sensitivity (default internal)' },
+      learning: LEARNING_INPUT_SCHEMA,
     },
     required: ['type', 'title', 'statement'],
     additionalProperties: false,
@@ -100,7 +127,7 @@ Corrections made in a real jtr turn are recorded with jtr authority automaticall
         return { content: `Unknown relationship type "${String(input.type)}". Expected one of: ${ENTRY_TYPES.join(', ')}`, is_error: true };
       }
 
-      const ingress = type === 'correction' ? correctionIngress(ctx) : undefined;
+      const ingress = type === 'correction' || type === 'attenuation' ? correctionIngress(ctx) : undefined;
       const entry = ledger.addEntry({
         type,
         title: String(input.title || ''),
@@ -110,6 +137,7 @@ Corrections made in a real jtr turn are recorded with jtr authority automaticall
         triggers: parseList(input.triggers),
         privacy_class: (input.privacy as 'internal' | 'personal' | 'sensitive') || 'internal',
         provenance: { session_refs: [ctx.chatId], generation_method: 'agent_note' },
+        ...(input.learning !== undefined ? { learning: input.learning as RelationshipLearningFeedback } : {}),
       }, ingress);
 
       return { content: summarize(entry) };
@@ -121,18 +149,33 @@ Corrections made in a real jtr turn are recorded with jtr authority automaticall
 
 export const relationshipRecallTool: ToolDefinition = {
   name: 'relationship_recall',
-  description: 'Deliberately pull active relationship context with jtr (threads, promises, corrections, decisions, preferences, shared references). Returns a compact list — use it to reconnect before responding.',
+  description: 'Deliberately pull active relationship context with jtr. Set learning=true to inspect recent actual decision identities and active learned lessons before recording feedback or superseding a lesson. Reads only this resident’s configured Seed; never guesses a decision identity.',
   input_schema: {
     type: 'object',
     properties: {
       query: { type: 'string', description: 'Optional keyword filter (matches title, statement, triggers, tags)' },
       type: { type: 'string', enum: ENTRY_TYPES, description: 'Optional: restrict to one entry type' },
       limit: { type: 'number', description: 'Max entries to return (default 10)' },
+      learning: { type: 'boolean', description: 'Inspect recent Seed decision identities and active lesson identities, instead of relationship prose.' },
+      scope: { type: 'string', description: 'Optional exact decision scope for learning inspection.' },
     },
     additionalProperties: false,
   },
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     try {
+      if (input.learning === true) {
+        const stateDir = (ctx as RelationshipToolContext).seedStateDir
+          ?? resolveSubstrateStateDir(ctx.personalWorkspacePath ?? ctx.workspacePath);
+        if (!stateDir) return { content: 'Seed learning state unavailable for this resident; do not invent a decision identity.', is_error: true };
+        const snapshot = readSeedLearning(stateDir);
+        if (snapshot.available === false) return { content: 'Seed learning projection unavailable or incomplete; no current decision or lesson is claimed.', is_error: true };
+        const limit = Math.max(1, Math.min(20, Math.floor(Number(input.limit) || 10)));
+        const scope = typeof input.scope === 'string' ? input.scope.trim() : '';
+        const decisions = snapshot.decisions.filter(decision => !scope || decision.scope === scope).slice(-limit).reverse();
+        const lessons = snapshot.lessons.filter(lesson => lesson.active !== false && (!scope || lesson.scope === scope)).slice(-limit).reverse();
+        return { content: JSON.stringify({ seedSequence: snapshot.seq ?? null, decisions, lessons,
+          note: 'Decision identities are actual runtime witnesses. Choose the matching prior choice; missing or ambiguous identity is not permission to guess. Source projection and Seed application are separate stages.' }, null, 2) };
+      }
       const ledger = ledgerOf(ctx);
       if (!ledger) return { content: LEDGER_UNAVAILABLE, is_error: true };
 
@@ -185,6 +228,8 @@ export const relationshipUpdateTool: ToolDefinition = {
       statement: { type: 'string', description: 'New statement (required for supersede)' },
       why: { type: 'string', description: 'Why the change (for supersede)' },
       reason: { type: 'string', description: 'Reason for removal (for remove)' },
+      type: { type: 'string', enum: ENTRY_TYPES, description: 'Optional replacement type when superseding.' },
+      learning: LEARNING_INPUT_SCHEMA,
     },
     required: ['id', 'action'],
     additionalProperties: false,
@@ -204,9 +249,17 @@ export const relationshipUpdateTool: ToolDefinition = {
       if (action === 'supersede') {
         const statement = String(input.statement || '');
         if (!statement) return { content: 'supersede requires a new statement.', is_error: true };
-        const ingress = existing.type === 'correction' ? correctionIngress(ctx) : undefined;
+        const replacementType = input.type === undefined ? existing.type : String(input.type) as RelationshipEntryType;
+        if (!ENTRY_TYPES.includes(replacementType)) return { content: 'Unknown replacement relationship type.', is_error: true };
+        const proposedLearning = input.learning === undefined ? existing.learning : input.learning as RelationshipLearningFeedback;
+        const learning = proposedLearning && existing.learning && existing.seed_projection
+          ? { ...proposedLearning, supersedes: [...new Set([
+            ...(proposedLearning.supersedes ?? []),
+            learningLessonId(existing.seed_projection.event.event_id, existing.learning.scope),
+          ])] } : proposedLearning;
+        const ingress = replacementType === 'correction' || replacementType === 'attenuation' ? correctionIngress(ctx) : undefined;
         const created = ledger.supersede(id, {
-          type: existing.type,
+          type: replacementType,
           title: existing.title,
           statement,
           why: input.why ? String(input.why) : existing.why,
@@ -214,8 +267,13 @@ export const relationshipUpdateTool: ToolDefinition = {
           triggers: existing.triggers,
           privacy_class: existing.privacy_class,
           provenance: { session_refs: [ctx.chatId], generation_method: 'agent_note' },
+          ...(learning ? { learning } : {}),
         }, ingress);
-        return { content: `Superseded ${id} with ${created.id} (actor=${created.actor}).\nnew statement: ${created.statement}` };
+        return { content: `Superseded ${id} with ${created.id} (actor=${created.actor}).\n${summarize(created)}` };
+      }
+
+      if (existing.learning && (action === 'resolve' || action === 'remove')) {
+        return { content: 'This entry carries authenticated conduct learning. Supersede it with the owner’s exact new feedback to revise its active effect; a lifecycle edit cannot silently erase that learning.', is_error: true };
       }
 
       if (action === 'resolve') {

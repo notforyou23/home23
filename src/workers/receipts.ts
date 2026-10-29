@@ -68,6 +68,11 @@ export function writeWorkerReceipt(projectRoot: string, runPath: string, receipt
   const semanticText = `${receipt.summary}${receipt.rootCause ? `. ${receipt.rootCause}` : ''}`;
   const brainRecord = {
     schema: 'home23.worker-run-memory.v1',
+    // This prospective DTO opts into scoped execution learning. Older
+    // unversioned stream records keep their original replay interpretation.
+    learningVersion: 2,
+    outcomeCriterion: 'execution',
+    outcomeTrialId: `worker:${receipt.runId}`,
     ...buildWriterSemanticStamp({ vector: embedTextSync(semanticText), text: semanticText }),
     runId: receipt.runId,
     worker: receipt.worker,

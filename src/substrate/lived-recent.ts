@@ -100,7 +100,9 @@ export function composeLivedRecent(stateDir: string, budget = DEFAULT_BUDGET): s
     for (const p of cell.predictions ?? []) {
       if (p.resolvedAt === undefined || typeof p.error !== 'number') continue;
       if (windowOpensAt !== undefined && p.resolvedAt < windowOpensAt) continue;
-      const verdict = p.error <= 0.3 ? 'reality agreed' : p.error >= 0.7 ? 'reality said no' : 'partly right';
+      const verdict = p.resolutionEvidence?.verificationStatus === 'assessed'
+        ? `provisional model assessment: ${p.error <= 0.3 ? 'supported' : p.error >= 0.7 ? 'failed' : 'partly supported'}; not independently verified`
+        : `historical recorded grade: ${p.error <= 0.3 ? 'supported' : p.error >= 0.7 ? 'failed' : 'partly supported'}; independent verification unavailable`;
       answered.push(`- predicted "${p.claim}" — ${verdict} (error ${p.error.toFixed(2)})`);
     }
   }

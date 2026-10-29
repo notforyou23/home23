@@ -57,7 +57,8 @@ test('the biography composes in first person with receipts underneath', (t) => {
   assert.ok(bio !== null);
   assert.ok(bio.includes('I was born 2026-08-07 as seed_test_0001; my chain holds 900 lived events.'), 'birth + age');
   assert.ok(bio.includes('My body: world.home23 (gen 800)'), 'the body with wear');
-  assert.ok(bio.includes('2 prediction(s) judged by reality — 1 right, 1 wrong, 0 partial; 1 still open'), 'honest track record');
+  assert.ok(bio.includes('2 historical recorded verdict(s) — 1 recorded right, 1 wrong, 0 partial; 1 still open'), 'historical counts remain separate from verification');
+  assert.ok(bio.includes('independent verification of these historical grades is unavailable'));
   assert.ok(bio.includes('2 of my conclusions have retained support'), 'earned facts counted through the real gates');
   assert.ok(bio.includes('worker.systems (1.40)'), 'earned trust');
   assert.ok(bio.includes('jtr has ruled on my growth 1 time(s); last: declined my dissolve — "feed them, dont shrink them"'), "the operator's hand, his words");

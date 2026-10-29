@@ -4,12 +4,13 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { appendJsonlDurableSync, writeFileDurableSync } = require('../utils/durable-write');
+const { appendSeedProjectionOnce } = require('../../../shared/seed-source-projection.cjs');
 
 function actionEvent(entry, receiptLine) {
   const status = entry.phase === 'intent' ? 'intent'
     : entry.status === 'success' ? 'completed'
     : entry.status === 'dry_run' ? 'simulated'
-    : ['failed', 'rejected', 'blocked', 'cancelled', 'queued', 'dispatched'].includes(entry.status) ? entry.status : 'unknown';
+    : ['failed', 'rejected', 'blocked', 'cancelled', 'queued', 'dispatched', 'not_attempted'].includes(entry.status) ? entry.status : 'unknown';
   const scope = status === 'completed' ? 'handler completed; task outcome unverified'
     : status === 'simulated' ? 'simulation only; handler not invoked' : status;
   const detail = String(entry.detail || entry.reason || '').slice(0, 1200);
@@ -24,6 +25,12 @@ function actionEvent(entry, receiptLine) {
       schema: 'home23.execution-outcome.v1', executionKind: 'action', executionId: entry.executionId,
       phase: entry.phase, status, declaredStatus: entry.status || 'intent',
       verificationStatus: 'unknown', taskOutcomeVerified: false,
+      // Replay the original receipt's learning law. Projecting an old action
+      // must not retroactively opt its outcome into a newer learning rule.
+      ...(entry.learningVersion === 2 ? { learningVersion: 2, outcomeCriterion: 'execution',
+        outcomeTrialId: entry.outcomeTrialId || `action:${entry.executionId}`,
+        ...(typeof entry.executionAttempted === 'boolean' ? { executionAttempted: entry.executionAttempted } : {}),
+        executionContext: entry.executionContext || null } : {}),
       action: String(entry.action).slice(0, 160), target: String(entry.target || '').slice(0, 500) || null,
       agendaId: entry.agendaId || null,
       head: `Action ${String(entry.action).slice(0, 160)}: ${scope}${detail ? `. ${detail}` : ''}`,
@@ -40,8 +47,11 @@ function flushActionFeedback(brainDir, options = {}) {
   if (!fs.existsSync(source)) return { projected: 0 };
   const cursorPath = path.join(brainDir, 'action-feedback-cursor.json');
   let offset = 0;
+  let pendingDecisionEventId = null;
   if (fs.existsSync(cursorPath)) {
-    offset = JSON.parse(fs.readFileSync(cursorPath, 'utf8')).offset;
+    const saved = JSON.parse(fs.readFileSync(cursorPath, 'utf8'));
+    offset = saved.offset;
+    pendingDecisionEventId = typeof saved.pendingDecisionEventId === 'string' ? saved.pendingDecisionEventId : null;
     if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('invalid action feedback cursor');
   }
   const size = fs.statSync(source).size;
@@ -61,6 +71,19 @@ function flushActionFeedback(brainDir, options = {}) {
       // Older receipts have no stable invocation ID. Preserve them as history,
       // rather than manufacturing new execution events on upgrade.
       if (entry.executionId && ['intent', 'outcome'].includes(entry.phase)) {
+        if (entry.phase === 'intent' && entry.learningVersion === 2 && entry.learningDecisionEvent) {
+          const event = entry.learningDecisionEvent;
+          const firstAttempt = pendingDecisionEventId !== event.event_id;
+          if (firstAttempt) {
+            // Mark before append, without advancing the source offset. Only
+            // a crash/failed append retries the exact streaming identity scan.
+            pendingDecisionEventId = event.event_id;
+            writeFileDurableSync(cursorPath, JSON.stringify({ schema: 'home23.action-feedback-cursor.v1',
+              offset: offset + start, pendingDecisionEventId }));
+          }
+          const appendDecision = options.appendDecision || appendSeedProjectionOnce;
+          appendDecision(path.join(brainDir, 'event-ledger.jsonl'), event, { newUnique: firstAttempt });
+        }
         const envelope = actionEvent(entry, line);
         const append = options.append || appendJsonlDurableSync;
         append(path.join(brainDir, 'event-ledger.jsonl'), envelope);
@@ -69,6 +92,7 @@ function flushActionFeedback(brainDir, options = {}) {
     }
     start = end + 1; examined++;
     writeFileDurableSync(cursorPath, JSON.stringify({ schema: 'home23.action-feedback-cursor.v1', offset: offset + start }));
+    pendingDecisionEventId = null;
   }
   if (!start && read === bytes.length && offset + read < size) throw new Error('action receipt exceeds bounded projection window');
   return { projected, pendingBytes: size - offset - start };

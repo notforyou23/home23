@@ -458,6 +458,12 @@ async function routeThoughtAction(opts) {
         action: parsed.payload,
         role, cycle, brainDir, workspaceDir, agentName,
         sensors, memory, goalSystem, artifactRegistry, logger, writeReceipt,
+        runtimeOrigin: opts.runtimeActionContext?.origin === 'background-cognitive-cycle'
+          && opts.runtimeActionContext?.optional === true ? 'autonomous-thought' : 'unclassified',
+        agendaId: opts.agendaId,
+        ownerRequested: opts.ownerRequested === true,
+        criticalRecovery: opts.criticalRecovery === true,
+        readLearning: opts.readLearning,
       });
       return {
         action: 'act',
@@ -466,6 +472,7 @@ async function routeThoughtAction(opts) {
         routed: `dispatcher:${result.status}`,
         detail: result.detail || null,
         memoryDelta: result.memoryDelta || null,
+        ...(result.learning ? { learning: result.learning } : {}),
       };
     }
 

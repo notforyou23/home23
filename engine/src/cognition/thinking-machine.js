@@ -583,15 +583,20 @@ class ThinkingMachine {
             const attentionIntent = this.ownerOutreachPolicy?.buildIntent(outreach, { candidate, memory: this.memory, deliveryId });
             const attentionDecision = this.ownerOutreachPolicy?.preview(attentionIntent)
               || { allow: false, status: 'unavailable', reason: 'attention_policy_unavailable' };
-            if (!attentionDecision.allow) {
+            if (!attentionDecision.allow && ['same_reserved_delivery', 'same_message_and_evidence'].includes(attentionDecision.reason)) {
               result = { status: 'suppressed', detail: attentionDecision.reason, attentionDecision };
             } else {
               if (!this.sendOwnerOutreach) throw new Error('owner outreach transport unavailable');
+              // This callback is the existing durable outbox, not the final
+              // transport. It retains denied choices too and commits their
+              // canonical source witnesses before admission/delivery.
               result = await this.sendOwnerOutreach({
                 text: outreach.text, reason: outreach.reason, evidenceRefs: outreach.evidenceRefs, deliveryId,
               }, attentionIntent);
               if (!['committed', 'queued', 'pending', 'suppressed'].includes(result?.status)) throw new Error('owner outreach returned no durable delivery state');
-              result = { ...result, attentionDecision: result.attentionDecision || attentionDecision };
+              result = { ...result,
+                ...(attentionDecision.status === 'unavailable' ? { detail: attentionDecision.reason } : {}),
+                attentionDecision: result.attentionDecision || attentionDecision };
             }
           } catch (error) {
             result = { status: 'failed', detail: String(error.message || error).slice(0, 500) };

@@ -169,7 +169,9 @@ test('RUNNER: prediction obligation queues outreach transactionally; actual owne
         stateDeltas: [{
           cellId: packet.occasion !== undefined ? packet.activeCellIds[0] ?? 'world.home23' : 'world.home23',
           field: 'predictions.resolve',
-          delta: { predictionId: packet.occasion.predictionId, error: 0.2 },
+          delta: { predictionId: packet.occasion.predictionId, error: 0.2,
+            evidenceRefs: packet.eventRefs.filter(ref => ref.sourceRef.startsWith('conversation.jtr:') && ref.head?.includes('test world')).map(ref => ref.refId),
+            resolutionReason: 'The collected owner reply answers whether the test world did answer the question.' },
           authority: 'propose',
         }],
       };
@@ -274,7 +276,7 @@ test('RUNNER: prediction obligation queues outreach transactionally; actual owne
   assert.equal(t3.occasions, 1, 'press 3 materialized');
   const afterAnswer = readChain(stateDir);
   const dischargeRec = afterAnswer.find((r) => r.category === 'concern' && Array.isArray(r.payload?.['discharged']) && (r.payload?.['discharged'] as unknown[]).length > 0);
-  assert.ok(dischargeRec !== undefined, 'once jtr has spoken, the confirmation lands and the commitment discharges');
+  assert.ok(dischargeRec !== undefined, 'once jtr answers this claim with collected evidence, the commitment discharges');
   runner.stop();
 
   // The chain shows the whole causal ancestry: prediction → formation →

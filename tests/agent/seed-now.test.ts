@@ -7,7 +7,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { composeSeedNow } from '../../src/substrate/seed-now.js';
@@ -124,4 +124,36 @@ test('a born Seed is derived from the workspace sibling without a substrate sett
   });
   assert.ok(context.surfacesLoaded.includes('RECENT@seed'), 'derived Seed reaches lived surfaces as well as bootstrap');
   assert.match(context.block, /sauna tonight/);
+});
+
+test('current personal contact selects its own carried situation instead of unrelated operational predictions', t => {
+  const dir = makeSeedDir(t);
+  writeFixture(dir);
+  const file = join(dir, 'checkpoints', 'ckpt_aaaa0001_t.json');
+  const checkpoint = JSON.parse(readFileSync(file, 'utf8'));
+  checkpoint.cells.push({ id: 'world.home', estimates: [], intentions: [], predictions: [
+    { claim: 'The disk will remain constrained while the planning queue holds 9000 items', confidence: 0.8, horizon: '72h', createdAt: '2026-08-09T10:00:00.000Z' },
+  ], realityRefs: [
+    { sourceRef: 'conversation.jtr:truck', observedAt: '2026-08-09T15:00:00.000Z', head: 'I leased an blue Atlas pickup' },
+  ] });
+  writeFileSync(file, JSON.stringify(checkpoint));
+  const now = composeSeedNow(dir, undefined, { turnText: 'How do you like my new Atlas?', semanticEmbed: () => null });
+  assert.match(now!, /blue Atlas pickup/);
+  assert.doesNotMatch(now!, /disk will remain|planning queue|HRV will recover/);
+});
+
+test('personal bootstrap retains relevant Seed contact and a recovery pointer without the machine queue dump', t => {
+  const seed = makeSeedDir(t);
+  writeFixture(seed);
+  const workspace = makeSeedDir(t);
+  writeFileSync(join(workspace, 'NOW.md'), '# Runtime cache\nPlanning queue: 9000\nMachine memory: 5%.');
+  writeFileSync(join(workspace, 'PLAYBOOK.md'), 'Read complete sources before acting.');
+  const config = { bootstrap: { reads: ['NOW.md', 'PLAYBOOK.md'] }, substrate: { stateDir: seed } };
+  const personal = buildBootstrapBlock(workspace, config, { turnText: 'Should I do the sauna tonight?', semanticEmbed: () => null });
+  assert.match(personal!, /should I do the sauna tonight/);
+  assert.doesNotMatch(personal!, /Planning queue: 9000/);
+  assert.match(personal!, /NOW.md.*read_file/);
+  assert.match(personal!, /Read complete sources/);
+  const operational = buildBootstrapBlock(workspace, config, { turnText: 'Show the current system memory and planning queue', semanticEmbed: () => null });
+  assert.match(operational!, /Planning queue: 9000/);
 });

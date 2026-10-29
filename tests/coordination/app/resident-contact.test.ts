@@ -9,6 +9,10 @@ import { createWorkService } from '../../../src/coordination/work/service.js';
 import { createConversationShipper } from '../../../substrate/src/conversation-shipper.js';
 import { SeedRunner } from '../../../substrate/src/runner.js';
 import { probeShipperFlow } from '../../../substrate/bin/organ-probes.js';
+import { SqliteMessagingRepository, SqliteBotConversationBindingAdapter } from '../../../src/coordination/channels/index.js';
+import { createMessageService } from '../../../src/coordination/messages/index.js';
+import { M11MessageProvenanceAuthority } from '../../../src/coordination/work/index.js';
+import { ownerContext } from '../messaging/test-fixture.js';
 import { AT, BOT_ID, CHANNEL_ID, MESSAGE_ID, OWNER_ID, M11TestDatabase, createFixtureIdGenerator, fixtureId, manifestInput } from '../work/test-fixture.js';
 
 function fixture(t: { after(fn: () => void): void }) {
@@ -23,10 +27,13 @@ function fixture(t: { after(fn: () => void): void }) {
   const coordinationSource = join(directory, 'jerry.jsonl');
   const streamPath = join(root, 'instances', 'jerry', 'substrate', 'conversation-stream.jsonl');
   const work = createWorkService({ database, generateId: createFixtureIdGenerator(), now: () => new Date(AT) });
-  function admit(key = 'owner-request-idempotency') {
+  function admit(key = 'owner-request-idempotency', originMessageId = MESSAGE_ID) {
     return work.create({ principalId: OWNER_ID, targetPrincipalId: BOT_ID, channelId: CHANNEL_ID,
-      originMessageId: MESSAGE_ID, roundId: null, kind: 'resident_turn', idempotencyKey: key,
-      manifest: manifestInput(), maxAutomaticOffers: 1,
+      originMessageId, roundId: null, kind: 'resident_turn', idempotencyKey: key,
+      manifest: manifestInput({ messageIds: [originMessageId], watermarks: {
+        channelSequence: (database.raw.prepare('SELECT channel_sequence AS sequence FROM messages WHERE id=?').get(originMessageId) as { sequence: number }).sequence,
+        eventSequence: 0,
+      } }), maxAutomaticOffers: 1,
       requestId: fixtureId('request', 20), correlationId: fixtureId('correlation', 20) });
   }
   const project = () => createResidentContactProjection(database, directory, ['jerry', 'forrest']);
@@ -115,6 +122,30 @@ test('replaying an older contact without channel kind preserves its original byt
   writeFileSync(join(f.directory, 'cursor.json'), '{"eventSequence":0}');
   f.project().pump();
   assert.equal(readFileSync(f.coordinationSource, 'utf8'), original);
+});
+
+test('new contact preserves its canonical reply target while old projections remain byte identical', async t => {
+  const f = fixture(t);
+  const replyId = fixtureId('message', 42);
+  const messages = createMessageService({ repository: new SqliteMessagingRepository(f.database, {
+    botConversationBinding: new SqliteBotConversationBindingAdapter(),
+    messageProvenanceAuthorization: new M11MessageProvenanceAuthority(),
+  }),
+    participantDirectory: { listVisibleBots: async () => [], resolveAlias: async () => null,
+      getBotByResidentBinding: async () => null }, now: () => new Date(AT) });
+  await messages.sendMessage({ context: ownerContext(42),
+    channelId: CHANNEL_ID, messageId: replyId, authorPrincipalId: OWNER_ID, idempotencyKey: 'canonical-reply-fixture',
+    kind: 'text', text: 'Yes.', mentions: [], clientMessageId: null, replyToMessageId: MESSAGE_ID,
+    tombstonesMessageId: null, provenance: { roundId: null, workId: null } });
+  f.admit('reply-work-idempotency', replyId); f.project().pump();
+  const contact = JSON.parse(readFileSync(f.coordinationSource, 'utf8'));
+  assert.equal(contact.replyToMessageId, MESSAGE_ID);
+  const { replyToMessageId: _replyTo, ...oldContact } = contact;
+  const oldBytes = JSON.stringify(oldContact) + '\n';
+  writeFileSync(f.coordinationSource, oldBytes);
+  writeFileSync(join(f.directory, 'cursor.json'), '{"eventSequence":0}');
+  f.project().pump();
+  assert.equal(readFileSync(f.coordinationSource, 'utf8'), oldBytes, 'new metadata never rewrites a committed old projection');
 });
 
 test('scheduled instructions are not exported as owner contact', t => {

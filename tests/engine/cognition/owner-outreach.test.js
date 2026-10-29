@@ -11,6 +11,9 @@ const { Orchestrator } = require('../../../engine/src/core/orchestrator');
 const { MotorCortex } = require('../../../engine/src/cognition/motor-cortex');
 const { outreachEvidenceRefs, normalizeOwnerOutreach } = require('../../../engine/src/cognition/owner-outreach');
 const { OwnerOutreachOutbox } = require('../../../engine/src/cognition/owner-outreach-outbox');
+const { OwnerOutreachPolicy } = require('../../../engine/src/cognition/owner-outreach-policy');
+const { EventLedger } = require('../../../engine/src/core/event-ledger');
+const { readSeedLearning } = require('../../../shared/seed-learning.cjs');
 const { attestMemoryAuthority } = require('../../../shared/memory-authority-attestation.cjs');
 const logger = { info() {}, warn() {}, error() {} };
 
@@ -45,6 +48,7 @@ async function fixture(t) {
   };
   const graph = { nodes: new Map([['guitar', { id: 'guitar', concept: 'A guitar lesson treats silence as an invitation.', tag: 'historical' }]]), edges: new Map(), clusters: new Map() };
   const messages = []; const events = []; const prompts = []; let actions = 0;
+  const durableEvents = new EventLedger(brainDir);
   let thoughtText = 'The guitar lesson and your melody suggest that silence can make room for another voice, though I do not know how it feels to you.';
   let verdict = {
     verdict: 'keep', confidence: 0.9, gaps: [], rationale: 'A grounded question for the owner, not an operational obligation.', agendaCandidates: [],
@@ -60,7 +64,9 @@ async function fixture(t) {
       emitThought: thought => messages.push(thought),
       config: {
         getLivedState: () => 'FAILED HYPOTHESIS: watcher silence predicted contact tension; repeated error. Do not assert it as fact.',
-        eventLedger: { record: (eventType, sessionId, payload) => events.push({ eventType, payload }) },
+        eventLedger: { record: (eventType, sessionId, payload) => {
+          events.push({ eventType, payload }); durableEvents.record(eventType, sessionId, payload);
+        } },
         motorCortex: new MotorCortex({ logger, canAct: () => true, executeAgendaItem: async () => { actions++; } }),
         agendaStore: { add: () => assert.fail('A question must not be converted into a task') },
       },
@@ -190,6 +196,7 @@ test('actual factory refuses unavailable telemetry and corrupt durable judgment 
   await f.makeMachine()._runCycle(f.candidate);
   assert.equal(f.requests.length, 0);
   assert.equal(f.messages.at(-1).ownerOutreach.detail, 'attention_state_unavailable');
+  assert.equal(f.messages.at(-1).ownerOutreach.status, 'pending', 'unavailable durable judgment remains recoverable instead of losing the candidate');
 });
 
 test('queued and failed delivery remain honest and a missing resident port cannot fall back to another home', async t => {
@@ -271,4 +278,88 @@ test('invalid content is refused and pending retry rotates past permanently reje
   accepting = true;
   await box.retry(); await box.retry();
   assert.equal(fs.readdirSync(path.join(dir, 'owner-outreach-pending')).length, 0);
+});
+
+test('production decision, authenticated owner feedback, Seed restore and later send form a causal loop', async t => {
+  // The writer's embedder is intentionally unavailable in this isolated test;
+  // source language/provenance must work without contacting a live provider.
+  const previousEndpoint = process.env.SEED_EMBED_ENDPOINT;
+  process.env.SEED_EMBED_ENDPOINT = 'http://127.0.0.1:1/unavailable';
+  t.after(() => { if (previousEndpoint === undefined) delete process.env.SEED_EMBED_ENDPOINT; else process.env.SEED_EMBED_ENDPOINT = previousEndpoint; });
+  const { tsImport } = await import('tsx/esm/api');
+  const [{ SeedProcess }, { EventLedgerTailAdapter }, { RelationshipLedger }, { relationshipNoteTool }] = await Promise.all([
+    tsImport('../../../substrate/src/seed.ts', import.meta.url), tsImport('../../../substrate/src/adapters/event-ledger-tail.ts', import.meta.url),
+    tsImport('../../../src/agent/relationship-ledger.ts', import.meta.url), tsImport('../../../src/agent/tools/relationship.ts', import.meta.url),
+  ]);
+  const f = await fixture(t);
+  const seedDir = path.join(f.brainDir, 'seed');
+  let seed = SeedProcess.initialize(seedDir);
+  f.orchestrator.ownerOutreachPolicy = new OwnerOutreachPolicy({ brainDir: f.brainDir, readLearning: () => readSeedLearning(seedDir) });
+  const { appendSeedProjectionOnce } = require('../../../shared/seed-source-projection.cjs');
+  f.orchestrator.ownerOutreachOutbox = new OwnerOutreachOutbox(f.brainDir, request => f.orchestrator.deliverOwnerOutreach(request), {
+    policy: f.orchestrator.ownerOutreachPolicy, appendDecision: (file, event, options) => {
+      appendSeedProjectionOnce(file, event, options);
+      throw new Error('fixture loss after source append, before projection acknowledgement');
+    },
+  });
+  const observation = { channelId: 'machine.memory', flag: 'COLLECTED', sourceRef: 'mem:initial-mild',
+    producedAt: '2026-10-29T18:00:00Z', payload: { pressureFreePct: 19 } };
+  f.setVerdict({ ...f.getVerdict(), ownerOutreach: { category: 'insight', text: 'Mild memory pressure appeared; no execution impact has been observed.',
+    reason: 'A new structured pressure condition is available.', evidenceRefs: [observation.sourceRef],
+    attention: { kind: 'problem', consequence: 'This is the first mild memory condition in this episode.', evidenceRefs: [observation.sourceRef] } } });
+  await f.makeMachine()._runCycle({ signal: 'observation-delta', score: 0.8, nodeIds: [], observation });
+  assert.equal(f.requests.length, 0, 'a failed decision projection holds the otherwise eligible message');
+  assert.equal(f.messages.at(-1).ownerOutreach.status, 'pending');
+  f.orchestrator.ownerOutreachOutbox = new OwnerOutreachOutbox(f.brainDir, request => f.orchestrator.deliverOwnerOutreach(request),
+    { policy: f.orchestrator.ownerOutreachPolicy });
+  await f.orchestrator.retryCognitionFeedback();
+  assert.equal(f.requests.length, 1, 'recovery commits the retained witness before delivering the original candidate');
+  const choices = fs.readFileSync(path.join(f.brainDir, 'event-ledger.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+    .filter(event => event.event_type === 'LearningDecisionObserved');
+  assert.equal(choices.length, 1, 'the production selector retains its actual eligibility witness');
+  const adapter = new EventLedgerTailAdapter({ sourcePath: path.join(f.brainDir, 'event-ledger.jsonl'), cursorDir: path.join(f.brainDir, 'cursor'), fromEnd: false });
+  for (const event of adapter.pullSync()) { seed.transition(event); adapter.commit(event.endOffset); }
+  const statement = 'These routine mild memory notices are noise. Send less of them unless there is an actual impact.';
+  const ownerMessage = { chatId: 'owner-fixture', messageRef: 'message:owner-feedback', userText: statement };
+  const ledger = new RelationshipLedger(f.brainDir, { agent: 'fixture',
+    validateCorrectionIngress: ingress => JSON.stringify(ingress) === JSON.stringify(ownerMessage) });
+  const result = await relationshipNoteTool.execute({ type: 'attenuation', title: 'Routine mild memory notices', statement,
+    learning: { schema: 'home23.learning-feedback.v1', decisionId: choices[0].payload.decisionId,
+      scope: choices[0].payload.scope, direction: 'attenuate', basis: 'owner-feedback',
+      tags: ['unsolicited', 'routine', 'mild'], excludes: ['critical'], evidenceRefs: ['message:owner-feedback'] } },
+  { chatId: 'owner-fixture', authenticatedUserMessage: { chatId: 'owner-fixture', messageRef: 'message:owner-feedback', text: statement }, relationshipLedger: ledger });
+  assert.equal(result.is_error, undefined, result.content);
+  const teachings = new EventLedgerTailAdapter({ sourcePath: path.join(f.brainDir, 'relationship-ledger.events.jsonl'),
+    sourceType: 'relationship-ledger', cursorDir: path.join(f.brainDir, 'teaching-cursor'), fromEnd: false });
+  for (const event of teachings.pullSync()) { seed.transition(event); teachings.commit(event.endOffset); }
+  seed.checkpoint(); seed = SeedProcess.restore(seedDir);
+  const snapshot = readSeedLearning(seedDir);
+  assert.equal(snapshot.available, true);
+  assert.equal(snapshot.lessons.length, 1, 'an authenticated source message became durable Seed development');
+  const sourceHistory = fs.readFileSync(path.join(seedDir, 'seed-ledger.jsonl'), 'utf8');
+  const candidate = { channelId: 'machine.memory', sourceRef: 'mem:new-mild-episode', payload: { pressureFreePct: 18 } };
+  const delivered = [];
+  for (const [name, learning] of [['learned', snapshot], ['ablated', { ...snapshot, lessons: [] }]]) {
+    const brainDir = fs.mkdtempSync(path.join(os.tmpdir(), `home23-learned-choice-${name}-`));
+    t.after(() => fs.rmSync(brainDir, { recursive: true, force: true }));
+    const policy = new OwnerOutreachPolicy({ brainDir, readLearning: () => learning });
+    const text = 'A modest headroom change appeared in a later episode.';
+    const outreach = { text, reason: 'A first mild condition in a new episode.', evidenceRefs: [candidate.sourceRef],
+      attention: { kind: 'problem', consequence: 'A mild condition with no observed execution impact.', evidenceRefs: [candidate.sourceRef] } };
+    const attentionIntent = policy.buildIntent(outreach, { candidate: { observation: candidate }, memory: {}, deliveryId: 'outreach:held-out' });
+    const box = new OwnerOutreachOutbox(brainDir, async request => { delivered.push({ name, request }); return { status: 'committed' }; }, { policy });
+    const receipt = await box.send({ ...outreach, attention: undefined, deliveryId: 'outreach:held-out' }, attentionIntent);
+    assert.equal(receipt.status, name === 'learned' ? 'suppressed' : 'committed');
+  }
+  assert.deepEqual(delivered.map(item => item.name), ['ablated']);
+  f.orchestrator.ownerOutreachPolicy = new OwnerOutreachPolicy({ brainDir: f.brainDir, readLearning: () => snapshot });
+  f.orchestrator.conversationSalience.getRecentContext = () => '[Owner Jason]: The export job I just started matters tonight. Tell me if available memory changes whether I can finish it.';
+  f.setVerdict({ ...f.getVerdict(), ownerOutreach: { category: 'question', text: 'This mild pressure reading connects to the work you just discussed. Does that change what you want to do next?',
+    reason: 'The owner conversation supplies a new grounded consequence, beyond a repeated measurement.',
+    evidenceRefs: [candidate.sourceRef, 'message:real-contact'], attention: { kind: 'connection',
+      consequence: 'A new owner-described decision is the point of this contact.', evidenceRefs: [candidate.sourceRef, 'message:real-contact'] } } });
+  await f.makeMachine()._runCycle({ signal: 'observation-delta', score: 0.8, nodeIds: [], observation: candidate });
+  assert.equal(f.requests.length, 2, 'the same learned preference does not suppress a grounded machine/owner connection through the production factory');
+  assert.equal(f.messages.at(-1).ownerOutreach.attentionDecision.reason, 'new_grounded_contextual_consequence');
+  assert.equal(fs.readFileSync(path.join(seedDir, 'seed-ledger.jsonl'), 'utf8'), sourceHistory, 'ablation probes never alter the continuing Seed or its source history');
 });

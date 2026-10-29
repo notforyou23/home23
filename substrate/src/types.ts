@@ -60,6 +60,8 @@ export interface RealityRef {
    * Legacy direct-message turns use their deterministic source event identity. */
   messageId?: string;
   principal?: 'owner';
+  replyToMessageId?: string;
+  teachingAuthority?: 'owner' | 'agent';
   /** Typed canonical execution receipt, not narration or proof of task success. */
   executionOutcome?: {
     schema: 'home23.execution-outcome.v1';
@@ -68,6 +70,7 @@ export interface RealityRef {
     verificationStatus: 'unknown' | 'verified';
     receiptEventId: string;
     evidenceRefs: string[];
+    taskOutcomeVerified?: boolean;
   };
 }
 
@@ -75,6 +78,7 @@ export interface RealityRef {
  * This witnesses admission, not the truth of the new claim. */
 export interface RevisionEvidence {
   version: 1;
+  admissionVersion?: 2;
   admittedAt: string;
   failedPredictionIds: string[];
   refs: RealityRef[];
@@ -122,6 +126,11 @@ export interface Prediction {
   revisesPredictionIds?: string[];
   revisionReason?: string;
   revisionEvidence?: RevisionEvidence;
+  /** Runtime-captured prediction-time eligibility; never supplied by a lobe. */
+  learningVersion?: 2;
+  eligibility?: { version: 1; cellId: string; createdAt: string; context: number[]; sourceRefs: string[] };
+  outcomeCriterion?: 'world' | 'execution' | 'owner-value';
+  resolutionEvidence?: { version: 1; refs: RealityRef[]; reason: string; criterion: 'world' | 'execution' | 'owner-value'; verificationStatus: 'assessed' };
 }
 
 export interface CellDispositions {

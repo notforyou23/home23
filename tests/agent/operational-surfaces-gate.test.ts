@@ -8,10 +8,11 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { EventLedger } from '../../src/agent/event-ledger.js';
 import {
   AGENCY_MEANING_ANCHORS,
   WORKER_MEANING_ANCHORS,
@@ -83,6 +84,7 @@ async function assemble(
   opts: {
     contextSearch?: typeof emptySearch;
     semanticEmbed?: (t: string) => number[] | null;
+    ledger?: EventLedger;
   } = {},
 ) {
   return assembleContext(
@@ -98,13 +100,13 @@ async function assemble(
       brainSearchTimeoutMs: 1000,
       contextSearch: opts.contextSearch ?? emptySearch,
       semanticEmbed: opts.semanticEmbed ?? (() => null),
-    },
+    }, opts.ledger,
   );
 }
 
 // ─── Unit: shouldLoadOperationalSurface ─────────────────────────────────────
 
-test('operational gate: first turn always admits (wake-up)', () => {
+test('operational gate: a first-turn greeting does not inherit operational context', () => {
   assert.equal(shouldLoadOperationalSurface({
     isFirstTurn: true,
     degraded: false,
@@ -115,7 +117,7 @@ test('operational gate: first turn always admits (wake-up)', () => {
     label: 'AGENCY',
     anchors: AGENCY_MEANING_ANCHORS,
     semanticEmbed: () => null,
-  }), true);
+  }), false);
 });
 
 test('operational gate: a mid-session social turn with no cues stays silent', () => {
@@ -132,7 +134,7 @@ test('operational gate: a mid-session social turn with no cues stays silent', ()
   }), false);
 });
 
-test('operational gate: brain cues or trigger matches admit without meaning', () => {
+test('operational gate: unrelated brain cues and triggers cannot admit operational context', () => {
   assert.equal(shouldLoadOperationalSurface({
     isFirstTurn: false,
     degraded: false,
@@ -142,7 +144,7 @@ test('operational gate: brain cues or trigger matches admit without meaning', ()
     matchText: 'ok',
     label: 'AGENCY',
     anchors: AGENCY_MEANING_ANCHORS,
-  }), true);
+  }), false);
   assert.equal(shouldLoadOperationalSurface({
     isFirstTurn: false,
     degraded: false,
@@ -152,7 +154,7 @@ test('operational gate: brain cues or trigger matches admit without meaning', ()
     matchText: 'ok',
     label: 'WORKERS',
     anchors: WORKER_MEANING_ANCHORS,
-  }), true);
+  }), false);
 });
 
 test('operational gate: substring meaning earns mid-session admission (degraded embedder)', () => {
@@ -218,14 +220,13 @@ test('operational gate: semantic meaning fires without a keyword substring', () 
 
 // ─── Integration: assembleContext ───────────────────────────────────────────
 
-test('assembleContext: first turn still wakes with AGENCY + WORKERS', async () => {
+test('assembleContext: first-turn personal contact keeps AGENCY and WORKERS out', async () => {
   const { root, workspacePath } = agentInstall();
   try {
     const result = await assemble(workspacePath, 'Evening. What\'s good', []);
-    assert.ok(result.surfacesLoaded.includes('AGENCY'), `surfaces=${result.surfacesLoaded.join(',')}`);
-    assert.ok(result.surfacesLoaded.includes('WORKERS'), `surfaces=${result.surfacesLoaded.join(',')}`);
-    assert.match(result.block, /Chronesthesia II Applied Unit 3/);
-    assert.match(result.block, /systems/);
+    assert.ok(!result.surfacesLoaded.includes('AGENCY'), `surfaces=${result.surfacesLoaded.join(',')}`);
+    assert.ok(!result.surfacesLoaded.includes('WORKERS'), `surfaces=${result.surfacesLoaded.join(',')}`);
+    assert.doesNotMatch(result.block, /Chronesthesia II Applied Unit 3/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -299,7 +300,7 @@ test('assembleContext: mid-session pursuit question loads AGENCY by meaning', as
   }
 });
 
-test('assembleContext: mid-session brain cues still admit the operational spine', async () => {
+test('assembleContext: unrelated brain cues do not manufacture an operational subject', async () => {
   const { root, workspacePath } = agentInstall();
   try {
     const result = await assemble(
@@ -308,9 +309,33 @@ test('assembleContext: mid-session brain cues still admit the operational spine'
       [{ role: 'user', content: 'earlier' }],
       { contextSearch: cueSearch },
     );
-    assert.ok(result.surfacesLoaded.includes('AGENCY'));
-    assert.ok(result.surfacesLoaded.includes('WORKERS'));
+    assert.ok(!result.surfacesLoaded.includes('AGENCY'));
+    assert.ok(!result.surfacesLoaded.includes('WORKERS'));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('optional context waits for durable decision evidence and recovers after an append failure', async () => {
+  const { root, workspacePath } = agentInstall();
+  try {
+    const brain = path.join(workspacePath, '..', 'brain');
+    const file = path.join(brain, 'event-ledger.jsonl');
+    mkdirSync(file);
+    const ledger = new EventLedger(brain);
+    const semanticEmbed = () => Array.from({ length: 16 }, (_, i) => i === 0 ? 1 : 0);
+    const failed = await assemble(workspacePath, 'Which directions are drawing your attention?', [], { semanticEmbed, ledger });
+    assert.ok(!failed.surfacesLoaded.includes('AGENCY'));
+    assert.ok(!failed.surfacesLoaded.includes('WORKERS'));
+    assert.equal(failed.events.filter(event => event.event_type === 'LearningDecisionProjectionDeferred').length, 2);
+    const direct = await assemble(workspacePath, 'Show the agency pursuit', [], { semanticEmbed, ledger });
+    assert.ok(direct.surfacesLoaded.includes('AGENCY'), 'logging failure does not withhold directly requested information');
+    rmSync(file, { recursive: true });
+    const recovered = await assemble(workspacePath, 'Which directions are drawing your attention?', [], { semanticEmbed, ledger });
+    assert.ok(recovered.surfacesLoaded.includes('AGENCY'));
+    const decisions = readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+      .filter(event => event.event_type === 'LearningDecisionObserved');
+    assert.equal(decisions.length, 2);
+    assert.equal(new Set(decisions.map(event => event.event_id)).size, 2, 'finish logging does not duplicate durable decisions');
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

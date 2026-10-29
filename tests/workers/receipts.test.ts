@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { writeWorkerReceipt } from '../../src/workers/receipts.js';
 import type { WorkerRunReceipt } from '../../src/workers/types.js';
+import { EventLedgerTailAdapter } from '../../substrate/src/adapters/event-ledger-tail.js';
 import {
   LEGACY_EMBEDDING_PROFILE,
   LEGACY_EMBEDDING_RECIPE_ID,
@@ -30,8 +31,9 @@ function receipt(runId = 'wr_20260502_143000_systems_ab12'): WorkerRunReceipt {
   };
 }
 
-test('writeWorkerReceipt writes run receipt, owner workspace markdown, and brain jsonl', () => {
+test('writeWorkerReceipt writes run receipt, owner workspace markdown, and brain jsonl', t => {
   const projectRoot = mkdtempSync(path.join(tmpdir(), 'home23-receipts-'));
+  t.after(() => rmSync(projectRoot, { recursive: true, force: true }));
   const runPath = path.join(projectRoot, 'instances', 'workers', 'systems', 'runs', receipt().runId);
   const written = writeWorkerReceipt(projectRoot, runPath, receipt());
 
@@ -58,11 +60,35 @@ test('writeWorkerReceipt writes run receipt, owner workspace markdown, and brain
   assert.equal(parsed.runId, receipt().runId);
   assert.equal(parsed.summary, 'Scoped process check passed.');
   assert.equal(parsed.transcriptIncluded, false);
+  assert.equal(parsed.learningVersion, 2);
+  assert.equal(parsed.outcomeCriterion, 'execution');
+  assert.equal(parsed.outcomeTrialId, `worker:${receipt().runId}`);
   assert.equal(parsed.semantic_recipe_id, LEGACY_EMBEDDING_RECIPE_ID);
   assert.equal(parsed.semantic_encoder, LEGACY_EMBEDDING_PROFILE);
   const newest = JSON.parse(lines[lines.length - 1]!);
   assert.equal(newest.runId, 'wr_20260502_150000_systems_cd34');
+  assert.notEqual(newest.outcomeTrialId, parsed.outcomeTrialId, 'different invocations remain different trials');
   assert.equal(newest.semantic_recipe_id, LEGACY_EMBEDDING_RECIPE_ID);
   if (newest.semantic_vector) assert.equal(newest.semantic_absence, undefined);
   else assert.equal(newest.semantic_absence, 'unavailable');
+});
+
+test('only new worker-run DTOs opt into scoped execution learning; historical source bytes retain legacy meaning', t => {
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'home23-receipts-version-'));
+  t.after(() => rmSync(projectRoot, { recursive: true, force: true }));
+  const written = writeWorkerReceipt(projectRoot, path.join(projectRoot, 'run'), receipt());
+  const oldLine = JSON.stringify({ schema: 'home23.worker-run-memory.v1', ...receipt('wr_historical'), transcriptIncluded: false });
+  const newLine = readFileSync(written.ownerBrainPath, 'utf8');
+  writeFileSync(written.ownerBrainPath, `${oldLine}\n${newLine}`);
+  const source = readFileSync(written.ownerBrainPath, 'utf8');
+  const adapter = new EventLedgerTailAdapter({ sourcePath: written.ownerBrainPath, sourceType: 'worker-runs',
+    cursorDir: path.join(projectRoot, 'cursor'), fromEnd: false });
+  const events = adapter.pullSync();
+  assert.equal(events.length, 2);
+  assert.equal(events[0]!.category, 'consequence', 'legacy reported-verifier interpretation stays available to historical replay');
+  assert.equal(events[0]!.payload.learningVersion, undefined);
+  assert.equal(events[1]!.payload.learningVersion, 2);
+  assert.equal(events[1]!.payload.outcomeCriterion, 'execution', 'worker declaration cannot become independent accomplishment verification');
+  assert.equal(events[1]!.payload.outcomeTrialId, `worker:${receipt().runId}`);
+  assert.equal(readFileSync(written.ownerBrainPath, 'utf8'), source);
 });

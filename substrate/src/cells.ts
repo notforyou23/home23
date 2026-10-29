@@ -119,6 +119,17 @@ export function routeEvent(
   // Owner contact is a principal channel, not a learned telemetry affinity.
   // Once granted, neither house traffic nor machine corrections may enter it.
   if (ownerId && isOwnerConversationEvent(event)) return ownerId;
+  // New authenticated teaching may target the retained original decision,
+  // rather than broadly attenuating all corrections or the owner's voice.
+  const learning = event.payload['learning'] as { decisionId?: unknown; cellId?: unknown } | undefined;
+  if (event.category === 'correction' && event.payload['actor'] === 'jtr'
+      && event.sourceAuthority === 'home23.event-ledger' && event.sourceRef.startsWith('relationship.') && learning) {
+    const target = typeof learning.decisionId === 'string'
+      ? Object.entries(development ?? {}).find(([, value]) => value.experience?.decisions.some(d => d.decisionId === learning.decisionId)
+        || value.experience?.lessons.some(lesson => lesson.eligibility?.decisionId === learning.decisionId))?.[0]
+      : learning.cellId;
+    if (typeof target === 'string' && target !== ownerId && cellIds.includes(target)) return target;
+  }
   if (ownerId && event.category === 'correction') return table.byCategory['correction'] ?? table.peripheryId;
   if (event.targetCellId && cellIds.includes(event.targetCellId) && event.targetCellId !== ownerId) {
     return event.targetCellId;
@@ -246,6 +257,7 @@ export function applyMetabolicTransition(
     ? { schema: 'home23.execution-outcome.v1' as const, executionKind: outcome['executionKind'],
         status: outcome['status'], verificationStatus: outcome['verificationStatus'] === 'verified' ? 'verified' as const : 'unknown' as const,
         receiptEventId: outcome['receiptEventId'],
+        ...(outcome['learningVersion'] === 2 ? { taskOutcomeVerified: outcome['taskOutcomeVerified'] === true } : {}),
         evidenceRefs: outcome['evidenceRefs'].filter((ref): ref is string => typeof ref === 'string' && ref.length > 0).slice(0, 12),
       } : undefined;
   cell.realityRefs.push({
@@ -255,6 +267,10 @@ export function applyMetabolicTransition(
     observedAt: event.producedAt,
     confidence: event.category === 'correction' ? 1 : 0.8,
     flag: 'COLLECTED',
+    ...(event.payload['learningVersion'] === 2 && event.sourceRef.startsWith('relationship.')
+      ? { teachingAuthority: event.payload['actor'] === 'jtr' ? 'owner' as const : 'agent' as const } : {}),
+    ...(typeof event.payload['replyToMessageId'] === 'string' && isOwnerConversationEvent(event)
+      ? { replyToMessageId: event.payload['replyToMessageId'] } : {}),
     ...(typeof head === 'string' && head.length > 0 ? { head } : {}),
     ...(ownerContact ? {
       principal: 'owner' as const,

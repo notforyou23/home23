@@ -123,7 +123,7 @@ test("judged predictions narrate reality's answer", (t) => {
   writeFixture(dir, { fresh: true });
   const block = composeSeedSituation(dir, { turnText: 'was that already answered?', embed: fakeEmbed });
   assert.ok(block !== null);
-  assert.ok(block.includes('You predicted "already answered" — reality agreed (error 0.10)'), 'resolution narrated with the verdict');
+  assert.ok(block.includes('You predicted "already answered" — historical recorded grade: supported (error 0.10; independent verification unavailable)'), 'the historical score is retained without inventing verification');
 });
 
 test('decided proposals are not pending; undecided ones are', (t) => {

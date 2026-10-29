@@ -10,6 +10,9 @@ export interface FeedbackClaim {
   revisionEvidence?: RevisionEvidence;
   claimKind?: 'owner.said' | 'owner.wants' | 'owner.decided';
   ownerEvidence?: FeedbackRef[];
+  outcomeCriterion?: 'world' | 'execution' | 'owner-value';
+  resolutionEvidence?: { version: 1; verificationStatus?: 'assessed' | 'verified';
+    criterion: 'world' | 'execution' | 'owner-value'; reason: string; refs: FeedbackRef[] };
 }
 export interface FeedbackRef {
   refId?: string;
@@ -20,6 +23,7 @@ export interface FeedbackRef {
   head?: string;
   messageId?: string;
   principal?: 'owner';
+  teachingAuthority?: 'owner' | 'agent';
   executionOutcome?: {
     schema: 'home23.execution-outcome.v1';
     executionKind: 'action' | 'work';
@@ -27,10 +31,12 @@ export interface FeedbackRef {
     verificationStatus: 'unknown' | 'verified';
     receiptEventId: string;
     evidenceRefs: string[];
+    taskOutcomeVerified?: boolean;
   };
 }
 export interface RevisionEvidence {
   version: 1;
+  admissionVersion?: 2;
   admittedAt: string;
   failedPredictionIds: string[];
   refs: FeedbackRef[];
@@ -51,4 +57,4 @@ export interface ClaimFeedback {
 export function claimsRelated(a: string | FeedbackClaim, b: string | FeedbackClaim): boolean;
 export function getClaimFeedback(cell: FeedbackCell, candidate: string | FeedbackClaim): ClaimFeedback;
 
-export function isExternalEvidenceRef(ref: FeedbackRef): boolean;
+export function isExternalEvidenceRef(ref: FeedbackRef, criterion?: 'world' | 'execution' | 'owner-value'): boolean;

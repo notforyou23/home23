@@ -121,6 +121,7 @@ export function createConversationShipper(options: ConversationShipperOptions) {
             sourceRef: turn.sourceRef ?? `legacy.conversation:${source.key}`,
             voice: turn.voice ?? (turn.role === 'user' ? 'jtr' : 'self'),
             ...(turn.actor ? { actor: turn.actor } : {}),
+            ...(turn.replyToMessageId ? { replyToMessageId: turn.replyToMessageId } : {}),
             ...buildWriterSemanticStamp({ vector, text: turn.text }) };
           mkdirSync(dirname(options.streamPath), { recursive: true, mode: 0o700 });
           appendFileSync(options.streamPath, JSON.stringify(output) + '\n', { mode: 0o600 });

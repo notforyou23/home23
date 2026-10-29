@@ -450,7 +450,14 @@ class Orchestrator {
   getOwnerOutreachPolicy() {
     if (!this.ownerOutreachPolicy) {
       const { OwnerOutreachPolicy } = require('../cognition/owner-outreach-policy');
-      this.ownerOutreachPolicy = new OwnerOutreachPolicy({ brainDir: this.logsDir });
+      const { readSeedLearning } = require('../../../shared/seed-learning.cjs');
+      this.ownerOutreachPolicy = new OwnerOutreachPolicy({ brainDir: this.logsDir,
+        readLearning: () => {
+          const seedDir = process.env.COSMO_WORKSPACE_PATH
+            ? path.join(process.env.COSMO_WORKSPACE_PATH, '..', 'substrate', 'seed-01')
+            : this.logsDir ? path.join(this.logsDir, '..', 'substrate', 'seed-01') : null;
+          return seedDir ? readSeedLearning(seedDir) : null;
+        } });
     }
     return this.ownerOutreachPolicy;
   }
@@ -3239,7 +3246,7 @@ class Orchestrator {
         let sensorsModule = null;
         try { sensorsModule = require('./sensors'); } catch { /* optional */ }
 
-        const actionResult = await routeThoughtAction({
+        const actionResult = await this.routeCognitiveThoughtAction({
           hypothesis: thought.hypothesis,
           role: role.id,
           cycle: this.cycleCount,
@@ -3259,7 +3266,8 @@ class Orchestrator {
             role: role.id,
             action: actionResult.action,
             routed: actionResult.routed,
-            payloadPreview: (actionResult.payload || '').substring(0, 100),
+            payloadPreview: (typeof actionResult.payload === 'string'
+              ? actionResult.payload : JSON.stringify(actionResult.payload || '')).substring(0, 100),
           });
         } else {
           // Log absence too — if this is frequent, prompts need tightening or
@@ -8794,6 +8802,14 @@ class Orchestrator {
     return null;
   }
 
+  routeCognitiveThoughtAction(options) {
+    // This factory owns the routine background-cycle origin. Owner Work and
+    // agenda execution use their existing direct paths instead. The action
+    // allowlist must separately classify an action as autonomous_optional.
+    return routeThoughtAction({ ...options,
+      runtimeActionContext: { origin: 'background-cognitive-cycle', optional: true } });
+  }
+
   async executeAgendaItem(item, opts = {}) {
     if (!item?.id || !item?.content) {
       throw new Error('agenda item with id and content required');
@@ -8809,8 +8825,8 @@ class Orchestrator {
       return this.enqueueAgendaDiagnostic(item, opts);
     }
 
-    let sensorsModule = null;
-    try { sensorsModule = require('./sensors'); } catch { /* optional */ }
+    let sensorsModule = opts.sensors || null;
+    if (!sensorsModule) { try { sensorsModule = require('./sensors'); } catch { /* optional */ } }
 
     const result = await executeAction({
       action,

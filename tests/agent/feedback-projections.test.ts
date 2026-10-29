@@ -43,15 +43,31 @@ test('a verdict after checkpoint changes all actual surfaces without mutating th
   assert.match(engine, /failed hypothesis/);
   assert.doesNotMatch(engine, /tentative estimate:|expecting \(unresolved\)/);
   assert.match(engine, /earlier reflection \(not an observation or obligation\).*guitar/);
-  assert.match(composeLivedRecent(dir)!, /reality said no/);
+  assert.match(composeLivedRecent(dir)!, /historical recorded grade: failed; independent verification unavailable/);
   assert.equal(composeLivedFacts(dir), null);
-  assert.match(composeLivedIdentity(dir)!, /2 prediction\(s\) judged by reality — 0 right, 2 wrong/);
+  assert.match(composeLivedIdentity(dir)!, /2 historical recorded verdict\(s\) — 0 recorded right, 2 wrong/);
   const context = composeSeedSituation(dir, { turnText: 'watcher contact tension missed message', embed: text => text.includes('watcher') ? [1, 0] : [0, 1], recipeId: 'test', maxItems: 6 });
   // Selection can return null when the entire pool is semantically indistinct;
   // bootstrap must never revive the failed unresolved expectation either.
   assert.doesNotMatch(context || '', /on the record expecting|formed an estimate/);
   assert.doesNotMatch(composeSeedSituation(dir) || '', /on the record expecting/);
   assert.match(composeDayResidue(dir).join('\n'), /expectation broke/);
+});
+
+test('new lobe assessments remain provisional across projections instead of becoming reality verdicts', t => {
+  const assessment = { ...resolve, payload: { ...resolve.payload, appliedDeltas: [{ ...resolve.payload.appliedDeltas[0], delta: {
+    ...resolve.payload.appliedDeltas[0].delta, error: 0.1, learningVersion: 2,
+    resolutionEvidence: { version: 1, verificationStatus: 'assessed', criterion: 'world',
+      reason: 'The collected observation appears to support this expectation.', refs: [] },
+  } }] } };
+  const { dir } = fixture(t, [assessment, reflection], [prediction('p1', 1), prediction('p2', 3)]);
+  const recent = composeLivedRecent(dir)!;
+  assert.match(recent, /provisional model assessment/);
+  assert.doesNotMatch(recent, /reality agreed/);
+  const identity = composeLivedIdentity(dir)!;
+  assert.match(identity, /not independently verified verdicts/);
+  assert.doesNotMatch(identity, /1 prediction\(s\) judged by reality/);
+  assert.match(composeDayResidue(dir).join('\n'), /provisional model assessment/);
 });
 
 test('a receipt gap omits potentially stale active claims, preserving historical corrections', t => {

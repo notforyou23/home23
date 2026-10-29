@@ -33,6 +33,7 @@ import { createHash } from 'node:crypto';
 import type { SourceAdapter, SourceEvent, EventCategory, SourceAuthority } from '../types.js';
 import { sanitizeSemanticVector } from '../semantic-projection.js';
 import { admitSourceEvent, withSemanticProvenance } from '../semantic-provenance.js';
+import { normalizeLearningDecision, normalizeLearningFeedback, executionTargetTag } from '../../../shared/seed-learning.cjs';
 
 const DEFAULT_READ_WINDOW_BYTES = 1024 * 1024; // 1MB per pull
 const DEFAULT_OVERSIZED_LINE_MAX = 8 * 1024 * 1024; // single-line hard cap
@@ -74,7 +75,7 @@ function executionProjection(eventType: string, data: Record<string, unknown>, e
     const kind = data['executionKind'];
     const executionId = boundedText(data['executionId'], 300);
     if ((kind !== 'work' && kind !== 'action') || !executionId) return null;
-    const allowed = ['intent', 'queued', 'dispatched', 'simulated', 'completed', 'failed', 'cancelled', 'blocked', 'rejected', 'unknown'];
+    const allowed = ['intent', 'queued', 'dispatched', 'simulated', 'completed', 'failed', 'cancelled', 'blocked', 'rejected', 'not_attempted', 'unknown'];
     const status = eventType === 'ExecutionIntentObserved' ? 'intent'
       : typeof data['status'] === 'string' && allowed.includes(data['status']) ? data['status'] : 'unknown';
     const category: EventCategory = ['failed', 'blocked', 'rejected'].includes(status) ? 'correction'
@@ -105,6 +106,14 @@ function executionProjection(eventType: string, data: Record<string, unknown>, e
         sourceSequence: typeof data['sourceSequence'] === 'number' && Number.isSafeInteger(data['sourceSequence']) ? data['sourceSequence'] : null,
         receiptDigest: boundedText(data['receiptDigest'], 200),
         receiptEventId: eventId,
+        ...(typeof data['learningVersion'] === 'number' && data['learningVersion'] !== 2 ? { learningVersion: data['learningVersion'] } : {}),
+        ...(data['learningVersion'] === 2 ? { learningVersion: 2, outcomeCriterion: 'execution',
+          outcomeTrialId: boundedText(data['outcomeTrialId'], 500) || `${kind}:${executionId}`,
+          ...(typeof data['executionAttempted'] === 'boolean' ? { executionAttempted: data['executionAttempted'] } : {}),
+          ...((data['executionContext'] as { targetTag?: unknown } | undefined)?.targetTag === executionTargetTag(data['target'])
+            && executionTargetTag(data['target']) ? { executionContext: { targetTag: executionTargetTag(data['target']) } } : {}),
+          ...(normalizeLearningDecision(data['learningDecision']) ? { executionDecision: normalizeLearningDecision(data['learningDecision']) } : {}),
+        } : {}),
       },
     };
   }
@@ -477,6 +486,8 @@ export class EventLedgerTailAdapter implements SourceAdapter {
         head: text.trim(),
         messageId: canonical && String(parsed['contactId']).startsWith('message:') ? String(parsed['contactId']).slice('message:'.length) : eventId,
         ...(canonical ? { contactId: parsed['contactId'], sourceRef: parsed['sourceRef'], actor: parsed['actor'] } : {}),
+        ...(canonical && typeof parsed['replyToMessageId'] === 'string' && parsed['replyToMessageId'].length <= 512
+          ? { replyToMessageId: parsed['replyToMessageId'] } : {}),
       },
       producedAt: ts,
       endOffset,
@@ -509,6 +520,9 @@ export class EventLedgerTailAdapter implements SourceAdapter {
         entry_type: entryType,
         actor: typeof payload['actor'] === 'string' ? payload['actor'] : null,
         entry_id: entryId || null,
+        ...(typeof payload['learningVersion'] === 'number' || normalizeLearningFeedback(payload['learning'])
+          ? { learningVersion: typeof payload['learningVersion'] === 'number' ? payload['learningVersion'] : 2, learningStream: this.id, learningSequence: endOffset } : {}),
+        ...(normalizeLearningFeedback(payload['learning']) ? { learning: normalizeLearningFeedback(payload['learning']) } : {}),
         // Writers since 2026-08-08 carry the teaching's words as a bounded
         // text — pass them through so the ref carries readable reality.
         ...(typeof head === 'string' && head.length > 0 ? { head } : {}),
@@ -564,6 +578,14 @@ export class EventLedgerTailAdapter implements SourceAdapter {
       payload: {
         worker, status, declaredStatus, verifierStatus: reportedVerifier,
         verificationStatus, verificationSource: 'worker-reported',
+        ...(typeof parsed['learningVersion'] === 'number' && parsed['learningVersion'] !== 2 ? { learningVersion: parsed['learningVersion'] } : {}),
+        ...(parsed['learningVersion'] === 2 ? { learningVersion: 2, outcomeCriterion: 'execution',
+          outcomeTrialId: bounded(parsed['outcomeTrialId'], 500) ?? `worker:${runId}`,
+          executionKind: 'work', action: `worker.${worker}`,
+          // Unknown/failed reported verification never turns declared success
+          // into capability credit. The episode remains an observation.
+          status: category === 'consequence' ? 'completed' : category === 'correction' ? 'failed' : 'unknown',
+          learningStream: this.id, learningSequence: endOffset } : {}),
         ...(summary ? { summary } : {}), ...(rootCause ? { rootCause } : {}), evidence, head,
       },
       producedAt,
@@ -590,8 +612,12 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     const data = entry.payload && typeof entry.payload === 'object' && !Array.isArray(entry.payload) ? entry.payload : {};
     const execution = executionProjection(eventType, data, eventId);
     if (execution) {
-      return { eventId, ...execution, sourceAuthority: this.authority, producedAt, endOffset };
+      return { eventId, ...execution, payload: { ...execution.payload,
+        ...(execution.payload['learningVersion'] === 2 ? { learningStream: this.id, learningSequence: endOffset } : {}) },
+        sourceAuthority: this.authority, producedAt, endOffset };
     }
+    const decision = eventType === 'LearningDecisionObserved' && (data['learningVersion'] === undefined || data['learningVersion'] === 2)
+      ? normalizeLearningDecision(data) : null;
 
     return {
       eventId,
@@ -605,6 +631,8 @@ export class EventLedgerTailAdapter implements SourceAdapter {
         event_type: eventType,
         thread_id: entry.thread_id ?? null,
         object_id: entry.object_id ?? null,
+        ...(typeof data['learningVersion'] === 'number' ? { learningVersion: data['learningVersion'], learningStream: this.id, learningSequence: endOffset } : {}),
+        ...(decision ? { learningVersion: 2, learningDecision: decision } : {}),
       },
       producedAt,
       endOffset,

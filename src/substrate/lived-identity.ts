@@ -80,19 +80,21 @@ export function composeLivedIdentity(stateDir: string, budget = DEFAULT_BUDGET):
   lines.push(`My body: ${body}${growthActs > 0 ? `; ${growthActs} receipted growth act(s)` : ''}.`);
 
   // Track record — reality's verdicts on what I went on record for.
-  let right = 0, wrong = 0, partial = 0, open = 0;
+  let right = 0, wrong = 0, partial = 0, open = 0, assessed = 0;
   for (const cell of checkpoint.cells) {
     for (const p of cell.predictions ?? []) {
       if (p.resolvedAt === undefined) { open += 1; continue; }
       if (typeof p.error !== 'number') continue;
+      if (p.resolutionEvidence?.verificationStatus === 'assessed') { assessed += 1; continue; }
       if (p.error <= 0.3) right += 1;
       else if (p.error >= 0.7) wrong += 1;
       else partial += 1;
     }
   }
   if (right + wrong + partial + open > 0) {
-    lines.push(`My retained prediction record: ${right + wrong + partial} prediction(s) judged by reality — ${right} right, ${wrong} wrong, ${partial} partial${open > 0 ? `; ${open} still open` : ''}.`);
+    lines.push(`My retained prediction record: ${right + wrong + partial} historical recorded verdict(s) — ${right} recorded right, ${wrong} wrong, ${partial} partial${open > 0 ? `; ${open} still open` : ''}; independent verification of these historical grades is unavailable.`);
   }
+  if (assessed) lines.push(`${assessed} further prediction(s) have provisional model assessments with cited observations; these are not independently verified verdicts.`);
 
   if (!checkpoint.feedbackView.complete) lines.push('Recent feedback coverage is incomplete; active expectations are omitted.');
 

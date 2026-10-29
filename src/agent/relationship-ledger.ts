@@ -36,6 +36,9 @@ import {
   unlinkSync,
   writeFileSync,
   appendFileSync,
+  openSync,
+  closeSync,
+  fsyncSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -45,6 +48,8 @@ import { embedTextSync } from '../substrate/embed-at-contact.js';
 import { buildWriterSemanticStamp } from '../substrate/semantic-writer-stamp.js';
 import { ownerConversationQuery, ownerConversationMatch, relationshipOwnerEvidence } from './owner-conversation-recall.js';
 import { classifyOwnerConversation, hasConversationTimeIntent } from '../../shared/owner-conversation-policy.cjs';
+import { normalizeLearningFeedback } from '../../shared/seed-learning.cjs';
+import { appendSeedProjectionOnce as appendSourceProjection } from '../../shared/seed-source-projection.cjs';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -52,6 +57,7 @@ export type RelationshipEntryType =
   | 'thread'            // unfinished conversational thread
   | 'promise'           // a commitment/expectation (who owes what)
   | 'correction'        // a consequential correction jtr made
+  | 'attenuation'       // authenticated feedback to give a scoped behavior less weight
   | 'decision'          // a decision reached together
   | 'preference'        // a recurring preference
   | 'aversion'          // a recurring aversion / "don't do X"
@@ -99,6 +105,37 @@ export interface RelationshipEntry {
   resolved_at?: string;       // for thread/promise when closed
   last_surfaced?: string;
   reuse_count: number;
+  learning?: RelationshipLearningFeedback;
+  /** Pending projections live with their source entry, so a failed append is
+   * retryable without creating another store or inventing another experience. */
+  seed_projection?: SeedSourceProjection;
+}
+
+export interface RelationshipLearningFeedback {
+  schema: 'home23.learning-feedback.v1';
+  decisionId?: string;
+  cellId?: string;
+  scope: string;
+  direction: 'attenuate' | 'reinforce';
+  tags?: string[];
+  excludes?: string[];
+  evidenceRefs: string[];
+  basis: 'owner-feedback' | 'verified-outcome';
+  supersedes?: string[];
+  standing?: boolean;
+  corroborates?: string[];
+}
+
+export interface SeedSourceProjection {
+  schema: 'home23.seed-source-projection.v1';
+  status: 'pending' | 'projected';
+  event: Record<string, unknown> & { event_id: string };
+  error?: string;
+}
+
+/** Compatibility export for existing relationship/memory writers. */
+export function appendSeedProjectionOnce(eventsPath: string, event: SeedSourceProjection['event']): void {
+  appendSourceProjection(eventsPath, event);
 }
 
 export interface AuthenticatedCorrectionIngress {
@@ -136,6 +173,7 @@ export interface RelationshipEntryInput {
   evidence_note?: string;
   status?: RelationshipEntryStatus;
   supersedes?: string[];
+  learning?: RelationshipLearningFeedback;
 }
 
 export interface RelationshipRetrieval {
@@ -172,16 +210,17 @@ const GENERATION_METHODS = new Set<RelationshipGenerationMethod>([
 ]);
 const PRIVACY_CLASSES = new Set<PrivacyClass>(['internal', 'personal', 'sensitive']);
 const ENTRY_TYPES = new Set<RelationshipEntryType>([
-  'thread', 'promise', 'correction', 'decision', 'preference',
+  'thread', 'promise', 'correction', 'attenuation', 'decision', 'preference',
   'aversion', 'shared_reference', 'miss_repair', 'why_it_mattered',
 ]);
 
 // Active entries of these types are load-bearing and are never evicted for space.
-const PROTECTED_TYPES = new Set<RelationshipEntryType>(['correction', 'promise', 'decision']);
+const PROTECTED_TYPES = new Set<RelationshipEntryType>(['correction', 'attenuation', 'promise', 'decision']);
 
 // Retrieval type weights — corrections/promises/decisions outrank touchstones.
 const TYPE_WEIGHT: Record<RelationshipEntryType, number> = {
   correction: 3,
+  attenuation: 3,
   promise: 3,
   decision: 3,
   aversion: 2.2,
@@ -194,6 +233,12 @@ const TYPE_WEIGHT: Record<RelationshipEntryType, number> = {
 
 const CORRECTION_LANGUAGE_PATTERN =
   /\b(?:correction|incorrect|wrong|not true|actually|you are mistaken|mistaken|misremember|misread)\b/i;
+const ATTENUATION_LANGUAGE_PATTERN =
+  /\b(?:noise|too (?:much|many)|stop|less|unnecessary|irrelevant|not (?:useful|helpful)|don't|do not|crowd(?:s|ing)?)\b/i;
+const REINFORCEMENT_LANGUAGE_PATTERN =
+  /\b(?:that (?:was|is) (?:useful|helpful)|that helped|that worked|keep (?:doing|noticing)|more (?:of|like) that|thank you|thanks)\b/i;
+const STANDING_LANGUAGE_PATTERN =
+  /\b(?:always|never|going forward|from now on|stop|don't|do not|remember to|please (?:keep|avoid))\b/i;
 
 // ─── Bounding helpers ───────────────────────────────────────
 
@@ -305,16 +350,44 @@ export class RelationshipLedger {
   private persist(): void {
     const tmpPath = `${this.ledgerPath}.tmp-${randomUUID().slice(0, 8)}`;
     try {
-      writeFileSync(
-        tmpPath,
-        JSON.stringify({ schema: LEDGER_SCHEMA, agent: this.agent, entries: this.entries }, null, 2),
-        'utf-8',
-      );
+      const fd = openSync(tmpPath, 'wx');
+      try {
+        writeFileSync(fd, JSON.stringify({ schema: LEDGER_SCHEMA, agent: this.agent, entries: this.entries }, null, 2), 'utf-8');
+        fsyncSync(fd);
+      } finally { closeSync(fd); }
       renameSync(tmpPath, this.ledgerPath);
+      const directory = openSync(dirname(this.ledgerPath), 'r');
+      try { fsyncSync(directory); } finally { closeSync(directory); }
     } catch (err) {
       try { unlinkSync(tmpPath); } catch { /* ignore */ }
       throw err;
     }
+  }
+
+  /** Retry pending source projections at a normal turn boundary or restart.
+   * "projected" establishes a durable input line, not Seed application. */
+  flushSeedTeaching(): { projected: number; pending: number } {
+    return this.mutateEntries(() => this.flushSeedTeachingUnlocked());
+  }
+
+  private flushSeedTeachingUnlocked(): { projected: number; pending: number } {
+    let projected = 0;
+    let changed = false;
+    for (const entry of this.entries) {
+      const projection = entry.seed_projection;
+      if (!projection || projection.status !== 'pending') continue;
+      try {
+        appendSeedProjectionOnce(this.eventsPath, projection.event);
+        projection.status = 'projected';
+        delete projection.error;
+        projected++;
+      } catch (error) {
+        projection.error = boundedText(error instanceof Error ? error.message : String(error), MAX_EVIDENCE_NOTE);
+      }
+      changed = true;
+    }
+    if (changed) this.persist();
+    return { projected, pending: this.entries.filter(entry => entry.seed_projection?.status === 'pending').length };
   }
 
   // Best-effort sibling event log. Never throws — continuity annotation only.
@@ -338,8 +411,8 @@ export class RelationshipLedger {
         // it can read. The full entry stays in the ledger proper — this is
         // a bounded projection, a complete text projection.
         payload: semanticText !== undefined
-          ? { ...payload, head: semanticText.trim() }
-          : payload,
+          ? { learningVersion: 2, ...payload, head: semanticText.trim() }
+          : { learningVersion: 2, ...payload },
         ...stamp,
       }) + '\n';
       appendFileSync(this.eventsPath, line);
@@ -358,9 +431,9 @@ export class RelationshipLedger {
   /**
    * Returns a messageRef when the ingress independently earns jtr authority for
    * this entry, else null. Mirrors MemoryObjectStore: the entry must be a
-   * correction, the user turn must be a real recorded turn (validator), the
-   * user text must read as a correction, and the entry's statement must be the
-   * user's own claim (normalized). This is the sole path to actor:'jtr'.
+   * teaching, the user turn must be a real recorded turn (validator), the
+   * user text must express that feedback direction, and the entry's statement
+   * must be the user's own claim (normalized). This is the sole path to actor:'jtr'.
    */
   private earnedCorrectionRef(
     input: RelationshipEntryInput,
@@ -371,13 +444,15 @@ export class RelationshipLedger {
     const messageRef = boundedText(ingress.messageRef, MAX_REF);
     const chatId = boundedText(ingress.chatId, MAX_REF);
     if (!messageRef || !chatId) return null;
-    if (input.type !== 'correction') return null;
+    if (input.type !== 'correction' && input.type !== 'attenuation') return null;
     const sessionRefs = boundedList(input.provenance?.session_refs ?? [], MAX_REF_ITEMS, MAX_REF);
     if (!sessionRefs.includes(chatId)) return null;
     const statementClaim = normalizedClaim(input.statement);
     const userClaim = normalizedClaim(ingress.userText);
     if (!statementClaim || statementClaim !== userClaim) return null;
-    if (!CORRECTION_LANGUAGE_PATTERN.test(ingress.userText)) return null;
+    const language = input.type === 'attenuation' ? ATTENUATION_LANGUAGE_PATTERN
+      : input.learning?.direction === 'reinforce' ? REINFORCEMENT_LANGUAGE_PATTERN : CORRECTION_LANGUAGE_PATTERN;
+    if (!language.test(ingress.userText)) return null;
     if (validator(ingress) !== true) return null;
     return messageRef;
   }
@@ -395,7 +470,38 @@ export class RelationshipLedger {
     if (!title) throw new Error('Relationship entry requires a non-empty title');
     if (!statement) throw new Error('Relationship entry requires a non-empty statement');
 
+    let learning: RelationshipLearningFeedback | undefined;
+    if (input.learning !== undefined) {
+      const normalized = normalizeLearningFeedback({ ...input.learning,
+        evidenceRefs: Array.isArray(input.learning.evidenceRefs)
+          ? [...new Set([ingress?.messageRef, ...input.learning.evidenceRefs])]
+          : input.learning.evidenceRefs,
+      }) as RelationshipLearningFeedback | null;
+      if (!normalized || normalized.basis !== 'owner-feedback'
+          || !['correction', 'attenuation'].includes(input.type)
+          || (input.type === 'attenuation') !== (normalized.direction === 'attenuate')
+          || input.statement.trim().length > MAX_STATEMENT
+          || !normalized.decisionId) {
+        throw new Error('Conduct teaching requires a valid scoped owner-feedback record and the exact authenticated owner claim');
+      }
+      learning = normalized;
+      // Retrying a stored authenticated entry does not mint authority again or
+      // consume a second one-shot ingress token. It only retries its source
+      // projection. No changed statement, target or scope can take this path.
+      const previous = this.entries.find(entry => entry.actor === 'jtr' && entry.type === input.type
+        && ingress && entry.provenance.source_refs.includes(ingress.messageRef)
+        && normalizedClaim(ingress.userText) === normalizedClaim(statement)
+        && normalizedClaim(entry.statement) === normalizedClaim(statement)
+        && JSON.stringify(entry.learning) === JSON.stringify(learning));
+      if (previous) { this.flushSeedTeachingUnlocked(); return previous; }
+    }
+    if (input.type === 'attenuation' && !learning) {
+      throw new Error('Attenuation requires authenticated, scoped conduct feedback');
+    }
     const correctionRef = this.earnedCorrectionRef(input, ingress);
+    if (learning && !correctionRef) {
+      throw new Error('Conduct teaching requires the exact authenticated owner claim');
+    }
 
     // Method resolution closes the confidence-cap laundering vector: a caller
     // cannot self-declare 'jtr_correction' (0.95 cap) without earning it; an
@@ -452,13 +558,26 @@ export class RelationshipLedger {
         ? { supersedes: boundedList(input.supersedes, MAX_REF_ITEMS, MAX_REF) }
         : {}),
       reuse_count: 0,
+      ...(learning ? { learning } : {}),
+    };
+
+    const semanticText = `${entry.title}. ${entry.statement}${entry.why ? `. ${entry.why}` : ''}`;
+    entry.seed_projection = {
+      schema: 'home23.seed-source-projection.v1', status: 'pending',
+      event: {
+        event_id: randomUUID(), event_type: 'entry_added', entry_id: entry.id,
+        agent: this.agent, ts: createdAt,
+        payload: { learningVersion: 2, type: entry.type, actor: entry.actor, method, head: semanticText,
+          ...(learning ? { learning, owner_quote: ingress!.userText, owner_message_ref: correctionRef,
+            source_refs: entry.provenance.source_refs, applies_to: entry.applies_to } : {}) },
+        ...buildWriterSemanticStamp({ vector: embedTextSync(semanticText), text: semanticText }),
+      },
     };
 
     this.entries.push(entry);
     this.evict();
     this.persist();
-    this.emitEvent('entry_added', entry.id, { type: entry.type, actor: entry.actor, method },
-      `${entry.title}. ${entry.statement}${entry.why ? `. ${entry.why}` : ''}`);
+    this.flushSeedTeachingUnlocked();
     return entry;
   }
 
@@ -685,6 +804,9 @@ export class RelationshipLedger {
     budgetChars: number;
     nowMs?: number;
     excludePrivacy?: PrivacyClass[];
+    /** Runtime-resolved subject for an elliptical follow-up such as "do it".
+     * The caller supplies the actual conversation subject, not all history. */
+    recentSubject?: string;
   }): RelationshipRetrieval {
     this.reload();
     const budget = Number.isFinite(opts.budgetChars) ? Math.max(0, Math.floor(opts.budgetChars)) : 0;
@@ -692,13 +814,16 @@ export class RelationshipLedger {
     const nowMs = typeof opts.nowMs === 'number' && Number.isFinite(opts.nowMs)
       ? opts.nowMs
       : Date.parse(this.now());
-    const tokens = relationshipQueryTerms(query);
+    const subject = opts.recentSubject?.trim() || query;
+    const tokens = relationshipQueryTerms(subject);
 
     // "active" here = non-removed, non-superseded (resolved threads/promises
     // still carry relationship context). Privacy exclusions applied up front.
     const candidates = this.entries
       .filter(e => e.status !== 'removed' && e.status !== 'superseded')
-      .filter(e => !excluded.has(e.privacy_class));
+      .filter(e => !excluded.has(e.privacy_class))
+      .filter(e => isAuthenticatedGlobalInstruction(e)
+        || (tokens.length > 0 && entryMatchesQuery(e, subject)));
 
     const ranked = rankRelationshipEntries(candidates, tokens, nowMs, hasConversationTimeIntent(query));
 
@@ -761,11 +886,11 @@ export class RelationshipLedger {
   private evict(): void {
     while (this.entries.length > this.maxEntries) {
       const closedIdx = oldestIndex(this.entries, e =>
-        e.provenance.generation_method !== 'owner_conversation'
+        e.seed_projection?.status !== 'pending' && e.provenance.generation_method !== 'owner_conversation'
         && (e.status === 'resolved' || e.status === 'removed' || e.status === 'superseded'));
       if (closedIdx >= 0) { this.entries.splice(closedIdx, 1); continue; }
       const droppableIdx = oldestIndex(this.entries, e =>
-        e.provenance.generation_method !== 'owner_conversation'
+        e.seed_projection?.status !== 'pending' && e.provenance.generation_method !== 'owner_conversation'
         && e.status === 'active' && !PROTECTED_TYPES.has(e.type));
       if (droppableIdx >= 0) { this.entries.splice(droppableIdx, 1); continue; }
       // Only protected active entries remain — refuse to drop them.
@@ -805,7 +930,7 @@ function tokenize(query: string): string[] {
 // These identify a recall request, not the subject of a durable correction.
 // A date narrows owner conversation evidence; it does not establish overlap
 // with an old relationship note that happens to contain the same numbers.
-const RELATIONSHIP_GENERIC_TERMS = new Set(('a an and are as at be been by can could did do does for from '
+const RELATIONSHIP_GENERIC_TERMS = new Set(('a about an and are as at be been by can could did do does for from '
   + 'had has have how i in is it me my of on or our please recall remember said say show tell that the their '
   + 'them there these they this those to told us was we were what when where which who why will with would '
   + 'you your am he she no owner conversation conversations morning afternoon evening today yesterday '
@@ -837,6 +962,17 @@ function relationshipSearchText(entry: RelationshipEntry): string {
     ...entry.triggers,
     ...entry.applies_to,
   ].join(' '));
+}
+
+/** A high entry-type weight is not topical relevance. Only an authenticated
+ * explicit global instruction can accompany an otherwise unrelated turn.
+ * A standing telemetry preference remains scoped; standing alone is not global. */
+function isAuthenticatedGlobalInstruction(entry: RelationshipEntry): boolean {
+  if (entry.actor !== 'jtr' || entry.provenance.generation_method !== 'jtr_correction'
+      || !entry.provenance.source_refs.length || !STANDING_LANGUAGE_PATTERN.test(entry.statement)) return false;
+  return entry.applies_to.some(scope => scope.toLowerCase() === 'global')
+    || (entry.learning?.standing === true && entry.learning.basis === 'owner-feedback'
+      && (entry.learning.tags ?? []).some(tag => tag.toLowerCase() === 'global'));
 }
 
 /** Real meaningful term overlap, independent of entry kind and recency. */

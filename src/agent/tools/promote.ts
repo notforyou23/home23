@@ -7,15 +7,46 @@
  */
 
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
-import { appendFileSync } from 'node:fs';
+import type { MemoryObject } from '../../types.js';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { embedTextSync } from '../../substrate/embed-at-contact.js';
 import { buildWriterSemanticStamp } from '../../substrate/semantic-writer-stamp.js';
+import { appendSeedProjectionOnce, type SeedSourceProjection } from '../relationship-ledger.js';
+
+type ProjectableMemoryObject = MemoryObject & { seed_projection?: SeedSourceProjection };
+
+/** Retry source projections from the existing memory store. This does not
+ * promote candidates, reinterpret facts as feedback, or claim Seed applied
+ * anything. A normal turn or a later promotion can finish a failed append. */
+export async function flushMemorySeedProjections(ctx: ToolContext): Promise<{ projected: number; pending: number }> {
+  const { MemoryObjectStore } = await import('../memory-objects.js');
+  const brainDir = (ctx.personalWorkspacePath ?? ctx.workspacePath).replace('/workspace', '/brain');
+  const store = ctx.memoryObjectStore ?? new MemoryObjectStore(brainDir);
+  let projected = 0;
+  for (const obj of store.readPendingSeedProjections() as ProjectableMemoryObject[]) {
+    const projection = obj.seed_projection;
+    if (!projection || projection.status !== 'pending') continue;
+    let next: SeedSourceProjection;
+    try {
+      appendSeedProjectionOnce(join(brainDir, 'memory-objects.events.jsonl'),
+        { ...projection.event, entry_id: obj.memory_id });
+      next = { ...projection, status: 'projected' };
+      delete next.error;
+      projected++;
+    } catch (error) {
+      next = { ...projection, error: (error instanceof Error ? error.message : String(error)).slice(0, 600) };
+    }
+    if (!store.acknowledgeSeedProjection(obj.memory_id, projection.event.event_id, next)) {
+      throw new Error('Memory source projection identity changed before acknowledgement');
+    }
+  }
+  return { projected, pending: store.readPendingSeedProjections().length };
+}
 
 export const promoteToMemoryTool: ToolDefinition = {
   name: 'promote_to_memory',
-  description: `Promote important knowledge to durable memory. Use this when:
+  description: `Retain important knowledge with explicit triggers, scope, and a source projection. A new entry is a working candidate; do not claim approved durable recall or Seed learning until those stages are confirmed. Use this when:
 - A new convention or rule is established
 - House topology changes (new port, new service, new URL)
 - Important personal context is shared
@@ -134,7 +165,23 @@ Each promotion must include: what changed (before/after/why), when it should res
         ? { chatId: userMessage.chatId, messageRef: userMessage.messageRef, userText: userMessage.text }
         : undefined;
 
-      const obj = store.createObject({
+      const semanticText = `${title}. ${statement}`;
+      const projection: SeedSourceProjection = {
+        schema: 'home23.seed-source-projection.v1', status: 'pending',
+        event: {
+          event_id: randomUUID(), event_type: 'memory_promoted', agent: ctx.agentName ?? 'unknown',
+          ts: new Date().toISOString(),
+          payload: {
+            learningVersion: 2, type: 'memory_promotion', actor: 'agent', head: semanticText.trim(),
+            memory_type: type, domain, state_delta: { delta_class: deltaClass,
+              before: { state: before }, after: { state: after }, why },
+            scope: { applies_to: appliesTo, excludes },
+            source_refs: correctionIngress ? [correctionIngress.messageRef] : [],
+          },
+          ...buildWriterSemanticStamp({ vector: embedTextSync(semanticText), text: semanticText }),
+        },
+      };
+      const objectInput: Omit<ProjectableMemoryObject, 'memory_id' | 'created_at' | 'updated_at' | 'reuse_count'> = {
         type: type as any,
         thread_id: thread.thread_id,
         session_id: ctx.chatId,
@@ -176,35 +223,16 @@ Each promotion must include: what changed (before/after/why), when it should res
           review_after_days: type === 'procedure' ? 60 : 30,
         },
         privacy_class: privacy as any,
-      }, correctionIngress);
-
-      // Home23 v2 cut 6: a deliberate promotion TEACHES the individual —
-      // the words + perceived meaning enter the Seed's diet, where the
-      // living promotion pipeline (metabolize → estimate → survive into
-      // fact-grade) does what candidate→durable never did. The JSON store
-      // remains the instant-recall working cache; the living copy
-      // accumulates in the chain. Best-effort: a seed-less agent promotes
-      // exactly as before.
-      try {
-        const semanticText = `${title}. ${statement}`;
-        const line = JSON.stringify({
-          event_id: randomUUID(),
-          event_type: 'memory_promoted',
-          entry_id: obj.memory_id,
-          agent: ctx.agentName ?? 'unknown',
-          ts: new Date().toISOString(),
-          payload: {
-            type: 'memory_promotion',
-            actor: 'agent',
-            head: semanticText.trim().slice(0, 160),
-          },
-          ...buildWriterSemanticStamp({ vector: embedTextSync(semanticText), text: semanticText }),
-        }) + '\n';
-        appendFileSync(join(brainDir, 'memory-objects.events.jsonl'), line);
-      } catch { /* the store write above is the contract; the teaching is best-effort */ }
+        seed_projection: projection,
+      };
+      const obj = store.createObject(objectInput, correctionIngress);
+      let projectionError: string | undefined;
+      try { await flushMemorySeedProjections({ ...ctx, memoryObjectStore: store }); }
+      catch (error) { projectionError = (error instanceof Error ? error.message : String(error)).slice(0, 600); }
+      const projected = (store.getObject(obj.memory_id) as ProjectableMemoryObject | undefined)?.seed_projection;
 
       return {
-        content: `Promoted to memory: "${title}" (${obj.memory_id})\nThread: ${thread.thread_id} — ${thread.title}\nTriggers: ${triggerKeywords.join(', ')}\nState delta: ${before} → ${after} (${why})`,
+        content: `Promoted to memory: "${title}" (${obj.memory_id})\nThread: ${thread.thread_id} — ${thread.title}\nTriggers: ${triggerKeywords.join(', ')}\nState delta: ${before} → ${after} (${why})\nMemory stored; source projection=${projected?.status ?? 'pending'}; Seed application=not yet confirmed${projectionError || projected?.error ? ` (${projectionError || projected?.error})` : ''}`,
       };
     } catch (err) {
       return {

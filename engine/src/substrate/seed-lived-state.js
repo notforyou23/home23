@@ -111,7 +111,7 @@ function composeLivedState(stateDir) {
     .filter(p => p.resolvedAt !== undefined && typeof p.error === 'number' && p.error >= 0.7))
     .sort((a, b) => String(b.resolvedAt).localeCompare(String(a.resolvedAt)));
   for (const p of failures.slice(0, 2)) {
-    lines.push(`- failed hypothesis: "${p.claim}" (error ${p.error.toFixed(2)}); needs newer evidence and an explicit revision, not repetition.`);
+    lines.push(`- failed hypothesis: "${p.claim}" (${p.resolutionEvidence?.verificationStatus === 'assessed' ? 'provisional model assessment; ' : ''}error ${p.error.toFixed(2)}); needs newer evidence and an explicit revision, not repetition.`);
   }
   const reflections = tail.flatMap(thoughtsFromReceipt).filter(thought => thought.kind === 'reflection')
     .filter(thought => {
@@ -218,7 +218,7 @@ function composeDayResidue(stateDir, maxFragments = 6) {
   for (const cell of ck.cells) {
     for (const p of (cell.predictions || [])) {
       if (p.resolvedAt !== undefined && typeof p.error === 'number') {
-        const verdict = p.error <= 0.3 ? 'held' : p.error >= 0.7 ? 'broke' : 'bent';
+        const verdict = `${p.error <= 0.3 ? 'held' : p.error >= 0.7 ? 'broke' : 'bent'}${p.resolutionEvidence?.verificationStatus === 'assessed' ? ' (provisional model assessment, not independent verification)' : ' (historical grade; independent verification unavailable)'}`;
         fragments.push(`an expectation ${verdict}: "${String(p.claim)}"`);
         if (fragments.length >= maxFragments) break;
       }

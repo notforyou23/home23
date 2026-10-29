@@ -153,7 +153,7 @@ async function main(): Promise<void> {
           id: String(p['lobeId']), modelId: String(p['modelId']), provider: String(p['provider']),
           invoke: async () => lobeResult(record),
         };
-        await seed.recruitLobe(adapter, packet, String(p['asOf']));
+        await seed.recruitLobe(adapter, packet, String(p['asOf']), 30_000, record);
       }
     }
     const replayed = new SeedLedger(scratch).readFrom(latest.ledgerSeq + 2);

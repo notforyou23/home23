@@ -30,6 +30,7 @@ export interface ShippableTurn {
   session?: string;
   voice?: 'jtr' | 'self' | 'peer';
   actor?: { principalId: string; kind: 'owner' | 'bot'; displayName: string };
+  replyToMessageId?: string;
 }
 
 /** Harness task files contain private runtime instructions. Telegram group
@@ -52,7 +53,9 @@ export function canonicalContactTurn(rec: Record<string, unknown>): ShippableTur
   if ((rec.role !== 'user' && rec.role !== 'assistant') || typeof rec.content !== 'string'
     || !rec.content.trim() || typeof rec.ts !== 'string' || !Number.isFinite(Date.parse(rec.ts))) return null;
   return { role: rec.role, text: rec.content, ts: rec.ts, contactId: rec.contactId, sourceRef: rec.sourceRef as string,
-    session: rec.session, voice: rec.voice as ShippableTurn['voice'], actor };
+    session: rec.session, voice: rec.voice as ShippableTurn['voice'], actor,
+    ...(typeof rec.replyToMessageId === 'string' && rec.replyToMessageId.length > 0 && rec.replyToMessageId.length <= 512
+      ? { replyToMessageId: rec.replyToMessageId } : {}) };
 }
 
 export function shippableTurn(rec: Record<string, unknown>): ShippableTurn | null {

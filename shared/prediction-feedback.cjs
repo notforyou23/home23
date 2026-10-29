@@ -22,11 +22,12 @@ function claimsRelated(a, b) {
   return common >= 3 && common / Math.max(x.size, y.size) >= 0.72
     && common / (x.size + y.size - common) >= 0.55;
 }
-function isExternalEvidenceRef(ref) {
+function isExternalEvidenceRef(ref, criterion = 'execution') {
   if (!ref || ref.flag !== 'COLLECTED' || typeof ref.refId !== 'string' || !ref.refId) return false;
   if (!['home23.event-ledger', 'home23.channel.bus', 'seed.adapter', 'external.inert'].includes(ref.sourceAuthority)) return false;
   if (typeof ref.head !== 'string' || !ref.head.trim() || !Number.isFinite(Date.parse(ref.observedAt))) return false;
   const source = String(ref.sourceRef || '');
+  if (source.startsWith('relationship.') && ref.teachingAuthority === 'agent') return false;
   if (/^(?:action|work|coordination\.work):/.test(source)) {
     const receipt = ref.executionOutcome;
     return ref.sourceAuthority === 'home23.event-ledger'
@@ -35,7 +36,8 @@ function isExternalEvidenceRef(ref) {
       && (source.startsWith(`${receipt.executionKind}:`) || (receipt.executionKind === 'work' && source.startsWith('coordination.work:')))
       && ['completed', 'failed', 'blocked', 'rejected'].includes(receipt.status)
       && typeof receipt.receiptEventId === 'string' && receipt.receiptEventId.length > 0
-      && Array.isArray(receipt.evidenceRefs) && receipt.evidenceRefs.some(value => typeof value === 'string' && value.length > 0);
+      && Array.isArray(receipt.evidenceRefs) && receipt.evidenceRefs.some(value => typeof value === 'string' && value.length > 0)
+      && (criterion === 'execution' || (receipt.verificationStatus === 'verified' && receipt.taskOutcomeVerified === true));
   }
   // The adapter emits conversation.jtr/self/peer; only the owner's words
   // qualify here. Unknown or older resident names cannot masquerade as owner.
@@ -79,7 +81,9 @@ function getClaimFeedback(cell, candidate) {
   const citesRef = ref => refs.has(ref.refId) || (ownerClaim && ref.principal === 'owner'
     && typeof ref.sourceRef === 'string' && ref.sourceRef.startsWith('conversation.jtr:')
     && typeof ref.messageId === 'string' && refs.has(ref.messageId));
-  const freshEvidenceRefs = availableRefs.filter(ref => citesRef(ref) && isExternalEvidenceRef(ref) && evidenceTouchesClaim(ref, item)
+  const freshEvidenceRefs = availableRefs.filter(ref => citesRef(ref)
+    && isExternalEvidenceRef(ref, snapshotRefs.some(saved => saved.refId === ref.refId) && snapshot.admissionVersion !== 2
+      ? 'execution' : item.outcomeCriterion || 'world') && evidenceTouchesClaim(ref, item)
     && Date.parse(ref.observedAt) > failedAt
     && (!Number.isFinite(createdAt) || Date.parse(ref.observedAt) <= createdAt)).map(ref => ref.refId);
   const hasSupportedRevision = failedPredictions.length > 0 && freshEvidenceRefs.length > 0

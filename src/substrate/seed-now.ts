@@ -20,30 +20,40 @@ import { readSeedCheckpoint, readSeedLedgerTail } from './seed-context.js';
 import { projectFeedbackState } from '../../shared/seed-feedback-view.cjs';
 import { getClaimFeedback } from '../../shared/prediction-feedback.cjs';
 import { thoughtsFromReceipt } from '../../shared/lived-thoughts.cjs';
+import { currentTurnSubject, relevantToTurn } from './turn-relevance.js';
 
 const DEFAULT_BUDGET = 1200;
 /** Chain-seq window for "since last session" identity events (~½ day). */
 const FRESH_WINDOW_SEQS = 150;
 const CONTACT_LINES = 4;
 
-export function composeSeedNow(stateDir: string, budget = DEFAULT_BUDGET): string | null {
+export interface SeedNowTurn {
+  turnText: string;
+  recentTurns?: Array<{ role: string; content: string }>;
+  semanticEmbed?: (text: string) => number[] | null;
+}
+
+export function composeSeedNow(stateDir: string, budget = DEFAULT_BUDGET, turn?: SeedNowTurn): string | null {
   const snapshot = readSeedCheckpoint(stateDir);
   if (snapshot === null) return null;
   const tail = readSeedLedgerTail(stateDir);
   const checkpoint = projectFeedbackState(snapshot, tail);
   const headSeq = Math.max(checkpoint.ledgerSeq, ...tail.map((l) => l.seq), 0);
+  const subject = turn ? currentTurnSubject(turn.turnText, turn.recentTurns) : undefined;
+  const relevant = (text: string) => subject === undefined || relevantToTurn(text, subject, turn?.semanticEmbed);
 
   // Where the last contact left off — continuity across the session gap.
   const contact = checkpoint.cells
     .flatMap((c) => c.realityRefs ?? [])
     .filter((r) => r.sourceRef.startsWith('conversation.') && typeof r.head === 'string' && r.head.length > 0)
+    .filter(r => relevant(r.head!))
     .sort((a, b) => a.observedAt.localeCompare(b.observedAt))
     .slice(-CONTACT_LINES)
     .map((r) => `- ${r.sourceRef.startsWith('conversation.jtr') ? 'jtr' : 'you'}: "${r.head}"`);
 
   // Standing commitments — open expectations are his to resolve.
   const open = checkpoint.cells
-    .flatMap((c) => (c.predictions ?? []).filter((p) => p.resolvedAt === undefined && !getClaimFeedback(c, p).failedHypothesis).map((p) => ({ cell: c.id, ...p })))
+    .flatMap((c) => (c.predictions ?? []).filter((p) => p.resolvedAt === undefined && !getClaimFeedback(c, p).failedHypothesis && relevant(p.claim)).map((p) => ({ cell: c.id, ...p })))
     .slice(0, 3)
     .map((p) => `- [${p.cell}] "${p.claim}" (confidence ${p.confidence}, horizon ${p.horizon})`);
 
@@ -66,6 +76,7 @@ export function composeSeedNow(stateDir: string, budget = DEFAULT_BUDGET): strin
   for (const line of tail) {
     for (const thought of thoughtsFromReceipt(line)) {
       const claim = thought.text;
+      if (!relevant(claim)) continue;
       const cell = checkpoint.cells.find((c) => c.id === thought.cellId);
       if (!cell) continue;
       const carried = (thought.kind === 'prediction' ? cell.predictions : cell.estimates)
@@ -77,9 +88,9 @@ export function composeSeedNow(stateDir: string, budget = DEFAULT_BUDGET): strin
   }
 
   const corrections = checkpoint.cells.flatMap((c) => c.predictions
-    .filter((p) => p.resolvedAt !== undefined && typeof p.error === 'number' && p.error >= 0.7))
+    .filter((p) => p.resolvedAt !== undefined && typeof p.error === 'number' && p.error >= 0.7 && relevant(p.claim)))
     .sort((a, b) => String(b.resolvedAt).localeCompare(String(a.resolvedAt)))
-    .slice(0, 3).map((p) => `- failed hypothesis: "${p.claim}" (error ${p.error!.toFixed(2)}, resolved ${p.resolvedAt}); do not carry forward without new evidence.`);
+    .slice(0, 3).map((p) => `- failed hypothesis: "${p.claim}" (${p.resolutionEvidence?.verificationStatus === 'assessed' ? 'provisional model assessment; ' : ''}error ${p.error!.toFixed(2)}, resolved ${p.resolvedAt}); do not carry forward without new evidence.`);
 
   if (contact.length === 0 && open.length === 0 && since.length === 0 && freshest === null && corrections.length === 0) return null;
 

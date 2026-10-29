@@ -4,16 +4,28 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { writeFileDurableSync, fsyncDirectorySync } = require('../utils/durable-write');
+const { appendSeedProjectionOnce } = require('../../../shared/seed-source-projection.cjs');
+
+function sameIntent(a, b) {
+  const identity = value => {
+    if (!value) return value;
+    const { observedAt, learningDecisions, learningDecisionEvents, ...rest } = value;
+    return rest;
+  };
+  return JSON.stringify(identity(a)) === JSON.stringify(identity(b));
+}
 
 /** Local delivery intents survive an unavailable harness. The harness still
  * owns channel delivery/deduplication; these files make no delivery claim. */
 class OwnerOutreachOutbox {
-  constructor(brainDir, transport, { policy = null } = {}) {
+  constructor(brainDir, transport, { policy = null, appendDecision = appendSeedProjectionOnce } = {}) {
     if (!brainDir) throw new Error('owner outreach durable directory unavailable');
     this.dir = path.join(brainDir, 'owner-outreach-pending');
     this.heldDir = path.join(brainDir, 'owner-outreach-held');
     this.transport = transport;
     this.policy = policy;
+    this.ledgerPath = path.join(brainDir, 'event-ledger.jsonl');
+    this.appendDecision = appendDecision;
     this.inFlight = new Map();
     this.retryCursor = 0;
   }
@@ -25,11 +37,19 @@ class OwnerOutreachOutbox {
       if (fs.readdirSync(this.dir).length >= 100) throw new Error('owner outreach pending queue full');
       // A promised intent is saved before its attention reservation. Recovery
       // can finish admission after a crash here without losing that intent.
-      writeFileDurableSync(file, JSON.stringify({ schema: 'home23.owner-outreach-pending.v2', request, attentionIntent }), { mode: 0o600, strictDirectorySync: true });
+      const held = path.join(this.heldDir, path.basename(file));
+      let previous = null;
+      if (fs.existsSync(held)) {
+        previous = JSON.parse(fs.readFileSync(held, 'utf8')).entry;
+        if (JSON.stringify(previous?.request) !== JSON.stringify(request) || !sameIntent(previous?.attentionIntent, attentionIntent)) {
+          throw new Error('owner outreach delivery ID conflicts with held content');
+        }
+      }
+      writeFileDurableSync(file, JSON.stringify(previous || { schema: 'home23.owner-outreach-pending.v2', request, attentionIntent }), { mode: 0o600, strictDirectorySync: true });
     } else {
       const previous = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (JSON.stringify(previous.request) !== JSON.stringify(request)
-        || JSON.stringify(previous.attentionIntent || null) !== JSON.stringify(attentionIntent)) throw new Error('owner outreach delivery ID conflicts with pending content');
+        || !sameIntent(previous.attentionIntent || null, attentionIntent)) throw new Error('owner outreach delivery ID conflicts with pending content');
     }
     return this._deliver(file);
   }
@@ -56,6 +76,23 @@ class OwnerOutreachOutbox {
         let attentionDecision = null;
         if (this.policy) {
           attentionDecision = this.policy.reserve(entry.attentionIntent, entry.request);
+        }
+        // A candidate's canonical witness must reach the Seed source before
+        // any external transport. Attempt/projected markers live in this
+        // existing pending intent: only interrupted attempts need a scan.
+        for (const event of entry.attentionIntent?.learningDecisionEvents || []) {
+          entry.decisionProjection ||= { attempted: [], projected: [] };
+          if (entry.decisionProjection.projected.includes(event.event_id)) continue;
+          const firstAttempt = !entry.decisionProjection.attempted.includes(event.event_id);
+          if (firstAttempt) {
+            entry.decisionProjection.attempted.push(event.event_id);
+            writeFileDurableSync(file, JSON.stringify(entry), { mode: 0o600, strictDirectorySync: true });
+          }
+          this.appendDecision(this.ledgerPath, event, { newUnique: firstAttempt });
+          entry.decisionProjection.projected.push(event.event_id);
+          writeFileDurableSync(file, JSON.stringify(entry), { mode: 0o600, strictDirectorySync: true });
+        }
+        if (this.policy) {
           if (!attentionDecision.allow) {
             // Keep ungrounded legacy and definitively suppressed content for
             // inspection without allowing it to fill the retry queue. State

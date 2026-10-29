@@ -20,6 +20,9 @@
 import type { SituationCell, SourceEvent, CellDispositions } from './types.js';
 import { CONTINUOUS_STATE_DIM } from './types.js';
 import type { Readouts } from './metabolism.js';
+import type { LearningState } from '../../shared/seed-learning.cjs';
+import { consolidateLearning, recordLearningDecision, applyLearningFeedback, learningStateWithinBudget } from '../../shared/seed-learning.cjs';
+import { createHash } from 'node:crypto';
 
 export const PLASTICITY_VERSION = 1;
 
@@ -72,6 +75,8 @@ export interface CellPlasticState {
    * reality responded without correcting. */
   corroborations: number;
   consolidations: number;
+  /** Prospective scoped contributions. Absent on historical checkpoints. */
+  experience?: LearningState;
 }
 
 /** Seed-level development: cellId → plastic state. THE ablation target. */
@@ -110,6 +115,7 @@ export function cloneCellPlasticState(p: CellPlasticState): CellPlasticState {
     updatesSinceConsolidation: p.updatesSinceConsolidation,
     corroborations: p.corroborations,
     consolidations: p.consolidations,
+    ...(p.experience !== undefined ? { experience: structuredClone(p.experience) } : {}),
   };
 }
 
@@ -146,6 +152,10 @@ export function developmentMagnitude(dev: DevelopmentalState): number {
     sum += Math.abs(p.wakeThresholdDelta) + Math.abs(p.salienceWeightDelta) + Math.abs(p.inhibitionDelta);
     for (const v of Object.values(p.routingAffinity)) sum += Math.abs(v);
     for (const v of Object.values(p.trust)) sum += Math.abs(v - 1);
+    for (const lesson of p.experience?.lessons ?? []) if (lesson.active) {
+      sum += Math.abs(lesson.value);
+      for (const value of lesson.readoutDelta ?? []) sum += Math.abs(value);
+    }
   }
   return sum;
 }
@@ -167,7 +177,7 @@ function clip(v: number, lo: number, hi: number): number {
 
 export interface PlasticUpdateSummary {
   cellId: string;
-  rule: 'correction.v1' | 'consequence.v1' | 'attenuation.v1' | 'resolution.v1';
+  rule: 'correction.v1' | 'consequence.v1' | 'attenuation.v1' | 'resolution.v1' | 'resolution.v2';
   salienceDeltaNorm: number;
   wakeThresholdDelta: number;
   routingKey: string;
@@ -244,7 +254,10 @@ export function effectiveSalienceWeights(
 ): Float64Array {
   if (plastic === undefined) return base;
   const out = new Float64Array(base.length);
-  for (let i = 0; i < base.length; i++) out[i] = (base[i] ?? 0) + (plastic.readoutSalience[i] ?? 0);
+  for (let i = 0; i < base.length; i++) {
+    const scoped = (plastic.experience?.lessons ?? []).filter(lesson => lesson.active).reduce((sum, lesson) => sum + (lesson.readoutDelta?.[i] ?? 0), 0);
+    out[i] = (base[i] ?? 0) + clip((plastic.readoutSalience[i] ?? 0) + scoped, -READOUT_WEIGHT_CLIP, READOUT_WEIGHT_CLIP);
+  }
   return out;
 }
 
@@ -392,6 +405,27 @@ export function applyResolutionPlasticity(
 
   const eta = LEARNING_RATE * RESOLUTION_ETA_FACTOR * (accurate ? (1 - error) : error);
   const sign = accurate ? 1 : -1;
+  const prediction = cell.predictions.find(p => p.predictionId === predictionId && p.resolvedAt !== undefined);
+  if (prediction?.learningVersion === 2) {
+    if (!prediction.eligibility || !prediction.resolutionEvidence?.refs.length) return null;
+    const scope = `prediction:${createHash('sha256').update(prediction.claim.toLowerCase().replace(/\W+/g, ' ').trim()).digest('hex').slice(0, 24)}`;
+    const refs = prediction.resolutionEvidence.refs.map(ref => ref.refId);
+    const decision = { schema: 'home23.learning-decision.v1', decisionId: predictionId, scope, tags: ['prediction'],
+      sourceRefs: prediction.eligibility.sourceRefs.length ? prediction.eligibility.sourceRefs : [`prediction:${predictionId}`], criterion: 'prediction', cellId: cell.id, observedAt: prediction.createdAt };
+    const recorded = recordLearningDecision(plastic.experience, decision);
+    const applied = applyLearningFeedback(recorded.state, { schema: 'home23.learning-feedback.v1', decisionId: predictionId, scope,
+      direction: accurate ? 'reinforce' : 'attenuate', tags: ['prediction'], basis: 'outcome-assessment', evidenceRefs: refs },
+    { feedbackId: `prediction:${predictionId}`, observedAt: prediction.resolvedAt!, assessment: { criterion: 'prediction', evidenceRefs: refs } });
+    if (!applied.applied || !applied.lesson) return null;
+    applied.lesson.context = [...prediction.eligibility.context];
+    applied.lesson.readoutDelta = prediction.eligibility.context.map(value => clip(sign * eta * value, -READOUT_WEIGHT_CLIP, READOUT_WEIGHT_CLIP));
+    if (!learningStateWithinBudget(applied.state)) return null;
+    plastic.experience = applied.state;
+    plastic.updateCount += 1;
+    return { cellId: cell.id, rule: 'resolution.v2', predictionId, predictionError: error,
+      salienceDeltaNorm: Math.sqrt(applied.lesson.readoutDelta.reduce((sum, value) => sum + value * value, 0)),
+      wakeThresholdDelta: plastic.wakeThresholdDelta, routingKey: scope, routingAffinity: 0, trustKey: scope, trust: 1, updateCount: plastic.updateCount };
+  }
   let deltaNormSq = 0;
   for (let i = 0; i < cell.continuousState.length; i++) {
     const x = cell.continuousState[i] ?? 0;
@@ -451,11 +485,13 @@ function cellMagnitude(p: CellPlasticState): number {
  * the rollback path for bad deltas: unearned changes fade across quiet gaps
  * instead of compounding. Cells with no provisional load are untouched.
  */
-export function applyConsolidation(dev: DevelopmentalState): ConsolidationCellSummary[] {
+export function applyConsolidation(dev: DevelopmentalState, asOf?: string): ConsolidationCellSummary[] {
   const summaries: ConsolidationCellSummary[] = [];
   for (const cellId of Object.keys(dev).sort()) {
     const p = dev[cellId];
-    if (p === undefined || p.updatesSinceConsolidation === 0) continue;
+    if (p === undefined) continue;
+    if (p.experience !== undefined) p.experience = consolidateLearning(p.experience, asOf);
+    if (p.updatesSinceConsolidation === 0) continue;
     const magnitudeBefore = cellMagnitude(p);
     const corroborationRatio = Math.min(1, p.corroborations / p.updatesSinceConsolidation);
     const retention = CONSOLIDATION_RETENTION_FLOOR + (1 - CONSOLIDATION_RETENTION_FLOOR) * corroborationRatio;
