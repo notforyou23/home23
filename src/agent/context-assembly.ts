@@ -164,6 +164,10 @@ export interface OperationalSurfaceGateInput {
   /** Turn + recent context for substring fallback (same haystack as triggered surfaces). */
   matchText: string;
   label: string;
+  /** Component labels do not change the existing semantic relevance space. */
+  meaningLabel?: string;
+  /** Additional applicability tags retain the original surface's broad tag. */
+  learningTags?: readonly string[];
   anchors: readonly string[];
   semanticEmbed?: (t: string) => number[] | null;
   recipeId?: string | null;
@@ -180,7 +184,7 @@ export function shouldLoadOperationalSurface(input: OperationalSurfaceGateInput)
 }
 
 export function operationalSurfaceDecision(input: OperationalSurfaceGateInput) {
-  const anchorText = `${input.label}: ${input.anchors.join(', ')}`;
+  const anchorText = `${input.meaningLabel ?? input.label}: ${input.anchors.join(', ')}`;
   const policy = resolveAttentionPolicy(input.recipeId);
   const subject = currentTurnSubject(input.turnText, [{ role: 'user', content: input.matchText }]);
   const score = semanticMatchScore(subject, anchorText, input.semanticEmbed, {
@@ -193,7 +197,8 @@ export function operationalSurfaceDecision(input: OperationalSurfaceGateInput) {
   const requestVerb = /\b(?:show|list|read|check|summari[sz]e|brief|describe|explain|review|outline|report)\b/i.test(input.turnText);
   const explicit = input.anchors.some(anchor => current.includes(anchor.toLowerCase()))
     || (relevant && (asksForResult || requestVerb));
-  const tags = ['operational', input.label.toLowerCase(), explicit ? 'requested' : 'automatic'];
+  const tags = [...new Set(['operational', ...(input.learningTags ?? [input.label.toLowerCase()]),
+    explicit ? 'requested' : 'automatic'])];
   const learned = evaluateLearnedDecision(input.learning, { scope: 'foreground.context', tags });
   return { allow: relevant && (explicit || !learned.suppress), relevant, explicit, tags, learned };
 }
@@ -627,10 +632,17 @@ export function buildOperatorObligationContextSection(
   return snapshot ? renderOperatorObligationContextSection(snapshot, now) : '';
 }
 
-function renderAgencyContextSection(snapshot: AgencyContextSnapshot): string {
+interface AgencyContextSections {
+  full: string;
+  status: string;
+  pursuits: string;
+}
+
+function renderAgencyContextSections(snapshot: AgencyContextSnapshot): AgencyContextSections {
   const { state } = snapshot;
   const pursuitsPath = join(snapshot.agencyDir, 'pursuits.jsonl');
-  if (!snapshot.stateReadable && !existsSync(pursuitsPath)) return '';
+  const empty = { full: '', status: '', pursuits: '' };
+  if (!snapshot.stateReadable && !existsSync(pursuitsPath)) return empty;
 
   const latest = new Map<string, Record<string, unknown>>();
   for (const row of readJsonlTail(pursuitsPath, 300)) {
@@ -647,7 +659,7 @@ function renderAgencyContextSection(snapshot: AgencyContextSnapshot): string {
   const active = projected.filter(row => !row.execution.dormant);
   const dormant = projected.filter(row => row.execution.dormant);
 
-  if (stored.length === 0 && Object.keys(state).length === 0) return '';
+  if (stored.length === 0 && Object.keys(state).length === 0) return empty;
 
   const attention = state.attention && typeof state.attention === 'object'
     ? state.attention as Record<string, unknown>
@@ -709,7 +721,7 @@ function renderAgencyContextSection(snapshot: AgencyContextSnapshot): string {
     ? `none; stored action for ${next.pursuit.id} is dormant (${next.execution.dormancyReason})`
     : nextAction ? `${[nextAction.kind, nextAction.pursuitId, nextAction.reason].filter(Boolean).join(' | ')} (planning record, not an execution receipt)` : 'none';
 
-  return [
+  const statusLines = [
     '## Resident Agency',
     '',
     `Mode: ${state.mode || 'unknown'}`,
@@ -720,13 +732,42 @@ function renderAgencyContextSection(snapshot: AgencyContextSnapshot): string {
     `Open contradictions: ${truth.unresolvedContradictions ?? 0}`,
     ...(organLines.length > 0 ? ['', 'Body organs:', ...organLines] : []),
     ...(promptContractLines.length > 0 ? ['', 'Prompt contracts:', ...promptContractLines] : []),
-    '',
+  ];
+  const fullPursuitLines = [
     'Pursuit plans (execution shown separately):',
     ...lines,
     ...(active.length > lines.length ? [`${active.length - lines.length} additional stored plans omitted; read ${JSON.stringify(pursuitsPath)} for the full snapshot.`] : []),
     ...(dormantLines.length ? ['', 'Dormant initiatives (not currently executing):', ...dormantLines] : []),
     ...(dormant.length > dormantLines.length ? [`${dormant.length - dormantLines.length} additional dormant initiatives omitted; read ${JSON.stringify(pursuitsPath)} and resident-initiation.json for details.`] : []),
-  ].join('\n');
+  ];
+  // A conversation can use the substance of a pursuit without inheriting the
+  // machine's queue, mode, organs and prompt contracts. Keep the full renderer
+  // for its existing callers, while giving foreground selection independent
+  // choices. A stored plan still never establishes execution or completion.
+  const pursuitLines = active.slice(0, 5).map(({ pursuit }) => [
+    `- ${pursuit.id}: ${pursuit.title || pursuit.summary || 'Untitled pursuit'}`,
+    `authority=${pursuit.authorityLevel || 'L1'}`,
+    pursuit.nextMove ? `planned_next_move=${pursuit.nextMove}` : null,
+    pursuit.desiredChangedFuture ? `changed_future=${pursuit.desiredChangedFuture}` : null,
+  ].filter(Boolean).join(' | '));
+  const dormantPursuitLines = dormant.slice(0, 5).map(({ pursuit, execution }) =>
+    `- ${pursuit.id}: ${pursuit.title || pursuit.summary || 'Untitled pursuit'} | initiative=dormant (${execution.dormancyReason}); stored plan retained, not currently executing or a completion claim.`);
+  return {
+    full: [...statusLines, '', ...fullPursuitLines].join('\n'),
+    status: ['## Resident Agency — Operational Status', ...statusLines.slice(1)].join('\n'),
+    pursuits: [
+      '## Resident Agency — Pursuits',
+      'Stored pursuit plans describe intended work. They do not establish that work is running or that an objective is verified.',
+      ...(pursuitLines.length ? pursuitLines : ['- no current pursuit plans']),
+      ...(active.length > pursuitLines.length ? [`${active.length - pursuitLines.length} additional stored plans omitted; read ${JSON.stringify(pursuitsPath)} for the full snapshot.`] : []),
+      ...(dormantPursuitLines.length ? ['', 'Dormant plans (not currently executing):', ...dormantPursuitLines] : []),
+      ...(dormant.length > dormantPursuitLines.length ? [`${dormant.length - dormantPursuitLines.length} additional dormant plans omitted; read ${JSON.stringify(pursuitsPath)} and resident-initiation.json for details.`] : []),
+    ].join('\n'),
+  };
+}
+
+function renderAgencyContextSection(snapshot: AgencyContextSnapshot): string {
+  return renderAgencyContextSections(snapshot).full;
 }
 
 export function buildAgencyContextSection(projectRoot: string, agentName: string): string {
@@ -1129,8 +1170,15 @@ export async function assembleContext(
     });
   }
 
-  const opsDecision = (label: string, anchors: readonly string[]) => {
-    const decision = operationalSurfaceDecision({ ...opsGateBase, label, anchors });
+  const learningDecisionIds: string[] = [];
+  const opsDecision = (label: string, anchors: readonly string[], behavior: {
+    component: 'routine-operational-status' | 'pursuit-context' | 'worker-context';
+    description: string;
+    meaningLabel?: string;
+    learningTags?: readonly string[];
+  }) => {
+    const decision = operationalSurfaceDecision({ ...opsGateBase, label, anchors,
+      meaningLabel: behavior.meaningLabel, learningTags: behavior.learningTags });
     const decisionId = `context:${randomUUID()}`;
     const event: EventEnvelope = { event_id: decisionId, event_type: 'LearningDecisionObserved', session_id: config.sessionId,
       timestamp: new Date().toISOString(), actor: 'assembly', payload: {
@@ -1138,6 +1186,8 @@ export async function assembleContext(
         tags: decision.tags, criterion: 'owner-value', sourceRefs: [`surface:${label}`],
         choice: decision.allow ? 'admit' : 'omit', relevant: decision.relevant, explicit: decision.explicit,
         learning: decision.learned,
+        behavior: { kind: 'context-selection', surface: label,
+          component: behavior.component, description: behavior.description },
       } };
     if (decision.relevant) {
       if (ledger) {
@@ -1157,10 +1207,14 @@ export async function assembleContext(
         }
       }
       events.push(event);
+      learningDecisionIds.push(decisionId);
     }
     return decision;
   };
-  const workerDecision = opsDecision('WORKERS', WORKER_MEANING_ANCHORS);
+  const workerDecision = opsDecision('WORKERS', WORKER_MEANING_ANCHORS, {
+    component: 'worker-context',
+    description: 'Select worker roster, capabilities and recent execution/verification receipts for the model context. This records context admission, not what the assistant said.',
+  });
   if (workerDecision.allow) {
     try {
       const workerSection = buildWorkerContextSection(projectRoot, agentName);
@@ -1179,18 +1233,41 @@ export async function assembleContext(
     }
   }
 
-  const agencyDecision = opsDecision('AGENCY', AGENCY_MEANING_ANCHORS);
-  if (agencyDecision.allow) {
+  // Both components retain the original relevance anchor and the broad agency
+  // tag. Existing broad lessons keep their meaning; new status-only teaching
+  // cannot silently suppress the substance of a pursuit.
+  const agencyStatusDecision = opsDecision('AGENCY_STATUS', AGENCY_MEANING_ANCHORS, {
+    meaningLabel: 'AGENCY', learningTags: ['agency', 'agency_status'],
+    component: 'routine-operational-status',
+    description: 'Select routine resident machine status for the model context: mode, current execution/focus, stored planning queue and counts, next autonomous action, contradictions, body organs and prompt contracts. Substantive pursuit plans are selected separately. This is context admission, not the outward reply.',
+  });
+  const agencyDecision = opsDecision('AGENCY', AGENCY_MEANING_ANCHORS, {
+    meaningLabel: 'AGENCY', learningTags: ['agency', 'agency_pursuits'],
+    component: 'pursuit-context',
+    description: 'Select substantive stored pursuit plans for the model context: titles, intended next moves, desired changed futures, authority and dormant-plan qualifications. This does not establish execution or completion. Routine machine status is selected separately.',
+  });
+  if (agencyStatusDecision.allow || agencyDecision.allow) {
     try {
-      const agencySection = agencySnapshot ? renderAgencyContextSection(agencySnapshot) : '';
-      if (agencySection) {
+      const agencySections = agencySnapshot ? renderAgencyContextSections(agencySnapshot) : null;
+      const recovery = agencySnapshot
+        ? readSources([agencySnapshot.statePath, join(agencySnapshot.agencyDir, 'pursuits.jsonl')])
+        : '';
+      if (agencyStatusDecision.allow && agencySections?.status) {
+        surfacesSelected.push('AGENCY_STATUS');
+        salienceItems.push({
+          text: `\nRelevant context (AGENCY_STATUS):\n${agencySections.status}`,
+          score: Math.min(1, Math.max(0, 0.98 + agencyStatusDecision.learned.adjustment * 0.2)),
+          source: 'surface:AGENCY_STATUS', surface: 'AGENCY_STATUS', recovery,
+        });
+      }
+      if (agencyDecision.allow && agencySections?.pursuits) {
         surfacesSelected.push('AGENCY');
         salienceItems.push({
-          text: `\nRelevant context (AGENCY):\n${agencySection}`,
+          text: `\nRelevant context (AGENCY):\n${agencySections.pursuits}`,
           score: Math.min(1, Math.max(0, 0.98 + agencyDecision.learned.adjustment * 0.2)),
           source: 'surface:AGENCY',
           surface: 'AGENCY',
-          recovery: readSources([agencySnapshot!.statePath, join(agencySnapshot!.agencyDir, 'pursuits.jsonl')]),
+          recovery,
         });
       }
     } catch {
@@ -1244,6 +1321,7 @@ export async function assembleContext(
       event_id: randomUUID(), event_type: 'RetrievalExecuted', session_id: config.sessionId,
       timestamp: new Date().toISOString(), actor: 'assembly', payload: {
         brain_cue_count: brainCues.length,
+        learningDecisionIds,
         surfaces_selected: surfacesSelected,
         surfaces_loaded: surfacesLoaded,
         surfaces_omitted: surfacesOmitted,

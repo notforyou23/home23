@@ -327,7 +327,7 @@ test('optional context waits for durable decision evidence and recovers after an
     const failed = await assemble(workspacePath, 'Which directions are drawing your attention?', [], { semanticEmbed, ledger });
     assert.ok(!failed.surfacesLoaded.includes('AGENCY'));
     assert.ok(!failed.surfacesLoaded.includes('WORKERS'));
-    assert.equal(failed.events.filter(event => event.event_type === 'LearningDecisionProjectionDeferred').length, 2);
+    assert.equal(failed.events.filter(event => event.event_type === 'LearningDecisionProjectionDeferred').length, 3);
     const direct = await assemble(workspacePath, 'Show the agency pursuit', [], { semanticEmbed, ledger });
     assert.ok(direct.surfacesLoaded.includes('AGENCY'), 'logging failure does not withhold directly requested information');
     rmSync(file, { recursive: true });
@@ -335,7 +335,7 @@ test('optional context waits for durable decision evidence and recovers after an
     assert.ok(recovered.surfacesLoaded.includes('AGENCY'));
     const decisions = readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line))
       .filter(event => event.event_type === 'LearningDecisionObserved');
-    assert.equal(decisions.length, 2);
-    assert.equal(new Set(decisions.map(event => event.event_id)).size, 2, 'finish logging does not duplicate durable decisions');
+    assert.equal(decisions.length, 3);
+    assert.equal(new Set(decisions.map(event => event.event_id)).size, 3, 'finish logging does not duplicate durable decisions');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

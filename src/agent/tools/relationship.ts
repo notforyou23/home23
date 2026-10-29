@@ -24,8 +24,7 @@ import type {
   RelationshipLearningFeedback,
 } from '../relationship-ledger.js';
 
-// The orchestrator adds `relationshipLedger` to ToolContext; we read it through
-// a widened view so this file never has to edit types.ts.
+// These stores are supplied by the orchestrator, never constructed by a tool.
 type RelationshipToolContext = ToolContext & {
   relationshipLedger?: RelationshipLedger | null;
   seedStateDir?: string;
@@ -160,7 +159,7 @@ For conduct learning, statement must be the ENTIRE exact current authenticated m
 
 export const relationshipRecallTool: ToolDefinition = {
   name: 'relationship_recall',
-  description: 'Deliberately pull active relationship context with jtr. Set learning=true and omit scope first to discover actual runtime scopes, recent decision identities and active lessons before recording feedback or superseding a lesson. Scope is an exact runtime key, not a natural-language topic. Reads only this resident’s configured Seed; never guesses a decision identity.',
+  description: 'Deliberately pull active relationship context with jtr. Set learning=true and omit scope first to discover actual runtime scopes, recent decisions, bounded runtime behavior/delivery evidence and active lessons before recording feedback or superseding a lesson. A context-selection decision concerns what entered the model context, not necessarily what the assistant said. Match the owner’s instruction to the described component, not just an opaque surface name. Scope is an exact runtime key, not a natural-language topic. Reads only this resident’s configured Seed and runtime evidence; never guesses a decision identity.',
   input_schema: {
     type: 'object',
     properties: {
@@ -189,11 +188,18 @@ export const relationshipRecallTool: ToolDefinition = {
             requestedScope: scope, scopeStatus: 'unknown', availableScopes, decisions: [], lessons: [],
             note: 'This scope does not occur in the retained learning projection. Omit scope to inspect actual decisions and lessons, or choose an exact availableScopes key. Empty results for this filter do not mean the resident has no learning. Do not invent a matching decision.' }, null, 2) };
         }
-        const decisions = snapshot.decisions.filter(decision => !scope || decision.scope === scope).slice(-limit).reverse();
+        const witnesses = snapshot.decisions.filter(decision => !scope || decision.scope === scope).slice(-limit).reverse();
+        let evidence: Awaited<ReturnType<NonNullable<ToolContext['readLearningDecisionEvidence']>>> = {};
+        if (ctx.readLearningDecisionEvidence) {
+          try { evidence = await ctx.readLearningDecisionEvidence(witnesses); }
+          catch { /* Readback failure never invents a behavior or changes the retained witness. */ }
+        }
+        const decisions = witnesses.map(decision => ({ ...decision,
+          evidence: evidence[decision.decisionId] ?? { status: 'unavailable', reason: 'runtime_evidence_reader_unavailable' } }));
         const lessons = snapshot.lessons.filter(lesson => lesson.active !== false && (!scope || lesson.scope === scope)).slice(-limit).reverse();
         return { content: JSON.stringify({ seedSequence: snapshot.seq ?? null,
           requestedScope: scope || null, scopeStatus: scope ? 'matched' : 'all', availableScopes, decisions, lessons,
-          note: 'Decision identities are actual runtime witnesses. Choose the matching prior choice; missing or ambiguous identity is not permission to guess. Source projection and Seed application are separate stages.' }, null, 2) };
+          note: 'Decision identities are actual runtime witnesses. Runtime behavior evidence describes the selected component; delivery reports what actually reached context and may be unavailable or partial. Standing owner feedback can teach a matching context-admission choice even when the outward reply was acceptable. Do not equate every AGENCY/pursuit decision with machine status. Missing or ambiguous evidence is not permission to guess. Preserve the exact current owner message and its exclusions. Source projection and Seed application are separate stages.' }, null, 2) };
       }
       const ledger = ledgerOf(ctx);
       if (!ledger) return { content: LEDGER_UNAVAILABLE, is_error: true };

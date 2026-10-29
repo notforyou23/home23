@@ -209,6 +209,8 @@ export interface ToolContext {
   memoryObjectStore?: MemoryObjectStore;
   /** Runtime-owned Seed path for bounded decision/lesson recall. Never a model argument. */
   seedStateDir?: string;
+  /** Bounded readback bound to this resident's runtime ledger, never a model-supplied path. */
+  readLearningDecisionEvidence?: import('./learning-decision-evidence.js').ReadLearningDecisionEvidence;
   /** Loop-owned curated working-relationship ledger (Step 30, Piece 2). */
   relationshipLedger?: RelationshipLedger | null;
   /** Loop-owned owner-distill session boundary configuration, used for read-only recall. */

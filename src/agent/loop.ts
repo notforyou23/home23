@@ -18,7 +18,7 @@ import { resolveProviderKey, isAuthError, refreshManagedOAuth } from './provider
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 const modelDiscovery = createRequire(import.meta.url)('../../shared/model-discovery.cjs');
 import type { ToolRegistry } from './tools/index.js';
 import type { ContextManager } from './context.js';
@@ -54,6 +54,7 @@ import {
   continuityEnrichmentDisclosure,
 } from './retrieval-eval.js';
 import { EventLedger } from './event-ledger.js';
+import { createLearningDecisionEvidenceReader } from './learning-decision-evidence.js';
 import { TriggerIndex } from './trigger-index.js';
 import { MemoryObjectStore } from './memory-objects.js';
 import { RelationshipLedger } from './relationship-ledger.js';
@@ -1468,6 +1469,8 @@ export class AgentLoop {
         ? turnRuntime.delegatedFileAuthority?.fileMachineAccess === true : this.toolContext.fileMachineAccess === true,
       memoryObjectStore: this.memoryStore,
       seedStateDir: resolveSubstrateStateDir(this.workspacePath, this.situationalAwareness),
+      readLearningDecisionEvidence: createLearningDecisionEvidenceReader(
+        resolve(this.workspacePath, '..', 'brain', 'event-ledger.jsonl'), { signal: ac.signal }),
       relationshipLedger: this.relationshipLedger,
       ownerConversationSessionGapMinutes: this.ownerDistill?.sessionGapMinutes,
       parentWorkId: turnRuntime?.coordinationWorkDestination?.parentWorkId

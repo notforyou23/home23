@@ -162,3 +162,27 @@ that every future judgment improves, that a missing historical attachment can
 be reconstructed, or that the resident has subjective experience. Source
 verification, production activation and behavior observed in continued use
 remain separate facts.
+
+## Decision meaning in natural feedback
+
+A retained decision identity is eligibility evidence, but its opaque tags do
+not explain what the choice did. Natural feedback needs bounded readback of the
+runtime-authored component, actual admission choice and delivery receipt. The
+readback joins exact retained witnesses to the resident's original event ledger;
+it does not infer delivery from a reused session identity or scan all history.
+Missing, conflicting or incomplete evidence remains unavailable.
+
+Context selection and the outward reply are separate choices. An authenticated
+standing instruction may teach an actual matching context-selection choice even
+when the reply was acceptable. This does not authorize attaching feedback to an
+unrelated decision or converting an ambiguous preference into teaching.
+
+Routine operational status and meaningful pursuit context require separate
+decisions. AGENCY previously bundled both. Learning to omit queue counts,
+operating mode and machinery status must leave substantive pursuits available.
+Direct requests retain their exemption. Broad historical agency lessons retain
+their original effect; new feedback can name the narrower status component.
+
+Descriptions and delivery joins belong to prospective source events and tool
+readback. They do not change the Seed learning-state format, relabel historical
+receipts or grant a model authority to manufacture a lesson.

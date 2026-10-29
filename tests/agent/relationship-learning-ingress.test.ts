@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { RelationshipLedger } from '../../src/agent/relationship-ledger.js';
 import { relationshipNoteTool, relationshipRecallTool, relationshipUpdateTool } from '../../src/agent/tools/relationship.js';
 import { learningLessonId } from '../../shared/seed-learning.cjs';
+import { createLearningDecisionEvidenceReader } from '../../src/agent/learning-decision-evidence.js';
 
 function fixture(t: { after(fn: () => void): void }, text: string) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-learning-ingress-'));
@@ -364,6 +365,59 @@ test('learning recall exposes bounded actual decision identities from only the r
   assert.deepEqual(inspected.decisions.map((decision: any) => decision.decisionId), ['actual-memory-choice']);
   assert.doesNotMatch(result.content, /actual-other-choice/);
   assert.ok(inspected.decisions[0].sourceRefs.includes('machine:observed-1'));
+  assert.deepEqual(inspected.decisions[0].evidence,
+    { status: 'unavailable', reason: 'runtime_evidence_reader_unavailable' });
+});
+
+test('learning recall enriches only retained witnesses through the runtime-owned reader, without granting new authority', async t => {
+  const { root, brain, ctx, ledger } = fixture(t, 'Keep routine machine status out of personal conversations unless I ask.');
+  const stateDir = path.join(root, 'seed');
+  const decision = { schema: 'home23.learning-decision.v1', decisionId: 'context:actual-status-choice',
+    scope: 'foreground.context', tags: ['operational', 'agency', 'agency_status', 'automatic'],
+    sourceRefs: ['surface:AGENCY_STATUS'], criterion: 'owner-value', observedAt: '2026-10-29T12:00:00.000Z' };
+  writeLearningSnapshot(stateDir, [decision]);
+  const event = { event_id: decision.decisionId, event_type: 'LearningDecisionObserved', actor: 'assembly',
+    timestamp: decision.observedAt, session_id: 'coordination:channel:actual-work', payload: { ...decision,
+      choice: 'admit', relevant: true, explicit: false,
+      behavior: { kind: 'context-selection', surface: 'AGENCY_STATUS', component: 'routine-operational-status',
+        description: 'Include routine mode and planning queue status in the model context.' } } };
+  const source = path.join(brain, 'event-ledger.jsonl');
+  fs.writeFileSync(source, `${JSON.stringify(event)}\n`);
+  const original = fs.readFileSync(source);
+  const read = createLearningDecisionEvidenceReader(source);
+  let receivedIds: string[] = [];
+  const result = await relationshipRecallTool.execute({ learning: true, scope: 'foreground.context',
+    decisionId: 'forged-input-choice', ledgerPath: path.join(root, 'not-the-resident-ledger') }, {
+    ...ctx, seedStateDir: stateDir, readLearningDecisionEvidence: async (witnesses: any[]) => {
+      receivedIds = witnesses.map(witness => witness.decisionId);
+      return read(witnesses);
+    },
+  });
+  assert.equal(result.is_error, undefined, result.content);
+  const inspected = JSON.parse(result.content);
+  assert.deepEqual(receivedIds, [decision.decisionId]);
+  assert.equal(inspected.decisions[0].evidence.status, 'verified');
+  assert.equal(inspected.decisions[0].evidence.behavior.component, 'routine-operational-status');
+  assert.equal(inspected.decisions[0].evidence.delivery.status, 'unavailable');
+  assert.match(inspected.note, /outward reply was acceptable/);
+  assert.match(inspected.note, /not equate every AGENCY/);
+  assert.equal(ledger.listEntries().length, 0, 'explaining evidence cannot record teaching');
+  assert.deepEqual(fs.readFileSync(source), original);
+});
+
+test('failed runtime evidence readback preserves actual witness identities without inventing descriptions', async t => {
+  const { root, ctx } = fixture(t, 'That was useful.');
+  const stateDir = path.join(root, 'seed');
+  writeLearningSnapshot(stateDir, [{ schema: 'home23.learning-decision.v1', decisionId: 'context:retained',
+    scope: 'foreground.context', tags: ['operational', 'agency', 'automatic'],
+    sourceRefs: ['surface:AGENCY'], criterion: 'owner-value' }]);
+  const result = await relationshipRecallTool.execute({ learning: true }, { ...ctx, seedStateDir: stateDir,
+    readLearningDecisionEvidence: async () => { throw new Error('bounded ledger unavailable'); } });
+  assert.equal(result.is_error, undefined, result.content);
+  const inspected = JSON.parse(result.content);
+  assert.equal(inspected.decisions[0].decisionId, 'context:retained');
+  assert.deepEqual(inspected.decisions[0].evidence,
+    { status: 'unavailable', reason: 'runtime_evidence_reader_unavailable' });
 });
 
 test('learning recall distinguishes an unknown human topic from actual available scopes', async t => {

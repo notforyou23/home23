@@ -11,7 +11,7 @@ import { SeedProcess } from '../../substrate/src/seed.js';
 import { EventLedgerTailAdapter } from '../../substrate/src/adapters/event-ledger-tail.js';
 import { readSeedLearning } from '../../src/substrate/learning-state.js';
 
-test('foreground selection changes after actual authenticated learning while facts, query and episodes remain fixed', async t => {
+test('foreground status selection changes after actual authenticated learning while pursuit context and history remain available', async t => {
   const root = mkdtempSync(join(tmpdir(), 'seed-foreground-learning-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspacePath = join(root, 'instances', 'resident', 'workspace');
@@ -34,19 +34,20 @@ test('foreground selection changes after actual authenticated learning while fac
   const events = new EventLedger(brainDir);
   const original = await assembleContext('Which directions are drawing your attention lately?', 'owner-chat', [], config, events);
   assert.ok(original.surfacesLoaded.includes('AGENCY'), 'a semantically relevant optional candidate is initially eligible');
+  assert.ok(original.surfacesLoaded.includes('AGENCY_STATUS'));
   const choice = original.events.find(event => event.event_type === 'LearningDecisionObserved'
-    && (event.payload.tags as string[]).includes('agency'))!;
+    && (event.payload.sourceRefs as string[]).includes('surface:AGENCY_STATUS'))!;
   const adapter = new EventLedgerTailAdapter({ sourcePath: join(brainDir, 'event-ledger.jsonl'),
     cursorDir: join(root, 'event-cursor'), fromEnd: false });
   for (const event of adapter.pullSync()) { seed.transition(event); adapter.commit(event.endOffset); }
-  const statement = 'Those automatic operational digressions are noise. Show less of them unless I ask for them.';
+  const statement = 'Keep routine machine status out of personal conversations unless I ask.';
   const ingress = { chatId: 'owner-chat', messageRef: 'owner:conduct-feedback', userText: statement };
   const relationshipLedger = new RelationshipLedger(brainDir, {
     validateCorrectionIngress: candidate => JSON.stringify(candidate) === JSON.stringify(ingress),
   });
-  const taught = await relationshipNoteTool.execute({ type: 'attenuation', title: 'Optional operational context', statement,
+  const taught = await relationshipNoteTool.execute({ type: 'attenuation', title: 'Routine machine status', statement,
     learning: { schema: 'home23.learning-feedback.v1', decisionId: choice.payload.decisionId,
-      scope: 'foreground.context', direction: 'attenuate', tags: ['operational', 'agency', 'automatic'],
+      scope: 'foreground.context', direction: 'attenuate', tags: ['operational', 'agency', 'agency_status', 'automatic'],
       excludes: ['requested'], evidenceRefs: [ingress.messageRef], basis: 'owner-feedback' } },
   { chatId: ingress.chatId, authenticatedUserMessage: { chatId: ingress.chatId, messageRef: ingress.messageRef, text: statement }, relationshipLedger } as never);
   assert.equal(taught.is_error, undefined, taught.content);
@@ -61,12 +62,16 @@ test('foreground selection changes after actual authenticated learning while fac
   const actual = await assembleContext(query, 'owner-chat', [], config);
   const control = await assembleContext(query, 'owner-chat', [], { ...config,
     readLearning: () => ({ ...learned, lessons: [] }) });
-  assert.ok(!actual.surfacesLoaded.includes('AGENCY'), 'the learned contribution changes actual selection');
-  assert.ok(control.surfacesLoaded.includes('AGENCY'), 'removing only learning restores the otherwise eligible selection');
-  assert.doesNotMatch(actual.block, /Optional operational digression/);
+  assert.ok(!actual.surfacesLoaded.includes('AGENCY_STATUS'), 'the learned contribution changes actual status selection');
+  assert.ok(control.surfacesLoaded.includes('AGENCY_STATUS'), 'removing only learning restores the otherwise eligible status');
+  assert.ok(actual.surfacesLoaded.includes('AGENCY'), 'status teaching preserves the substance of pursuits');
+  assert.doesNotMatch(actual.block, /Stored planning queue depth: 2/);
+  assert.match(control.block, /Stored planning queue depth: 2/);
+  assert.match(actual.block, /Optional operational digression/);
   assert.match(control.block, /Optional operational digression/);
   const requested = await assembleContext('Show the agency pursuit and next move', 'owner-chat', [], config);
   assert.ok(requested.surfacesLoaded.includes('AGENCY'), 'a direct request remains eligible');
+  assert.ok(requested.surfacesLoaded.includes('AGENCY_STATUS'), 'a direct request still admits routine status');
   const paraphrased = await assembleContext('What concrete progress have you made?', 'owner-chat', [], config);
   assert.ok(paraphrased.surfacesLoaded.includes('AGENCY'), 'a relevant direct result request needs no literal surface anchor');
   for (const query of ['Please show me your concrete progress so far', 'Summarize the concrete progress you have made']) {
