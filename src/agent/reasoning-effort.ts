@@ -89,8 +89,26 @@ export function resolveConfiguredReasoningEffort(
   model: string,
   defaultEffort?: ReasoningEffort,
   modelEfforts?: Record<string, ReasoningEffort>,
+  provider?: string,
+  capturedCapabilities?: Record<string, any> | null,
 ): ReasoningEffort {
-  return modelEfforts?.[model] ?? defaultEffort ?? DEFAULT_REASONING_EFFORT;
+  // A per-model setting is an explicit pin. Keep it intact so ordinary
+  // admission can reject a selection the provider no longer supports.
+  const configured = modelEfforts?.[model];
+  if (configured !== undefined) return configured;
+  const inherited = defaultEffort ?? DEFAULT_REASONING_EFFORT;
+  if (provider !== 'ollama-cloud') return inherited;
+  const caps = capturedCapabilities === undefined
+    ? sharedReasoning.modelCapabilities(provider, model)
+    : capturedCapabilities;
+  if (!caps || caps.reasoningCapabilitiesKnown !== true || caps.reasoningTransport !== 'ollama-think'
+      || caps.defaultReasoningEffortAdvertised !== true
+      || !Array.isArray(caps.reasoningEffortOptions) || caps.reasoningEffortOptions.includes(inherited)) return inherited;
+  // Only advertised metadata can replace an inherited house default. Missing
+  // or malformed defaults do not authorize guessing the first available level.
+  const advertised = caps.defaultReasoningEffortOption;
+  return isReasoningEffort(advertised) && caps.reasoningEffortOptions.includes(advertised)
+    ? advertised : inherited;
 }
 
 export const RESPONSES_REASONING_SUMMARY = 'auto' as const;

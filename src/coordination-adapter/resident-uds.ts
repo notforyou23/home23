@@ -867,7 +867,7 @@ export class ResidentTurnUdsServer {
     const modelOverride = requested.modelAlias === null ? undefined : resolveCatalogModelOverride(requested.modelAlias, this.#modelAliases);
     const actualModel = modelOverride?.model ?? this.options.agent.getModel();
     const actualProvider = modelOverride?.provider ?? this.options.agent.getProvider();
-    const actualEffort = requested.reasoningEffort ?? modelOverride?.reasoningEffort ?? this.options.agent.getReasoningEffort();
+    const actualEffort = requested.reasoningEffort ?? this.options.agent.getReasoningEffort(modelOverride ?? undefined);
     if ((requested.reasoningEffort !== null || modelOverride?.reasoningEffort !== undefined && reasoningCapabilitiesKnown(actualModel,actualProvider)) && !modelSupportsReasoningEffort(actualModel, actualEffort, actualProvider)) {
       throw new ResidentProtocolError("request_invalid", "requested resident reasoning effort is unavailable for the selected model");
     }

@@ -86,9 +86,11 @@ function normalize(provider, raw) {
   const advertisedDefault = text(raw.default_reasoning_level) || text(raw.default_reasoning_effort)
     || (effort(raw.thinking?.default) ? raw.thinking.default : null)
     || null;
-  const defaultOption = options.includes(advertisedDefault) ? advertisedDefault : options.includes('medium') ? 'medium' : options[0] || null;
+  const defaultReasoningEffortAdvertised = options.includes(advertisedDefault);
+  const defaultOption = defaultReasoningEffortAdvertised ? advertisedDefault : options.includes('medium') ? 'medium' : options[0] || null;
   return { id, model: id, label: text(raw.display_name) || id, eligible: true,
     reasoningCapabilitiesKnown, reasoningEffortOptions: [...new Set(options)], defaultReasoningEffortOption: defaultOption,
+    defaultReasoningEffortAdvertised,
     reasoningEfforts: options.filter(v => LEGACY_EFFORTS.includes(v)),
     reasoningTransport, thinkingValues,
     contextWindowTokens: raw.context_window || raw.max_input_tokens || null,

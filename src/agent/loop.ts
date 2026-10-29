@@ -676,12 +676,10 @@ export class AgentLoop {
     const provider = modelOverride?.model
       ? inferProviderFromModel(modelOverride.model, modelOverride.provider)
       : this.provider;
+    const capabilities = discoveredModelCapabilities(provider, model);
+    const reasoningCapabilities = capabilities ? JSON.parse(JSON.stringify(capabilities)) : null;
     const reasoningEffort = effortOverride
-      ?? modelOverride?.reasoningEffort
-      ?? (modelOverride?.model
-        ? resolveConfiguredReasoningEffort(model, this.reasoningEffort, this.modelReasoningEfforts)
-        : (this.currentModelReasoningEffort
-          ?? resolveConfiguredReasoningEffort(model, this.reasoningEffort, this.modelReasoningEfforts)));
+      ?? this.getReasoningEffort(modelOverride, reasoningCapabilities);
 
     let client = this.client;
     let isOAuth = this.isOAuth;
@@ -709,8 +707,6 @@ export class AgentLoop {
         })
       : this.memory;
 
-    const capabilities = discoveredModelCapabilities(provider, model);
-    const reasoningCapabilities = capabilities ? JSON.parse(JSON.stringify(capabilities)) : null;
     const providerRequest = modelDiscovery.resolveProviderRequestConfig({ provider, fallbackConfig: this.providerMap.get(provider) });
     return { model, provider, reasoningEffort, client, isOAuth, memory, reasoningCapabilities, providerRequest };
   }
@@ -758,9 +754,20 @@ export class AgentLoop {
     return this.provider;
   }
 
-  getReasoningEffort(): ReasoningEffort {
-    return this.currentModelReasoningEffort
-      ?? resolveConfiguredReasoningEffort(this.model, this.reasoningEffort, this.modelReasoningEfforts);
+  /** Resolve the target's inherited default without replacing explicit choices.
+   * The optional target also serves exact planned Work, which does not enter
+   * createRuntimeContext. A running turn supplies its captured capabilities. */
+  getReasoningEffort(
+    modelOverride?: { model: string; provider?: string; reasoningEffort?: ReasoningEffort },
+    capturedCapabilities?: Record<string, any> | null,
+  ): ReasoningEffort {
+    const model = modelOverride?.model ?? this.model;
+    const provider = modelOverride?.model
+      ? inferProviderFromModel(model, modelOverride.provider)
+      : this.provider;
+    return modelOverride?.reasoningEffort
+      ?? (modelOverride?.model ? undefined : this.currentModelReasoningEffort)
+      ?? resolveConfiguredReasoningEffort(model, this.reasoningEffort, this.modelReasoningEfforts, provider, capturedCapabilities);
   }
 
   /** Absolute durable workspace used for resident-owned generated artifacts. */

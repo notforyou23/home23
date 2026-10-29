@@ -11,6 +11,10 @@ import { ResidentTurnUdsServer, ResidentUdsAgentPort } from '../../src/coordinat
 import { canonicalToolArguments } from '../../src/coordination-adapter/foreground-detachment-contract.js';
 import { createResidentCredential } from '../../src/coordination/resident-protocol/index.js';
 import { ResidentUdsClient } from '../../src/coordination/transport/uds/index.js';
+import { AgentLoop } from '../../src/agent/loop.js';
+import { createRequire } from 'node:module';
+
+const { registerModelCapabilities } = createRequire(import.meta.url)('../../shared/responses-reasoning.cjs');
 
 for (const resident of ['jerry', 'forrest']) for (const mode of ['complete', 'cancel', 'fail', 'recover', 'interrupted']) test(`${resident} ${mode} exact UDS dispatch executes once after durable start, preserving child lineage`, async t => {
   const root = mkdtempSync(join(tmpdir(), 'h23-exact-')); t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -47,4 +51,56 @@ for (const resident of ['jerry', 'forrest']) for (const mode of ['complete', 'ca
 test('canonical arguments reject lossy JSON and excessive nesting', () => {
   for (const value of [{value:undefined},{value:NaN},{value:()=>null},{value:BigInt(1)}]) assert.throws(()=>canonicalToolArguments(value));
   assert.deepEqual(Object.keys(canonicalToolArguments({z:1,a:2})),['a','z']);
+});
+
+for (const selection of [
+  { model: 'deepseek-v4.1-flash', advertised: 'high', requested: null, expected: 'high' },
+  { model: 'glm-5.3', advertised: 'max', requested: null, expected: 'max' },
+  { model: 'glm-5.3', advertised: 'max', requested: 'low', expected: 'low' },
+  { model: 'glm-5.3', advertised: 'max', requested: 'medium', expected: null },
+]) test(`planned ${selection.model} Work keeps requested effort ${selection.requested ?? 'omitted'} distinct from its resolved effort`, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'h23-planned-effort-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  registerModelCapabilities('ollama-cloud', selection.model, { reasoningCapabilitiesKnown: true,
+    reasoningEffortOptions: ['low', 'high', 'max'], defaultReasoningEffortOption: selection.advertised,
+    defaultReasoningEffortAdvertised: true,
+    reasoningTransport: 'ollama-think', thinkingValues: ['low', 'high', 'max'] });
+  const history = new ConversationHistory(join(root, 'chats'), 400000, 'fixture');
+  const origin = { kind: 'coordination' as const, workId: 'wrk_0198d95f-6c00-7000-8000-000000000201', attemptId: 'att_0198d95f-6c00-7000-8000-000000000202', leaseId: 'lea_0198d95f-6c00-7000-8000-000000000203', holderPrincipalId: 'bot_0198d95f-6c00-7000-8000-000000000204', holderInstanceId: 'home23-fixture-harness', authorityReference: 'resident:fixture', fencingToken: 1, channelId: 'chn_0198d95f-6c00-7000-8000-000000000205', originMessageId: 'msg_0198d95f-6c00-7000-8000-000000000206', roundId: null };
+  const credential = createResidentCredential({ rootKey: Buffer.alloc(32, 23), residentSlug: 'fixture', role: 'resident', instanceId: origin.holderInstanceId, keyVersion: 1 });
+  const destination = { parentWorkId: origin.workId, attemptId: origin.attemptId, leaseId: origin.leaseId, fencingToken: origin.fencingToken, targetPrincipalId: origin.holderPrincipalId, residentInstanceId: origin.holderInstanceId, residentBinding: 'fixture', authorityReference: origin.authorityReference, channelId: origin.channelId, originMessageId: origin.originMessageId, conversationId: 'cnv_0198d95f-6c00-7000-8000-000000000207' };
+  const effortSource = { model: 'gpt-default', provider: 'openai', reasoningEffort: 'medium', modelReasoningEfforts: {} } as unknown as AgentLoop;
+  let executions = 0, synthesisEffort: unknown;
+  const registry = { get: () => ({}), async execute() { executions++; return { content: 'Verified fixture result.' }; } } as unknown as ToolRegistry;
+  const context = { agentName: 'fixture', async runAgentLoop(_a: unknown, _b: unknown, _c: unknown, _d: unknown, options: { effort?: unknown }) {
+    synthesisEffort = options.effort; return { text: 'Verified fixture result.' };
+  } } as unknown as ToolContext;
+  const reverse = { async request() { return { payload: { accepted: true, workId: origin.workId, invocationId: 'call-effort' } }; }, async close() {} } as unknown as ResidentUdsClient;
+  const server = new ResidentTurnUdsServer({ socketPath: join(root, 'r.sock'), serverInstanceId: origin.holderInstanceId, credential,
+    residentSlug: 'fixture', history, coordinationClient: reverse, exactToolRuntime: { registry, context },
+    modelAliases: { cloud: { provider: 'ollama-cloud', model: selection.model } },
+    agent: { getModel: () => 'gpt-default', getProvider: () => 'openai',
+      getReasoningEffort: target => AgentLoop.prototype.getReasoningEffort.call(effortSource, target),
+      runWithTurn: async () => { throw Error('Planned Work must not reselect a tool'); },
+      stop: () => ({ stopped: false, chatIds: [] }), isRunning: () => false },
+  });
+  await server.start(); t.after(() => server.close());
+  const client = new ResidentUdsClient({ socketPath: join(root, 'r.sock'), serverInstanceId: origin.holderInstanceId, credential });
+  t.after(() => client.close());
+  const port = new ResidentUdsAgentPort({ client, residentSlug: 'fixture' });
+  const options = { coordinationOrigin: origin, coordinationWorkDestination: destination,
+    plannedExecution: { kind: 'planned_tool' as const, toolName: 'spawn_agent', canonicalArgs: { task: 'Inspect fixture' }, invocationId: 'call-effort', executionInstruction: 'Inspect fixture', title: 'Fixture', recoveryPolicy: 'safe_before_start' as const },
+    coordinationRequest: { requestId: 'req_0198d95f-6c00-7000-8000-000000000208', correlationId: 'cor_0198d95f-6c00-7000-8000-000000000209' },
+    turnSelection: { modelAlias: 'cloud', reasoningEffort: selection.requested }, onDurableStart: () => {}, onEvent: () => {},
+  };
+  if (selection.expected === null) {
+    await assert.rejects(port.runWithTurn('coordination:planned:effort', 'Inspect fixture', options), /reasoning effort is unavailable/);
+    assert.equal(executions, 0);
+  } else {
+    const run = await port.runWithTurn('coordination:planned:effort', 'Inspect fixture', options);
+    assert.equal((await run.response).text, 'Verified fixture result.');
+    assert.equal(synthesisEffort, selection.expected);
+    assert.equal(executions, 1);
+    assert.equal(new TurnStore(history).startEnvelope('coordination:planned:effort', `coord-${origin.workId}`)?.reasoning_effort, selection.expected);
+  }
 });
