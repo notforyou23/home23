@@ -240,6 +240,45 @@ const REINFORCEMENT_LANGUAGE_PATTERN =
 const STANDING_LANGUAGE_PATTERN =
   /\b(?:always|never|going forward|from now on|stop|don't|do not|remember to|please (?:keep|avoid))\b/i;
 
+const OPERATIONAL_CONDUCT_NOUN = String.raw`(?:(?:machine|system|server|runtime|service|hardware|memory|cpu|disk|operational|health)[\s-]+(?:status(?:[\s-]+(?:updates?|reports?))?|telemetry|updates?|reports?|context|details?)|(?:routine|automatic|unsolicited)[\s-]+(?:status|telemetry|updates?|reports?)|telemetry)`;
+const OPERATIONAL_CONDUCT_SUBJECT = new RegExp(String.raw`\b${OPERATIONAL_CONDUCT_NOUN}\b`, 'i');
+// Bind the object being reduced, not an arbitrary sentence mentioning status.
+// In particular, avoiding suppression or excluding complaints is not feedback
+// to reduce the underlying status/context delivery.
+const OPERATIONAL_CONDUCT_OBJECT = String.raw`(?:(?:the|my|our|your|any|all|routine|automatic|automated|unsolicited|unnecessary|optional)\s+)*${OPERATIONAL_CONDUCT_NOUN}`;
+const OPERATIONAL_OBJECT_END = String.raw`(?=$|\s+(?:in|during|unless|to|from|with|when)\b)`;
+const KEEP_OPERATIONAL_OUT = new RegExp(String.raw`^keep\s+${OPERATIONAL_CONDUCT_OBJECT}\s+out\s+of\s+(?:(?:my|our|your|the|personal|casual|ordinary)\s+)*(?:conversations?|chats?|replies|responses?)\b`, 'i');
+const AVOID_OPERATIONAL = new RegExp(String.raw`^avoid\s+(?:(?:sending|sharing|including|bringing|giving|reporting|showing)\s+(?:me\s+)?)?${OPERATIONAL_CONDUCT_OBJECT}${OPERATIONAL_OBJECT_END}`, 'i');
+const STOP_OPERATIONAL_DELIVERY = new RegExp(String.raw`^(?:stop|don't|do not)\s+(?:sending|send|sharing|share|including|include|bringing|bring|giving|give|reporting|report|showing|show)\s+${OPERATIONAL_CONDUCT_OBJECT}${OPERATIONAL_OBJECT_END}`, 'i');
+const LESS_OPERATIONAL_DELIVERY = new RegExp(String.raw`^(?:send|show|include|bring|give|report)\s+(?:me\s+)?less\s+${OPERATIONAL_CONDUCT_OBJECT}${OPERATIONAL_OBJECT_END}`, 'i');
+
+export function hasOperationalConductSubject(text: string): boolean {
+  return OPERATIONAL_CONDUCT_SUBJECT.test(text);
+}
+
+/** A conservative routing hint, never a grant of owner authority. Reported
+ * and hypothetical framing must not become a command after a line break. */
+export function isExplicitOperationalConductInstruction(text: string): boolean {
+  const normalized = text.normalize('NFKC');
+  for (const match of normalized.matchAll(/[^.!?\n]+/g)) {
+    const clause = match[0];
+    const command = /\b(?:keep|avoid|stop|don't|do not|send|show|include|bring|give|report)\b/i.exec(clause);
+    if (!command) continue;
+    // A later bare command cannot discard an earlier report or question.
+    // Only recognized framing from the beginning of the whole message earns
+    // this new language path; unfamiliar framing needs clarification.
+    const prefix = normalized.slice(0, match.index + command.index).trim();
+    const directPrefix = prefix.replace(/[\s,:;“”"']/g, ' ').trim().replace(/\s+/g, ' ');
+    const direct = /^(?:(?:please|from now on|going forward|in future)\s*)?(?:(?:i|we) (?:want|need|ask|would like) (?:you )?to|(?:i|we) prefer (?:that )?you|you should)?$/i.test(directPrefix);
+    const delegated = /^(?:[^\s,:.!?]+(?:[ \t]+[^\s,:.!?]+){0,3},[ \t]*)?(?:relaying|passing (?:on|along))[ \t]+[^.!?\n:]{1,160}\bexplicit[ \t]+(?:correction|instruction)[ \t]+(?:under[ \t]+[^.!?\n:]{1,60}[ \t]+authorization|authorized by[ \t]+[^.!?\n:]{1,60})[:\s“"']*$/i.test(prefix);
+    if ((!direct && !delegated) || (!delegated && /[“"']/.test(prefix))) continue;
+    const instruction = clause.slice(command.index);
+    if (KEEP_OPERATIONAL_OUT.test(instruction) || AVOID_OPERATIONAL.test(instruction)
+        || STOP_OPERATIONAL_DELIVERY.test(instruction) || LESS_OPERATIONAL_DELIVERY.test(instruction)) return true;
+  }
+  return false;
+}
+
 // ─── Bounding helpers ───────────────────────────────────────
 
 function boundedText(value: unknown, maxLen: number): string {
@@ -450,9 +489,10 @@ export class RelationshipLedger {
     const statementClaim = normalizedClaim(input.statement);
     const userClaim = normalizedClaim(ingress.userText);
     if (!statementClaim || statementClaim !== userClaim) return null;
-    const language = input.type === 'attenuation' ? ATTENUATION_LANGUAGE_PATTERN
-      : input.learning?.direction === 'reinforce' ? REINFORCEMENT_LANGUAGE_PATTERN : CORRECTION_LANGUAGE_PATTERN;
-    if (!language.test(ingress.userText)) return null;
+    const feedbackLanguage = input.type === 'attenuation'
+      ? ATTENUATION_LANGUAGE_PATTERN.test(ingress.userText) || isExplicitOperationalConductInstruction(ingress.userText)
+      : (input.learning?.direction === 'reinforce' ? REINFORCEMENT_LANGUAGE_PATTERN : CORRECTION_LANGUAGE_PATTERN).test(ingress.userText);
+    if (!feedbackLanguage) return null;
     if (validator(ingress) !== true) return null;
     return messageRef;
   }

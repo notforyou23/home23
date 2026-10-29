@@ -29,6 +29,17 @@ choice of a scope name cannot turn them into executable authority.
 lessons from the runtime-bound Seed. It supplies occurrence identities for
 later teaching without requiring a large journal scan or another prompt block.
 
+The tool distinguishes an ordinary preference from an explicit instruction
+about future conduct. A recognized authenticated conduct instruction cannot
+silently succeed as a contextual preference: it asks the model to recall an
+actual matching decision and retry through the teaching path. This refusal
+does not consume correction authority or convert a note automatically. Conduct
+feedback requires the entire current authenticated message, including any
+attribution, and a decision identity in its schema. Learning recall exposes the
+actual available scopes so a descriptive label is not mistaken for an empty
+learning history. Results explicitly identify context-only storage when no
+conduct feedback was recorded.
+
 Source projection is separate from Seed application. Relationship entries and
 memory objects retain pending projection metadata in their existing stores.
 Stable event identities, fsynced append, duplicate/conflict checks and turn-entry

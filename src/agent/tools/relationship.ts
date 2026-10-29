@@ -15,6 +15,7 @@
 import type { ToolContext, ToolDefinition, ToolResult } from '../types.js';
 import { learningLessonId, readSeedLearning } from '../../../shared/seed-learning.cjs';
 import { resolveSubstrateStateDir } from '../session-bootstrap.js';
+import { hasOperationalConductSubject, isExplicitOperationalConductInstruction } from '../relationship-ledger.js';
 import type {
   AuthenticatedCorrectionIngress,
   RelationshipEntryType,
@@ -51,7 +52,7 @@ const LEARNING_INPUT_SCHEMA = {
     supersedes: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 512 }, description: 'Prior lesson identities explicitly revised by this feedback.' },
     corroborates: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 512 }, description: 'Prior lessons supported by this same-scope observed result, not unrelated successes.' },
   },
-  required: ['schema', 'scope', 'direction', 'basis', 'evidenceRefs'], additionalProperties: false,
+  required: ['schema', 'decisionId', 'scope', 'direction', 'basis', 'evidenceRefs'], additionalProperties: false,
 };
 
 const LEDGER_UNAVAILABLE =
@@ -83,7 +84,8 @@ function summarize(entry: RelationshipEntry): string {
     `Recorded relationship ${entry.type}: "${entry.title}" (${entry.id})`,
     `actor=${entry.actor} status=${entry.status} confidence=${entry.confidence.toFixed(2)} privacy=${entry.privacy_class}`,
     `statement: ${entry.statement}${why}`,
-    ...(entry.seed_projection ? [`source projection=${entry.seed_projection.status}; Seed application=not yet confirmed${entry.seed_projection.error ? ` (${entry.seed_projection.error})` : ''}`] : []),
+    ...(entry.seed_projection ? [`source projection=${entry.seed_projection.status}${entry.seed_projection.error ? ` (${entry.seed_projection.error})` : ''}`] : []),
+    entry.learning ? 'conduct learning=recorded; Seed application=not yet confirmed' : 'conduct learning=not recorded; this is context only, not an executable conduct lesson',
     ...(entry.learning && entry.seed_projection ? [`learning receipt identity: ${learningLessonId(entry.seed_projection.event.event_id, entry.learning.scope)} (application not yet confirmed)`] : []),
   ].join('\n');
 }
@@ -101,13 +103,15 @@ export const relationshipNoteTool: ToolDefinition = {
 - a prior miss and how it was repaired (miss_repair)
 - why something mattered, not just what happened (why_it_mattered)
 
-For conduct learning, record the owner's exact current words and learning metadata identifying the actual prior decision, narrow scope, and exclusions. Use attenuation to reduce a behavior; correction with direction reinforce can retain explicit positive feedback. Facts and ordinary preferences do not become conduct teaching. Only authenticated owner feedback earns owner authority.`,
+For an instruction to change your behavior (including "keep routine status out of personal conversations"), use conduct learning, not preference/aversion. First call relationship_recall with learning=true and omit scope to discover actual scopes and decision identities. Select the actual matching prior decision; never guess or use an unrelated decision. Use attenuation to reduce a behavior, or correction with direction reinforce for explicit positive feedback. Preserve the owner's exclusions, including direct requests.
+
+For conduct learning, statement must be the ENTIRE exact current authenticated message, including its attribution and surrounding words (at most 2000 characters), not a quotation extracted from it or your paraphrase. Include learning metadata for that actual decision and narrow scope. Only authenticated owner feedback earns owner authority. Facts and ordinary preferences store context only; they do not become conduct teaching. If no matching decision exists, say that no conduct lesson was recorded rather than claiming learning.`,
   input_schema: {
     type: 'object',
     properties: {
-      type: { type: 'string', enum: ENTRY_TYPES, description: 'What kind of relationship entry this is' },
+      type: { type: 'string', enum: ENTRY_TYPES, description: 'Behavior changes require attenuation or correction with learning metadata. Preference/aversion store ordinary context only.' },
       title: { type: 'string', description: 'Short handle (<= 120 chars)' },
-      statement: { type: 'string', description: 'The durable content (<= 2000 chars)' },
+      statement: { type: 'string', maxLength: 2000, description: 'Durable content. For conduct learning: the ENTIRE exact current authenticated message, including attribution, not an excerpt or paraphrase (<= 2000 chars).' },
       why: { type: 'string', description: 'Why it mattered — important for decision/correction/miss_repair' },
       applies_to: { type: 'string', description: 'Domain/topic tags (comma-separated or array)' },
       triggers: { type: 'string', description: 'Keyword cues that should resurface this (comma-separated or array)' },
@@ -127,7 +131,14 @@ For conduct learning, record the owner's exact current words and learning metada
         return { content: `Unknown relationship type "${String(input.type)}". Expected one of: ${ENTRY_TYPES.join(', ')}`, is_error: true };
       }
 
-      const ingress = type === 'correction' || type === 'attenuation' ? correctionIngress(ctx) : undefined;
+      const authenticated = correctionIngress(ctx);
+      if ((type === 'preference' || type === 'aversion') && input.learning === undefined
+          && authenticated && isExplicitOperationalConductInstruction(authenticated.userText)
+          && hasOperationalConductSubject(String(input.statement || ''))) {
+        return { is_error: true, content: JSON.stringify({ code: 'conduct_feedback_requires_learning', recorded: false,
+          instruction: 'This current instruction asks you to change operational conduct. Call relationship_recall with learning=true and omit scope first. Select the actual matching prior decision, then retry as attenuation with learning metadata and the ENTIRE exact current message as statement. Preserve its exclusions. Do not invent a decision; if none matches, report that no conduct teaching was recorded.' }) };
+      }
+      const ingress = type === 'correction' || type === 'attenuation' ? authenticated : undefined;
       const entry = ledger.addEntry({
         type,
         title: String(input.title || ''),
@@ -149,7 +160,7 @@ For conduct learning, record the owner's exact current words and learning metada
 
 export const relationshipRecallTool: ToolDefinition = {
   name: 'relationship_recall',
-  description: 'Deliberately pull active relationship context with jtr. Set learning=true to inspect recent actual decision identities and active learned lessons before recording feedback or superseding a lesson. Reads only this resident’s configured Seed; never guesses a decision identity.',
+  description: 'Deliberately pull active relationship context with jtr. Set learning=true and omit scope first to discover actual runtime scopes, recent decision identities and active lessons before recording feedback or superseding a lesson. Scope is an exact runtime key, not a natural-language topic. Reads only this resident’s configured Seed; never guesses a decision identity.',
   input_schema: {
     type: 'object',
     properties: {
@@ -157,7 +168,7 @@ export const relationshipRecallTool: ToolDefinition = {
       type: { type: 'string', enum: ENTRY_TYPES, description: 'Optional: restrict to one entry type' },
       limit: { type: 'number', description: 'Max entries to return (default 10)' },
       learning: { type: 'boolean', description: 'Inspect recent Seed decision identities and active lesson identities, instead of relationship prose.' },
-      scope: { type: 'string', description: 'Optional exact decision scope for learning inspection.' },
+      scope: { type: 'string', description: 'Optional exact runtime scope from availableScopes. Omit this filter first; a topic such as "personal conversations" is not a scope key.' },
     },
     additionalProperties: false,
   },
@@ -171,9 +182,17 @@ export const relationshipRecallTool: ToolDefinition = {
         if (snapshot.available === false) return { content: 'Seed learning projection unavailable or incomplete; no current decision or lesson is claimed.', is_error: true };
         const limit = Math.max(1, Math.min(20, Math.floor(Number(input.limit) || 10)));
         const scope = typeof input.scope === 'string' ? input.scope.trim() : '';
+        const availableScopes = [...new Set([...snapshot.decisions.map(decision => decision.scope),
+          ...snapshot.lessons.filter(lesson => lesson.active !== false).map(lesson => lesson.scope)])].sort();
+        if (scope && !availableScopes.includes(scope)) {
+          return { is_error: true, content: JSON.stringify({ seedSequence: snapshot.seq ?? null,
+            requestedScope: scope, scopeStatus: 'unknown', availableScopes, decisions: [], lessons: [],
+            note: 'This scope does not occur in the retained learning projection. Omit scope to inspect actual decisions and lessons, or choose an exact availableScopes key. Empty results for this filter do not mean the resident has no learning. Do not invent a matching decision.' }, null, 2) };
+        }
         const decisions = snapshot.decisions.filter(decision => !scope || decision.scope === scope).slice(-limit).reverse();
         const lessons = snapshot.lessons.filter(lesson => lesson.active !== false && (!scope || lesson.scope === scope)).slice(-limit).reverse();
-        return { content: JSON.stringify({ seedSequence: snapshot.seq ?? null, decisions, lessons,
+        return { content: JSON.stringify({ seedSequence: snapshot.seq ?? null,
+          requestedScope: scope || null, scopeStatus: scope ? 'matched' : 'all', availableScopes, decisions, lessons,
           note: 'Decision identities are actual runtime witnesses. Choose the matching prior choice; missing or ambiguous identity is not permission to guess. Source projection and Seed application are separate stages.' }, null, 2) };
       }
       const ledger = ledgerOf(ctx);

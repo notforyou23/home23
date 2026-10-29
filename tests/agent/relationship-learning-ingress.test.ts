@@ -27,6 +27,190 @@ function feedback(direction: 'attenuate' | 'reinforce' = 'attenuate') {
     tags: ['routine', 'mild'], excludes: ['critical', 'owner-requested'], evidenceRefs: [] };
 }
 
+function writeLearningSnapshot(stateDir: string, decisions: Array<Record<string, unknown>>) {
+  fs.mkdirSync(path.join(stateDir, 'checkpoints'), { recursive: true });
+  const development = { 'world.home': { experience: { version: 1, decisions, lessons: [], seenFeedbackIds: [] } } };
+  const stateHash = createHash('sha256').update(JSON.stringify({ cells: [], dispositions: {}, development })).digest('hex');
+  const line = JSON.stringify({ seq: 1, prevHash: '0'.repeat(64), category: 'genesis', payload: {}, stateHashAfter: stateHash });
+  fs.writeFileSync(path.join(stateDir, 'seed-ledger.jsonl'), `${line}\n`);
+  fs.writeFileSync(path.join(stateDir, 'checkpoints', 'ckpt_0001.json'), JSON.stringify({
+    version: 2, cells: [], dispositions: {}, stateHash,
+    ledgerSeq: 1, ledgerCursor: createHash('sha256').update(line).digest('hex'), development,
+  }));
+}
+
+test('a misplaced natural conduct instruction refuses before writing or consuming authority, then permits an exact scoped retry', async t => {
+  const instruction = 'Keep routine machine status out of personal conversations unless I ask.';
+  const text = `Codex, relaying the owner's explicit correction under their authorization: “${instruction}” The owner wants that to carry into future choices. Preserve existing history.`;
+  const { root, brain, ctx, ingress } = fixture(t, text);
+  let validations = 0;
+  const ledger = new RelationshipLedger(brain, { validateCorrectionIngress: candidate => {
+    validations++;
+    return validations === 1 && JSON.stringify(candidate) === JSON.stringify(ingress);
+  } });
+  const stateDir = path.join(root, 'seed');
+  writeLearningSnapshot(stateDir, [{ schema: 'home23.learning-decision.v1', decisionId: 'actual-optional-agency-choice',
+    scope: 'foreground.context', tags: ['operational', 'agency', 'automatic'],
+    sourceRefs: ['surface:AGENCY'], criterion: 'owner-value' }]);
+  const runtime = { ...ctx, relationshipLedger: ledger, seedStateDir: stateDir };
+  for (const type of ['preference', 'aversion']) {
+    const misplaced = await relationshipNoteTool.execute({ type, title: 'Routine operational context',
+      statement: `The owner prefers personal conversations without routine machine status: “${instruction}”` }, runtime);
+    assert.equal(misplaced.is_error, true, misplaced.content);
+    assert.match(misplaced.content, /conduct_feedback_requires_learning/);
+    assert.match(misplaced.content, /"recorded"\s*:\s*false/);
+    assert.match(misplaced.content, /relationship_recall/);
+    assert.match(misplaced.content, /omit|without.*scope/i);
+  }
+  assert.equal(validations, 0, 'repair guidance must leave the one-shot owner token available');
+  assert.equal(ledger.listEntries().length, 0);
+  assert.equal(fs.existsSync(path.join(brain, 'relationship-ledger.json')), false);
+  assert.equal(fs.existsSync(path.join(brain, 'relationship-ledger.events.jsonl')), false);
+
+  const input = { type: 'attenuation', title: 'Routine operational context', statement: text,
+    learning: { ...feedback(), decisionId: 'actual-optional-agency-choice', scope: 'foreground.context',
+      tags: ['operational', 'agency', 'automatic'], excludes: ['requested'] } };
+  const quotedExcerpt = await relationshipNoteTool.execute({ ...input, statement: instruction }, runtime);
+  assert.equal(quotedExcerpt.is_error, true, quotedExcerpt.content);
+  assert.equal(validations, 0, 'a quoted excerpt cannot consume authority for the full delegated message');
+  assert.equal(ledger.listEntries().length, 0);
+  const corrected = await relationshipNoteTool.execute(input, runtime);
+  const retry = await relationshipNoteTool.execute(input, runtime);
+  assert.equal(corrected.is_error, undefined, corrected.content);
+  assert.equal(retry.is_error, undefined, retry.content);
+  assert.equal(validations, 1);
+  assert.equal(ledger.listEntries().length, 1);
+  const entry = ledger.listEntries()[0]!;
+  assert.equal(entry.actor, 'jtr');
+  assert.equal(entry.statement, text, 'the full delegated message preserves its actual attribution');
+  assert.equal(entry.learning?.decisionId, 'actual-optional-agency-choice');
+  assert.deepEqual(entry.learning?.excludes, ['requested']);
+  const events = fs.readFileSync(path.join(brain, 'relationship-ledger.events.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].payload.owner_quote, text);
+  assert.match(corrected.content, /Seed application=not yet confirmed/);
+});
+
+test('natural operational attenuation recognizes keep-out and avoid without accepting an excerpt as the owner claim', async t => {
+  for (const [index, text] of [
+    'Keep routine machine status out of personal conversations unless I ask.',
+    'Please avoid routine operational status in your replies unless I request it.',
+  ].entries()) {
+    const { brain, ctx, ingress } = fixture(t, text);
+    let validations = 0;
+    const ledger = new RelationshipLedger(brain, { validateCorrectionIngress: candidate => {
+      validations++;
+      return JSON.stringify(candidate) === JSON.stringify(ingress);
+    } });
+    const runtime = { ...ctx, relationshipLedger: ledger };
+    const input = { type: 'attenuation', title: 'Optional operational context', statement: text,
+      learning: { ...feedback(), decisionId: `actual-choice:${index}` } };
+    const excerpt = await relationshipNoteTool.execute({ ...input, statement: text.split(' unless ')[0] }, runtime);
+    assert.equal(excerpt.is_error, true, excerpt.content);
+    assert.equal(validations, 0);
+    const wrongChat = await relationshipNoteTool.execute(input, { ...runtime, chatId: 'chat:other' });
+    assert.equal(wrongChat.is_error, true, wrongChat.content);
+    assert.equal(validations, 0);
+    const accepted = await relationshipNoteTool.execute(input, runtime);
+    assert.equal(accepted.is_error, undefined, accepted.content);
+    assert.equal(validations, 1);
+    assert.equal(ledger.listEntries()[0]?.actor, 'jtr');
+    assert.equal(ledger.listEntries()[0]?.statement, text);
+  }
+});
+
+test('ordinary tastes, reports and hypotheticals remain context notes and explicitly report no conduct learning', async t => {
+  for (const text of [
+    'I prefer tea.',
+    'My coworker said, "Keep routine machine status out of personal conversations." That is their opinion, not an instruction for you.',
+    'If I asked you to keep routine machine status out of personal conversations, what would happen?',
+    'Would you ever keep routine machine status out of personal conversations?',
+  ]) {
+    const { ledger, ctx } = fixture(t, text);
+    const result = await relationshipNoteTool.execute({ type: 'preference', title: 'Context only', statement: text }, ctx);
+    assert.equal(result.is_error, undefined, result.content);
+    assert.equal(ledger.listEntries()[0]?.actor, 'agent');
+    assert.equal(ledger.listEntries()[0]?.learning, undefined);
+    assert.match(result.content, /conduct learning=not recorded/);
+    assert.doesNotMatch(result.content, /Seed application=not yet confirmed/,
+      'context-only success must not imply that an executable lesson is waiting for application');
+  }
+});
+
+test('reported, questioned, or differently targeted language cannot earn operational attenuation', async t => {
+  for (const text of [
+    'What do you think of this suggested policy?\n“Keep routine machine status out of personal conversations unless I ask.”',
+    'My coworker suggested this policy:\n“Keep routine machine status out of personal conversations unless I ask.”',
+    "My coworker's preference:\nKeep routine machine status out of personal conversations unless I ask.",
+    'My coworker sent me this example:\n"Keep routine machine status out of personal conversations unless I ask."\nWould that be sensible?',
+    'Please avoid suppressing routine machine status in personal conversations.',
+    'Please avoid losing machine status updates.',
+    'Keep complaints about routine machine status out of personal conversations.',
+  ]) {
+    const { brain, ctx, ingress } = fixture(t, text);
+    let validations = 0;
+    const ledger = new RelationshipLedger(brain, { validateCorrectionIngress: candidate => {
+      validations++;
+      return JSON.stringify(candidate) === JSON.stringify(ingress);
+    } });
+    const runtime = { ...ctx, relationshipLedger: ledger };
+    const note = await relationshipNoteTool.execute({ type: 'preference', title: 'A proposed policy', statement: text }, runtime);
+    assert.equal(note.is_error, undefined, note.content);
+    assert.equal(ledger.listEntries()[0]?.actor, 'agent');
+    assert.equal(ledger.listEntries()[0]?.learning, undefined);
+    const originalEvents = fs.readFileSync(path.join(brain, 'relationship-ledger.events.jsonl'), 'utf8');
+
+    const inventedTeaching = await relationshipNoteTool.execute({ type: 'attenuation', title: 'Not an instruction',
+      statement: text, learning: feedback() }, runtime);
+    assert.equal(inventedTeaching.is_error, true, inventedTeaching.content);
+    assert.equal(validations, 0, 'the full framing must be checked before consuming authenticated authority');
+    assert.equal(ledger.listEntries().length, 1);
+    assert.equal(fs.readFileSync(path.join(brain, 'relationship-ledger.events.jsonl'), 'utf8'), originalEvents);
+  }
+});
+
+test('a conduct instruction in the current message does not block a distinct ordinary taste note', async t => {
+  const instruction = 'Keep routine machine status out of personal conversations unless I ask.';
+  const text = `${instruction} I also prefer tea.`;
+  const { brain, ctx, ingress } = fixture(t, text);
+  let validations = 0;
+  const ledger = new RelationshipLedger(brain, { validateCorrectionIngress: candidate => {
+    validations++;
+    return JSON.stringify(candidate) === JSON.stringify(ingress);
+  } });
+  const runtime = { ...ctx, relationshipLedger: ledger };
+  const misplaced = await relationshipNoteTool.execute({ type: 'preference', title: 'Optional operational context',
+    statement: instruction }, runtime);
+  assert.equal(misplaced.is_error, true, misplaced.content);
+  assert.match(misplaced.content, /conduct_feedback_requires_learning/);
+  assert.equal(ledger.listEntries().length, 0);
+
+  const taste = await relationshipNoteTool.execute({ type: 'preference', title: 'Tea', statement: 'I prefer tea.' }, runtime);
+  assert.equal(taste.is_error, undefined, taste.content);
+  assert.match(taste.content, /conduct learning=not recorded/);
+  assert.equal(validations, 0);
+  assert.equal(ledger.listEntries().length, 1);
+  assert.equal(ledger.listEntries()[0]?.statement, 'I prefer tea.');
+  assert.equal(ledger.listEntries()[0]?.actor, 'agent');
+  assert.equal(ledger.listEntries()[0]?.learning, undefined);
+});
+
+test('conduct-like prose without authenticated current ingress cannot acquire owner authority', async t => {
+  const text = 'Keep routine machine status out of personal conversations unless I ask.';
+  const { ledger, ctx } = fixture(t, text);
+  const result = await relationshipNoteTool.execute({ type: 'preference', title: 'Unattributed note', statement: text },
+    { ...ctx, authenticatedUserMessage: undefined });
+  assert.equal(result.is_error, undefined, result.content);
+  assert.equal(ledger.listEntries()[0]?.actor, 'agent');
+  assert.equal(ledger.listEntries()[0]?.learning, undefined);
+  assert.match(result.content, /conduct learning=not recorded/);
+});
+
+test('the public learning schema requires an actual decision identity', () => {
+  const properties = relationshipNoteTool.input_schema.properties as Record<string, { required?: string[] }>;
+  assert.ok(properties.learning.required?.includes('decisionId'));
+});
+
 test('authenticated attenuation preserves the exact owner words and the particular choice, once', async t => {
   const text = 'Those routine memory messages are noise. Send less of that unless something needs action.';
   const { brain, ledger, ctx } = fixture(t, text);
@@ -165,22 +349,13 @@ test('a narrow owner quote cannot mint an unlinked executable rule in another do
 test('learning recall exposes bounded actual decision identities from only the runtime-bound Seed', async t => {
   const { root, ctx } = fixture(t, 'That was useful.');
   const stateDir = path.join(root, 'seed');
-  fs.mkdirSync(path.join(stateDir, 'checkpoints'), { recursive: true });
   const decisions = [
     { schema: 'home23.learning-decision.v1', decisionId: 'actual-memory-choice', scope: 'owner.outreach:machine.memory',
       tags: ['routine', 'mild'], sourceRefs: ['machine:observed-1'], criterion: 'owner-value' },
     { schema: 'home23.learning-decision.v1', decisionId: 'actual-other-choice', scope: 'context.operational',
       tags: ['operational'], sourceRefs: ['message:other'], criterion: 'owner-value' },
   ];
-  const development = { 'world.home': { experience: { version: 1, decisions, lessons: [], seenFeedbackIds: [] } } };
-  const stateHash = createHash('sha256').update(JSON.stringify({ cells: [], dispositions: {}, development })).digest('hex');
-  const line = JSON.stringify({ seq: 1, prevHash: '0'.repeat(64), category: 'genesis', payload: {}, stateHashAfter: stateHash });
-  fs.writeFileSync(path.join(stateDir, 'seed-ledger.jsonl'), `${line}\n`);
-  fs.writeFileSync(path.join(stateDir, 'checkpoints', 'ckpt_0001.json'), JSON.stringify({
-    version: 2, cells: [], dispositions: {}, stateHash,
-    ledgerSeq: 1, ledgerCursor: createHash('sha256').update(line).digest('hex'),
-    development,
-  }));
+  writeLearningSnapshot(stateDir, decisions);
   const result = await relationshipRecallTool.execute({ learning: true, scope: 'owner.outreach:machine.memory', limit: 1 },
     { ...ctx, seedStateDir: stateDir });
   assert.equal(result.is_error, undefined, result.content);
@@ -189,6 +364,41 @@ test('learning recall exposes bounded actual decision identities from only the r
   assert.deepEqual(inspected.decisions.map((decision: any) => decision.decisionId), ['actual-memory-choice']);
   assert.doesNotMatch(result.content, /actual-other-choice/);
   assert.ok(inspected.decisions[0].sourceRefs.includes('machine:observed-1'));
+});
+
+test('learning recall distinguishes an unknown human topic from actual available scopes', async t => {
+  const { root, ctx } = fixture(t, 'Keep routine machine status out of personal conversations unless I ask.');
+  const stateDir = path.join(root, 'seed');
+  writeLearningSnapshot(stateDir, [
+    { schema: 'home23.learning-decision.v1', decisionId: 'actual-foreground-choice', scope: 'foreground.context',
+      tags: ['operational', 'agency', 'automatic'], sourceRefs: ['surface:AGENCY'], criterion: 'owner-value' },
+    { schema: 'home23.learning-decision.v1', decisionId: 'actual-work-choice', scope: 'execution:work',
+      tags: ['execution', 'work'], sourceRefs: ['work:actual'], criterion: 'execution' },
+  ]);
+  const runtime = { ...ctx, seedStateDir: stateDir };
+  const unknown = await relationshipRecallTool.execute({ learning: true, scope: 'personal conversations' }, runtime);
+  assert.equal(unknown.is_error, true, unknown.content);
+  const diagnostic = JSON.parse(unknown.content);
+  assert.equal(diagnostic.requestedScope, 'personal conversations');
+  assert.equal(diagnostic.scopeStatus, 'unknown');
+  assert.deepEqual([...diagnostic.availableScopes].sort(), ['execution:work', 'foreground.context']);
+  assert.match(unknown.content, /omit|without.*scope/i);
+  assert.deepEqual(diagnostic.decisions, []);
+  assert.deepEqual(diagnostic.lessons, []);
+
+  const all = await relationshipRecallTool.execute({ learning: true }, runtime);
+  assert.equal(all.is_error, undefined, all.content);
+  const unfiltered = JSON.parse(all.content);
+  assert.deepEqual([...unfiltered.availableScopes].sort(), ['execution:work', 'foreground.context']);
+  assert.equal(unfiltered.requestedScope, null);
+  assert.deepEqual(unfiltered.decisions.map((decision: any) => decision.decisionId).sort(),
+    ['actual-foreground-choice', 'actual-work-choice']);
+
+  const matching = await relationshipRecallTool.execute({ learning: true, scope: 'foreground.context' }, runtime);
+  assert.equal(matching.is_error, undefined, matching.content);
+  const filtered = JSON.parse(matching.content);
+  assert.equal(filtered.requestedScope, 'foreground.context');
+  assert.deepEqual(filtered.decisions.map((decision: any) => decision.decisionId), ['actual-foreground-choice']);
 });
 
 test('only new authenticated feedback can supersede a learned contribution; lifecycle editing cannot erase it', async t => {
