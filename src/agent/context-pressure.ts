@@ -15,6 +15,13 @@ export interface ContextPolicy {
   reserveChars: number;
   modelContextTokens: Record<string, number>;
 }
+/** Shared fallback for callers without an installed compaction manager. */
+export const DEFAULT_CONTEXT_POLICY: Readonly<ContextPolicy> = Object.freeze({
+  triggerThreshold: 0.8,
+  targetFraction: 0.55,
+  reserveChars: 8192,
+  modelContextTokens: Object.freeze({}),
+});
 export function measureContextPressure(input: ContextPressureInput, policy: ContextPolicy) {
   const modelTokens = policy.modelContextTokens[`${input.provider}/${input.model}`] ?? policy.modelContextTokens[input.model ?? ''];
   // Exact configured model limits may lower the operational cap. They never

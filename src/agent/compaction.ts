@@ -1,5 +1,5 @@
 // src/agent/compaction.ts
-import { measureContextPressure, type ContextPressure, type ContextPressureInput } from './context-pressure.js';
+import { DEFAULT_CONTEXT_POLICY, measureContextPressure, type ContextPressure, type ContextPressureInput } from './context-pressure.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -36,10 +36,7 @@ export interface CompactionConfig {
 }
 
 const DEFAULT_CONFIG: CompactionConfig = {
-  triggerThreshold: 0.8,
-  targetFraction: 0.55,
-  reserveChars: 8192,
-  modelContextTokens: {},
+  ...DEFAULT_CONTEXT_POLICY,
   promoteLongTermMemory: false,
   keepRecentMessages: 10,
   maxSummaryChars: 6000,

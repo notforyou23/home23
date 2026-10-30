@@ -9,8 +9,9 @@ import { buildConversationProposalPrompt, parseConversationProposal, selectConve
   buildConversationDecisionPayloads, buildConversationSelectionPayload, conversationResponseHash,
   type ConversationDecisionContext } from './conversation-judgment.js';
 import type { TextGenerationOptions } from './text-generation.js';
+import { estimateContextChars } from './context-pressure.js';
 
-const MAX_REQUEST_CHARS = 120_000;
+export const CONVERSATION_PROPOSAL_MAX_TOKENS = 6_000;
 const MAX_PROPOSAL_CHARS = 28_000;
 const sha = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
 
@@ -19,29 +20,57 @@ export interface ConversationCompletion {
   responseHash: string; candidateSetHash: string; decisionIds: string[];
 }
 
+type OwnerOpportunity = { owner: { chatId: string; messageRef: string; text: string }; conversationRef: string; originMessageId: string };
+export type ConversationOpportunityReason = 'not_native_conversation' | 'owner_authority_unavailable'
+  | 'owner_text_bounds' | 'canonical_contact_path_unavailable' | 'delegated_turn' | 'media_requires_ordinary_loop'
+  | 'owner_secret_requires_ordinary_loop' | 'owner_evidence_unavailable' | 'not_direct_owner_channel'
+  | 'operator_trial' | 'explicit_action_requested' | 'structured_owner_envelope';
+type OpportunityAssessment = { opportunity: OwnerOpportunity; reason?: never }
+  | { opportunity: null; reason: ConversationOpportunityReason };
+
 /** Routing declines are not lessons. Owner text is never silently shortened. */
-export function conversationalOwnerOpportunity(input: {
+export function assessConversationalOwnerOpportunity(input: {
   context: Pick<ToolContext, 'authenticatedUserMessage' | 'chatId' | 'ownerConversationContactPath'>;
   runtime?: TurnRuntimeContext;
   mediaCount: number;
-}): { owner: { chatId: string; messageRef: string; text: string }; conversationRef: string; originMessageId: string } | null {
+}): OpportunityAssessment {
   const { context, runtime } = input;
   const owner = context.authenticatedUserMessage;
   const origin = runtime?.coordinationOrigin;
-  if (!runtime || runtime.contextPurpose !== 'conversation' || !origin?.originMessageId
-    || !owner || owner.chatId !== context.chatId || !owner.text.trim() || owner.text.length > 6_000
-    || !context.ownerConversationContactPath || runtime.delegatedContext || runtime.delegatedTurn || runtime.delegationOrigin
-    || input.mediaCount > 0 || containsOwnerSecret(owner.text)) return null;
-  if (!classifyOwnerConversation({ text: owner.text, chatId: origin.channelId }).ownerEvidence) return null;
+  const decline = (reason: ConversationOpportunityReason): OpportunityAssessment => ({ opportunity: null, reason });
+  if (!runtime || runtime.contextPurpose !== 'conversation' || !origin?.originMessageId) return decline('not_native_conversation');
+  if (!owner || owner.chatId !== context.chatId) return decline('owner_authority_unavailable');
+  if (!owner.text.trim() || owner.text.length > 6_000) return decline('owner_text_bounds');
+  if (!context.ownerConversationContactPath) return decline('canonical_contact_path_unavailable');
+  if (runtime.delegatedContext || runtime.delegatedTurn || runtime.delegationOrigin) return decline('delegated_turn');
+  if (input.mediaCount > 0) return decline('media_requires_ordinary_loop');
+  if (containsOwnerSecret(owner.text)) return decline('owner_secret_requires_ordinary_loop');
+  if (!classifyOwnerConversation({ text: owner.text, chatId: origin.channelId }).ownerEvidence) return decline('owner_evidence_unavailable');
   const canonical = owner as typeof owner & { channelKind?: string; channelId?: string };
-  if (canonical.channelKind !== undefined && (canonical.channelKind !== 'direct' || canonical.channelId !== origin.channelId)) return null;
+  if (canonical.channelKind !== undefined && (canonical.channelKind !== 'direct' || canonical.channelId !== origin.channelId)) return decline('not_direct_owner_channel');
   // Operator trials remain history, but do not create general conduct authority.
   if (/\b(?:codex|claude code|operator)\b[^.!?\n]{0,100}\b(?:on behalf|verif(?:y|ication)|proof|test)\b/i.test(owner.text)
     || /\b(?:controlled|live|behavioral|learning|seed|runtime|production)\s+(?:proof|verification|test)\b/i.test(owner.text)
-    || /\b(?:for|during)\s+(?:this|the)\s+(?:verification|experiment|test)\b/i.test(owner.text)) return null;
-  if (/^\s*(?:(?:please|can you|could you|will you|would you)\s+)*(?:read|search|look up|find|check|fetch|open|run|execute|build|implement|fix|deploy|restart|send|schedule|create|delete|update|commit|push|install|save|record|remember(?!\s+to\b)|forget)\b/i.test(owner.text)) return null;
-  if (/^\s*(?:\/|\[|<|\{)/.test(owner.text)) return null;
-  return { owner, conversationRef: `coordination:${origin.channelId}`, originMessageId: origin.originMessageId };
+    || /\b(?:for|during)\s+(?:this|the)\s+(?:verification|experiment|test)\b/i.test(owner.text)) return decline('operator_trial');
+  if (/^\s*(?:(?:please|can you|could you|will you|would you)\s+)*(?:read|search|look up|find|check|fetch|open|run|execute|build|implement|fix|deploy|restart|send|schedule|create|delete|update|commit|push|install|save|record|remember(?!\s+to\b)|forget)\b/i.test(owner.text)) return decline('explicit_action_requested');
+  if (/^\s*(?:\/|\[|<|\{)/.test(owner.text)) return decline('structured_owner_envelope');
+  return { opportunity: { owner, conversationRef: `coordination:${origin.channelId}`, originMessageId: origin.originMessageId } };
+}
+
+export function conversationalOwnerOpportunity(input: Parameters<typeof assessConversationalOwnerOpportunity>[0]): OwnerOpportunity | null {
+  return assessConversationalOwnerOpportunity(input).opportunity;
+}
+
+/** Bounded routing evidence only; never raw owner text, provider errors or lessons. */
+export function recordConversationProposalDecline(input: {
+  eventLedger: EventLedger; context: Pick<ToolContext, 'chatId'>; runtime: TurnRuntimeContext;
+}, reason: string, stage: string, details: { requestChars?: number; requestBudgetChars?: number;
+  budgetSource?: 'configured_context_policy' | 'default_context_policy' } = {}): void {
+  if (input.runtime.contextPurpose !== 'conversation' || !input.runtime.coordinationOrigin?.originMessageId) return;
+  input.eventLedger.record('ConversationProposalDeferred', input.context.chatId, {
+    turnId: input.runtime.turnId, originMessageId: input.runtime.coordinationOrigin.originMessageId,
+    reason, stage, ...details,
+  }, { actor: 'conversation' });
 }
 
 export async function attemptConversationReply(input: {
@@ -53,6 +82,8 @@ export async function attemptConversationReply(input: {
   provider: string;
   model: string;
   reasoningEffort: string;
+  requestBudgetChars: number;
+  budgetSource?: 'configured_context_policy' | 'default_context_policy';
   eventLedger: EventLedger;
   readLearning: () => LearningSnapshot;
   generate: (request: Pick<TextGenerationOptions, 'system' | 'prompt' | 'maxTokens' | 'timeoutMs' | 'requireComplete' | 'maxOutputChars' | 'usageSink'>) => Promise<string>;
@@ -61,39 +92,51 @@ export async function attemptConversationReply(input: {
   feedback?: (input: { proposals: unknown[]; owner: { chatId: string; messageRef: string; text: string }; prior: unknown }) => unknown | Promise<unknown>;
   stillCurrent?: () => boolean;
 }): Promise<{ text: string; completion: ConversationCompletion } | null> {
-  const opportunity = conversationalOwnerOpportunity(input);
-  if (!opportunity) return null;
+  const assessment = assessConversationalOwnerOpportunity(input);
+  const decline = (reason: string, stage: string, details: Parameters<typeof recordConversationProposalDecline>[3] = {}) => {
+    recordConversationProposalDecline(input, reason, stage, details);
+    return null;
+  };
+  const opportunity = assessment.opportunity;
+  if (!opportunity) return decline(assessment.reason, 'eligibility');
   let snapshot: LearningSnapshot;
-  try { snapshot = input.readLearning(); } catch { return null; }
-  if (snapshot.available !== true) return null;
+  try { snapshot = input.readLearning(); } catch { return decline('seed_snapshot_unavailable', 'seed'); }
+  if (snapshot.available !== true) return decline('seed_snapshot_unavailable', 'seed');
   // Non-text attachments and tool-use blocks need the ordinary provider loop.
   if (input.history.some(message => typeof message.content !== 'string'
     && (!Array.isArray(message.content) || message.content.some(part => !part || typeof part !== 'object'
-      || (part as { type?: string }).type !== 'text')))) return null;
+      || (part as { type?: string }).type !== 'text')))) return decline('structured_history_requires_ordinary_loop', 'history');
   const signal = input.runtime.signal;
   signal.throwIfAborted();
   const started = Date.now();
+  let stage = 'canonical_source';
   try {
     const canonical = opportunity.owner as typeof opportunity.owner & { channelKind?: string; channelId?: string };
     const direct = canonical.channelKind === 'direct' && canonical.channelId === input.runtime.coordinationOrigin?.channelId;
     if (!direct && !await input.verifyOwnerSource?.({ conversationRef: opportunity.conversationRef,
       currentMessageId: opportunity.originMessageId, text: opportunity.owner.text })) {
-      input.eventLedger.record('ConversationProposalDeferred', input.context.chatId,
-        { turnId: input.runtime.turnId, reason: 'canonical_owner_source_unavailable' }, { actor: 'conversation' });
-      return null;
+      return decline('canonical_owner_source_unavailable', stage);
     }
     signal.throwIfAborted();
+    stage = 'prior_delivery';
     const prior = await input.readPrior?.({ conversationRef: opportunity.conversationRef,
       currentMessageId: opportunity.originMessageId }) ?? null;
     signal.throwIfAborted();
+    stage = 'proposal_context';
     const prompt = buildConversationProposalPrompt({ ownerText: opportunity.owner.text,
       history: input.history, ...(prior ? { priorResponse: prior } : {}) });
-    if (prompt.length + input.system.length > MAX_REQUEST_CHARS) return null;
+    const requestChars = estimateContextChars([{ role: 'system', content: input.system }, { role: 'user', content: prompt }]);
+    if (!Number.isSafeInteger(input.requestBudgetChars) || input.requestBudgetChars <= 0) {
+      return decline('request_budget_unavailable', 'context_budget');
+    }
+    if (requestChars > input.requestBudgetChars) return decline('request_exceeds_context_budget', 'context_budget',
+      { requestChars, requestBudgetChars: input.requestBudgetChars, ...(input.budgetSource ? { budgetSource: input.budgetSource } : {}) });
     const usage = { tokensIn: 0, tokensOut: 0 };
-    const raw = await input.generate({ system: input.system, prompt, maxTokens: 6_000, timeoutMs: 90_000,
+    stage = 'provider';
+    const raw = await input.generate({ system: input.system, prompt, maxTokens: CONVERSATION_PROPOSAL_MAX_TOKENS, timeoutMs: 90_000,
       requireComplete: true, maxOutputChars: MAX_PROPOSAL_CHARS, usageSink: usage });
     signal.throwIfAborted();
-    if (input.stillCurrent && !input.stillCurrent()) return null;
+    if (input.stillCurrent && !input.stillCurrent()) return decline('turn_steered', 'selection');
     const proposal = parseConversationProposal(raw);
     input.eventLedger.record('ConversationProposalCompleted', input.context.chatId, {
       turnId: input.runtime.turnId, conversationRef: opportunity.conversationRef,
@@ -102,7 +145,7 @@ export async function attemptConversationReply(input: {
       inputHash: sha(input.system + '\n' + prompt), outputHash: sha(raw), usage,
       route: proposal?.route ?? 'invalid',
     }, { actor: 'conversation' });
-    if (!proposal) return null;
+    if (!proposal) return decline('invalid_proposal', 'proposal');
     // The writer validates source/delivery/attribution independently. Rejection
     // does not turn an otherwise answerable conversation into a tool failure.
     if (proposal.feedback.length && input.feedback) {
@@ -128,8 +171,10 @@ export async function attemptConversationReply(input: {
         { turnId: input.runtime.turnId, reason: 'source_feedback_unavailable' }, { actor: 'conversation' }); }
     }
     signal.throwIfAborted();
-    if (input.stillCurrent && !input.stillCurrent()) return null;
-    if (proposal.route !== 'conversation' || proposal.candidates.some(candidate => containsOwnerSecret(candidate.reply))) return null;
+    if (input.stillCurrent && !input.stillCurrent()) return decline('turn_steered', 'selection');
+    if (proposal.route !== 'conversation') return decline('proposal_requires_ordinary_loop', 'proposal');
+    if (proposal.candidates.some(candidate => containsOwnerSecret(candidate.reply))) return decline('candidate_secret_requires_ordinary_loop', 'selection');
+    stage = 'selection';
     const selected = selectConversationReply(proposal, input.readLearning());
     const context: ConversationDecisionContext = {
       selectionId: `conversation:${randomUUID()}`, turnId: input.runtime.turnId,
@@ -156,9 +201,9 @@ export async function attemptConversationReply(input: {
     } };
   } catch (error) {
     signal.throwIfAborted();
-    input.eventLedger.record('ConversationProposalDeferred', input.context.chatId,
-      { turnId: input.runtime.turnId, reason: 'bounded_proposal_unavailable', durationMs: Date.now() - started }, { actor: 'conversation' });
-    return null;
+    return decline(stage === 'proposal_context' ? 'proposal_context_bounds'
+      : stage === 'selection' ? 'selection_evidence_unavailable'
+        : stage === 'canonical_source' || stage === 'prior_delivery' ? 'canonical_evidence_unavailable' : 'bounded_proposal_unavailable', stage);
   }
 }
 

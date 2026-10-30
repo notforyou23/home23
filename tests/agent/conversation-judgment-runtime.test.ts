@@ -33,7 +33,7 @@ function fixture(t: test.TestContext) {
     coordinationOrigin: { kind: 'coordination', originMessageId: 'msg-owner', channelId: 'channel' } } as any;
   const input = { context, runtime, mediaCount: 0, system: 'Resident identity and ordinary evidence.',
     history: [{ role: 'user', content: context.authenticatedUserMessage.text }],
-    provider: 'openai-codex', model: 'fixture', reasoningEffort: 'medium', eventLedger,
+    provider: 'openai-codex', model: 'fixture', reasoningEffort: 'medium', requestBudgetChars: 300_000, eventLedger,
     readLearning: () => taught, generate: async () => JSON.stringify(proposal) };
   return { root, ac, input, eventLedger };
 }
@@ -74,7 +74,8 @@ test('unavailable Seed makes no proposal call and no fresh decision', async t =>
   const { input, eventLedger } = fixture(t); let calls = 0;
   assert.equal(await attemptConversationReply({ ...input, readLearning: () => ({ ...empty, available: false }),
     generate: async () => { calls++; return JSON.stringify(proposal); } }), null);
-  assert.equal(calls, 0); assert.equal(eventLedger.readAll().length, 0);
+  assert.equal(calls, 0); assert.equal(eventLedger.readAll().length, 1);
+  assert.equal(eventLedger.readByType('ConversationProposalDeferred')[0]!.payload.reason, 'seed_snapshot_unavailable');
 });
 
 test('runtime respects explicit work, media, delegation, verification and missing owner authority', async t => {
@@ -142,10 +143,48 @@ test('new steer invalidates candidate before feedback or selection', async t => 
 
 test('oversized context and structured tool history do not enter alternate response path', async t => {
   const { input } = fixture(t); let calls = 0;
-  for (const extra of [{ system: 'x'.repeat(250_000) },
+  for (const extra of [{ system: 'x'.repeat(350_000) },
     { history: [{ role: 'assistant', content: [{ type: 'tool_use', name: 'read_file', input: {} }] }] }]) {
     assert.equal(await attemptConversationReply({ ...input, ...extra,
       generate: async () => { calls++; return JSON.stringify(proposal); } }), null);
   }
   assert.equal(calls, 0);
+});
+
+test('runtime uses the caller request budget including serialized envelope overhead without shortening context', async t => {
+  const { input, eventLedger } = fixture(t); let calls = 0;
+  const system = 'Quoted context \" and newline\n'.repeat(6_000);
+  const full = { ...input, system, requestBudgetChars: 400_000, generate: async (request: any) => {
+    calls++; assert.equal(request.system, system); return JSON.stringify(proposal);
+  } };
+  assert.ok(await attemptConversationReply(full));
+  const prompt = (await import('../../src/agent/conversation-judgment.js')).buildConversationProposalPrompt({
+    ownerText: input.context.authenticatedUserMessage.text, history: input.history });
+  // Raw lengths fit this budget, but provider-envelope JSON escaping does not.
+  assert.equal(await attemptConversationReply({ ...full, requestBudgetChars: system.length + prompt.length }), null);
+  assert.equal(calls, 1);
+  const deferred = eventLedger.readByType('ConversationProposalDeferred').at(-1)!;
+  assert.equal(deferred.payload.reason, 'request_exceeds_context_budget');
+  assert.ok((deferred.payload.requestChars as number) > (deferred.payload.requestBudgetChars as number));
+  assert.doesNotMatch(JSON.stringify(deferred), /Quoted context|good afternoon/);
+});
+
+test('declines retain explicit scalar reasons for history, proposal, authority and capacity boundaries', async t => {
+  const { input, eventLedger } = fixture(t); let calls = 0;
+  const cases: Array<[Record<string, unknown>, string]> = [
+    [{ requestBudgetChars: Number.NaN }, 'request_budget_unavailable'],
+    [{ history: [{ role: 'assistant', content: [{ type: 'tool_use', name: 'read_file', input: {} }] }] }, 'structured_history_requires_ordinary_loop'],
+    [{ history: [{ role: 'user', content: 'x'.repeat(160_001) }] }, 'proposal_context_bounds'],
+    [{ context: { ...input.context, authenticatedUserMessage: undefined } }, 'owner_authority_unavailable'],
+  ];
+  for (const [changes, reason] of cases) {
+    assert.equal(await attemptConversationReply({ ...input, ...changes, generate: async () => { calls++; return JSON.stringify(proposal); } }), null);
+    assert.equal(eventLedger.readByType('ConversationProposalDeferred').at(-1)!.payload.reason, reason);
+  }
+  assert.equal(calls, 0);
+  assert.equal(await attemptConversationReply({ ...input, generate: async () => '{malformed' }), null);
+  assert.equal(eventLedger.readByType('ConversationProposalDeferred').at(-1)!.payload.reason, 'invalid_proposal');
+  assert.equal(await attemptConversationReply({ ...input, generate: async () => JSON.stringify({ schema: proposal.schema, route: 'ordinary_loop', reason: 'tools_needed', feedback: [] }) }), null);
+  assert.equal(eventLedger.readByType('ConversationProposalDeferred').at(-1)!.payload.reason, 'proposal_requires_ordinary_loop');
+  assert.doesNotMatch(JSON.stringify(eventLedger.readByType('ConversationProposalDeferred')), /good afternoon|malformed|read_file/);
 });

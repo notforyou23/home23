@@ -3,7 +3,7 @@ import { projectWriteRootsPrompt } from './tools/project-write-roots.js';
 import { projectContinuityPrompt, type ProjectContinuity } from '../coordination/projects/continuity.js';
 import { parseHistoricalContext, historicalContextBlock, type HistoricalContextEntry } from './historical-context.js';
 import { cacheableSystemPrompt, cacheUsage, promptCacheKey } from './prompt-cache.js';
-import { estimateContextChars } from './context-pressure.js';
+import { DEFAULT_CONTEXT_POLICY, estimateContextChars, measureContextPressure } from './context-pressure.js';
 /**
  * COSMO Home 2.3 — Agent Loop
  *
@@ -57,7 +57,7 @@ import { EventLedger } from './event-ledger.js';
 import { createLearningDecisionEvidenceReader } from './learning-decision-evidence.js';
 import { readSeedLearning } from '../substrate/learning-state.js';
 import { generateText } from './text-generation.js';
-import { attemptConversationReply, completeConversationReply, conversationalOwnerOpportunity, type ConversationCompletion } from './conversation-judgment-runtime.js';
+import { attemptConversationReply, completeConversationReply, assessConversationalOwnerOpportunity, recordConversationProposalDecline, CONVERSATION_PROPOSAL_MAX_TOKENS, type ConversationCompletion } from './conversation-judgment-runtime.js';
 import { readPriorDeliveredConversation, readCurrentConversationOwner, applyConversationFeedback } from './conversation-feedback.js';
 import { TriggerIndex } from './trigger-index.js';
 import { MemoryObjectStore } from './memory-objects.js';
@@ -1818,12 +1818,13 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
         elapsedMs: Date.now() - startMs, systemChars: rawSystemPrompt.length, enrichmentReserve,
         contextPurpose: turnRuntime?.contextPurpose ?? 'legacy',
         automaticRecall: automaticContextEnrichment?.status ?? 'blocking_or_isolated' });
-      const pressure = this.compaction?.measure({
+      const contextPressureInput = {
         historyChars: this.history.estimateChars(storedHistory), systemChars: rawSystemPrompt.length + enrichmentReserve,
         toolSchemaChars: Math.max(JSON.stringify(registry.getAnthropicTools()).length, JSON.stringify(registry.getOpenAITools()).length),
         incomingChars: this.history.estimateChars([userMsg]), outputTokens: this.maxTokens,
         historyBudget: this.history.budget, model: runtimeModel, provider: runtimeProvider,
-      });
+      };
+      const pressure = this.compaction?.measure(contextPressureInput);
       if (pressure) {
         this.history.recordContextStatus?.(chatId, { trigger: pressure.shouldCompact ? pressure.reason : 'within_budget', pressure, measuredAt: new Date().toISOString() });
         if (pressure.availableHistoryChars <= 0) throw Object.assign(new Error('Context budget is exhausted by instructions, input, tools and output reserve; task history retained.'), { code: 'context_pressure' });
@@ -1959,64 +1960,86 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
         }
       };
 
-      if (turnRuntime && runContext.seedStateDir && conversationalOwnerOpportunity({ context: runContext,
-        runtime: turnRuntime, mediaCount: userMedia?.length ?? 0 })) {
-        // Canonical authentication was established above from the exact owner
-        // contact. The proposer sees ordinary context, never Seed policy scores.
-        consumeAutomaticEnrichment();
-        maintainModelWindow(messages, false);
-        let steered = false;
-        const current = (): boolean => {
-          this.consumeOperatorSteer(chatId, turnMessages, text => {
-            steered = true;
-            messages.push({ role: 'user', content: text });
-            truncated.push({ role: 'user', content: text });
-          }, onEvent, activeTurnId, runContext);
-          return !steered;
-        };
-        let prior: Awaited<ReturnType<typeof readPriorDeliveredConversation>> = null;
-        const selected = current() ? await attemptConversationReply({ context: runContext, runtime: turnRuntime,
-          mediaCount: userMedia?.length ?? 0, system: rawSystemPrompt, history: messages,
-          provider: runtimeProvider, model: runtimeModel, reasoningEffort: runtimeReasoningEffort,
-          eventLedger: this.eventLedger, readLearning: () => readSeedLearning(runContext.seedStateDir!), stillCurrent: current,
-          verifyOwnerSource: async ({ conversationRef, currentMessageId, text }) => {
-            const source = await readCurrentConversationOwner({ contactPath: runContext.ownerConversationContactPath!,
-              conversationRef, currentMessageId, signal: ac.signal });
-            return source?.text === text;
-          },
-          readPrior: async ({ conversationRef, currentMessageId }) => {
-            const owner = runContext.authenticatedUserMessage;
-            const trustedCurrent = owner?.channelKind === 'direct' && owner.channelId === turnRuntime.coordinationOrigin?.channelId
-              && Number.isSafeInteger(owner.sourceSequence) && (owner.sourceSequence ?? 0) > 0
-              && (owner.previousAssistantMessageId === null || typeof owner.previousAssistantMessageId === 'string')
-              ? { messageRef: `coordination.message:${currentMessageId}`, text: owner.text,
-                sourceSequence: owner.sourceSequence!, previousAssistantMessageId: owner.previousAssistantMessageId }
-              : undefined;
-            prior = await readPriorDeliveredConversation({ ledgerPath: resolve(this.workspacePath, '..', 'brain', 'event-ledger.jsonl'),
-              contactPath: runContext.ownerConversationContactPath!, conversationRef, currentMessageId,
-              ...(trustedCurrent ? { currentOwner: trustedCurrent } : {}), signal: ac.signal });
-            return prior?.modelView ?? null;
-          },
-          feedback: ({ proposals, owner }) => applyConversationFeedback({ proposals, owner, prior,
-            relationshipLedger: this.relationshipLedger, seedStateDir: runContext.seedStateDir! }),
-          generate: request => {
-            maintainModelWindow([{ role: 'system', content: request.system }, { role: 'user', content: request.prompt }]);
-            const base = runtime.providerRequest.baseUrl.replace(/\/+$/, '');
-            const baseURL = ['openai', 'xai'].includes(runtimeProvider) && !base.endsWith('/v1') ? `${base}/v1` : base;
-            return generateText({ ...request, provider: runtimeProvider, model: runtimeModel,
-              reasoningEffort: runtimeReasoningEffort, temperature: this.temperature,
-              apiKey: runtime.providerRequest.apiKey, ...(baseURL ? { baseURL } : {}),
-              signal: ac.signal, codexCredentialsProvider: this.codexCredentialsProvider,
-              onProviderActivity: () => turnRuntime.onProviderActivity?.(++codexProgressSequence) });
-          },
-        }) : null;
-        if (selected) {
-          ac.signal.throwIfAborted();
-          this.conversationCompletions.set(this.turnKey(chatId, activeTurnId), selected.completion);
-          turnMessages.push({ role: 'assistant', content: selected.text });
-          persistTurn();
-          onEvent?.({ type: 'response_chunk', chunk: selected.text });
-          return { text: selected.text, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
+      if (turnRuntime?.contextPurpose === 'conversation' && turnRuntime.coordinationOrigin?.originMessageId) {
+        const opportunity = assessConversationalOwnerOpportunity({ context: runContext,
+          runtime: turnRuntime, mediaCount: userMedia?.length ?? 0 });
+        if (!opportunity.opportunity) {
+          recordConversationProposalDecline({ context: runContext, runtime: turnRuntime, eventLedger: this.eventLedger },
+            opportunity.reason, 'eligibility');
+        } else if (!runContext.seedStateDir) {
+          recordConversationProposalDecline({ context: runContext, runtime: turnRuntime, eventLedger: this.eventLedger },
+            'seed_state_path_unavailable', 'seed');
+        } else {
+          // Canonical authentication was established above from the exact owner
+          // contact. The proposer sees ordinary context, never Seed policy scores.
+          consumeAutomaticEnrichment();
+          maintainModelWindow(messages, false);
+          let steered = false;
+          const current = (): boolean => {
+            this.consumeOperatorSteer(chatId, turnMessages, text => {
+              steered = true;
+              messages.push({ role: 'user', content: text });
+              truncated.push({ role: 'user', content: text });
+            }, onEvent, activeTurnId, runContext);
+            return !steered;
+          };
+          let prior: Awaited<ReturnType<typeof readPriorDeliveredConversation>> = null;
+          // Use the installation's existing model/context policy. The optional
+          // proposer cannot silently impose a smaller system-context ceiling, nor
+          // consume the ordinary loop's tool, output or reserve allocation.
+          const proposalPressureInput = { ...contextPressureInput, systemChars: rawSystemPrompt.length,
+            outputTokens: Math.max(this.maxTokens, CONVERSATION_PROPOSAL_MAX_TOKENS) };
+          const proposalPressure = this.compaction?.measure(proposalPressureInput)
+            ?? measureContextPressure(proposalPressureInput, DEFAULT_CONTEXT_POLICY);
+          const requestBudgetChars = Math.max(0, proposalPressure.totalBudgetChars - proposalPressure.overheadChars
+            + proposalPressure.systemChars + proposalPressure.incomingChars);
+          const selectionCurrent = current();
+          if (!selectionCurrent) recordConversationProposalDecline({ context: runContext, runtime: turnRuntime, eventLedger: this.eventLedger },
+            'turn_steered', 'selection');
+          const selected = selectionCurrent ? await attemptConversationReply({ context: runContext, runtime: turnRuntime,
+            mediaCount: userMedia?.length ?? 0, system: rawSystemPrompt, history: messages, requestBudgetChars,
+            budgetSource: this.compaction ? 'configured_context_policy' : 'default_context_policy',
+            provider: runtimeProvider, model: runtimeModel, reasoningEffort: runtimeReasoningEffort,
+            eventLedger: this.eventLedger, readLearning: () => readSeedLearning(runContext.seedStateDir!), stillCurrent: current,
+            verifyOwnerSource: async ({ conversationRef, currentMessageId, text }) => {
+              const source = await readCurrentConversationOwner({ contactPath: runContext.ownerConversationContactPath!,
+                conversationRef, currentMessageId, signal: ac.signal });
+              return source?.text === text;
+            },
+            readPrior: async ({ conversationRef, currentMessageId }) => {
+              const owner = runContext.authenticatedUserMessage;
+              const trustedCurrent = owner?.channelKind === 'direct' && owner.channelId === turnRuntime.coordinationOrigin?.channelId
+                && Number.isSafeInteger(owner.sourceSequence) && (owner.sourceSequence ?? 0) > 0
+                && (owner.previousAssistantMessageId === null || typeof owner.previousAssistantMessageId === 'string')
+                ? { messageRef: `coordination.message:${currentMessageId}`, text: owner.text,
+                  sourceSequence: owner.sourceSequence!, previousAssistantMessageId: owner.previousAssistantMessageId }
+                : undefined;
+              prior = await readPriorDeliveredConversation({ ledgerPath: resolve(this.workspacePath, '..', 'brain', 'event-ledger.jsonl'),
+                contactPath: runContext.ownerConversationContactPath!, conversationRef, currentMessageId,
+                ...(trustedCurrent ? { currentOwner: trustedCurrent } : {}), signal: ac.signal });
+              return prior?.modelView ?? null;
+            },
+            feedback: ({ proposals, owner }) => applyConversationFeedback({ proposals, owner, prior,
+              relationshipLedger: this.relationshipLedger, seedStateDir: runContext.seedStateDir! }),
+            generate: request => {
+              maintainModelWindow([{ role: 'system', content: request.system }, { role: 'user', content: request.prompt }]);
+              const base = runtime.providerRequest.baseUrl.replace(/\/+$/, '');
+              const baseURL = ['openai', 'xai'].includes(runtimeProvider) && !base.endsWith('/v1') ? `${base}/v1` : base;
+              return generateText({ ...request, provider: runtimeProvider, model: runtimeModel,
+                reasoningEffort: runtimeReasoningEffort, temperature: this.temperature,
+                apiKey: runtime.providerRequest.apiKey, ...(baseURL ? { baseURL } : {}),
+                signal: ac.signal, codexCredentialsProvider: this.codexCredentialsProvider,
+                onProviderActivity: () => turnRuntime.onProviderActivity?.(++codexProgressSequence) });
+            },
+          }) : null;
+          if (selected) {
+            ac.signal.throwIfAborted();
+            this.conversationCompletions.set(this.turnKey(chatId, activeTurnId), selected.completion);
+            turnMessages.push({ role: 'assistant', content: selected.text });
+            persistTurn();
+            onEvent?.({ type: 'response_chunk', chunk: selected.text });
+            return { text: selected.text, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
+          }
         }
       }
 

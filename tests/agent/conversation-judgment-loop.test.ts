@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentLoop } from '../../src/agent/loop.js';
+import { CompactionManager, type CompactionConfig } from '../../src/agent/compaction.js';
 import { ConversationHistory } from '../../src/agent/history.js';
 import { TurnStore } from '../../src/chat/turn-store.js';
 import { generateCoordinationId } from '../../src/coordination/ids/index.js';
@@ -23,7 +24,7 @@ function response(text: string) {
     + `data: ${JSON.stringify({ type: 'response.completed', response: { status: 'completed', usage: { input_tokens: 17, output_tokens: 12 } } })}\n\n`);
 }
 
-function fixture(t: TestContext, ownerText = 'I spent the afternoon by the water.') {
+function fixture(t: TestContext, ownerText = 'I spent the afternoon by the water.', options: { system?: string; budget?: number; maxTokens?: number; compactionPolicy?: Partial<CompactionConfig> } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'conversation-loop-'));
   const priorRoot = process.env.HOME23_ROOT; process.env.HOME23_ROOT = root;
   const originalFetch = globalThis.fetch;
@@ -32,7 +33,7 @@ function fixture(t: TestContext, ownerText = 'I spent the afternoon by the water
   const workspace = join(root, 'workspace'); mkdirSync(workspace);
   const seedDir = join(root, 'substrate', 'seed-01'); const seed = SeedProcess.initialize(seedDir); seed.checkpoint();
   assert.equal(readSeedLearning(seedDir).available, true);
-  const history = new ConversationHistory(join(root, 'conversations'), 400_000, 'fixture');
+  const history = new ConversationHistory(join(root, 'conversations'), options.budget ?? 400_000, 'fixture');
   const origin: CoordinationTurnOrigin = { kind: 'coordination', workId: generateCoordinationId('work'),
     attemptId: generateCoordinationId('attempt'), leaseId: generateCoordinationId('lease'),
     holderPrincipalId: generateCoordinationId('bot'), holderInstanceId: 'fixture-resident', authorityReference: 'resident:fixture',
@@ -46,10 +47,12 @@ function fixture(t: TestContext, ownerText = 'I spent the afternoon by the water
   const brainOperations = { withActivityHandler() { return this; }, searchContext: async () => ({ results: [],
     sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'no_match' } }) };
   const agent = new AgentLoop({ apiKey: 'fixture', model: 'gpt-6.1-sol', provider: 'openai-codex',
+    ...(options.maxTokens ? { maxTokens: options.maxTokens } : {}),
+    ...(options.compactionPolicy ? { compaction: new CompactionManager({ client: {} as never, history, memory: {} as never, config: options.compactionPolicy }) } : {}),
     registry: { getAnthropicTools: () => [{ name: 'fixture_noop', description: 'Fixture tool', input_schema: { type: 'object', properties: {} } }],
       getOpenAITools: () => [{ type: 'function', function: { name: 'fixture_noop', description: 'Fixture tool', parameters: { type: 'object', properties: {} } } }],
       get: () => undefined } as never,
-    history, contextManager: { getSystemPrompt: () => 'Resident identity. Reply honestly.', getPromptSourceInfo: () => ({ loadedFiles: [] }) } as never,
+    history, contextManager: { getSystemPrompt: () => options.system ?? 'Resident identity. Reply honestly.', getPromptSourceInfo: () => ({ loadedFiles: [] }) } as never,
     toolContext: { brainOperations, projectRoot: root, workspacePath: workspace, agentName: 'fixture', ownerConversationContactPath: contactPath,
       coordinationChannelOperation: async ({ args }: any) => args.operation === 'project_context' ? { available: false }
         : { registry: 'canonical', work: [], ownerContact: { messageId: origin.originMessageId, text: ownerText,
@@ -91,7 +94,9 @@ test('explicit requested work retains ordinary provider path with no conversatio
   const run = await f.agent.runWithTurn(f.chatId, 'Routing envelope.', { coordinationOrigin: f.origin, contextPurpose: 'conversation' });
   assert.equal((await run.response).text, 'Ordinary tool-capable response.'); assert.equal(f.requests.length, 1);
   assert.ok(Array.isArray(f.requests[0].tools));
-  assert.doesNotMatch(readFileSync(join(f.root, 'brain', 'event-ledger.jsonl'), 'utf8'), /ConversationReplySelected/);
+  const events = readFileSync(join(f.root, 'brain', 'event-ledger.jsonl'), 'utf8');
+  assert.doesNotMatch(events, /ConversationReplySelected/);
+  assert.match(events, /explicit_action_requested/);
 });
 
 test('malformed proposal falls through to ordinary loop and never publishes draft JSON', async t => {
@@ -128,4 +133,42 @@ test('owner stop after selected chunk cannot mint completed conversational exper
   const events = readFileSync(join(f.root, 'brain', 'event-ledger.jsonl'), 'utf8');
   assert.match(events, /ConversationReplySelected/); assert.doesNotMatch(events, /ConversationReplyCompleted/);
   assert.equal(new TurnStore(f.history).finalEnvelope(f.chatId, turnId)?.status, 'stopped');
+});
+
+// The live home arrived with a 147k–157k-character system context. The former
+// independent 120k ceiling bypassed the new route before emitting any evidence.
+for (const configured of [false, true]) test(`native conversation with lived-size system context reaches the selector inside its ${configured ? 'configured' : 'default'} budget`, async t => {
+  const system = 'Resident context already admitted by the normal loop. '.repeat(3_100);
+  assert.ok(system.length > 150_000);
+  const f = fixture(t, 'I spent the afternoon by the water.', { system,
+    ...(configured ? { compactionPolicy: { modelContextTokens: { 'openai-codex/gpt-6.1-sol': 200_000 } } } : {}) });
+  const run = await f.agent.runWithTurn(f.chatId, 'Routing envelope.', { coordinationOrigin: f.origin, contextPurpose: 'conversation' });
+  const result = await run.response;
+  assert.equal(result.text, candidate.candidates[0]!.reply);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.requests[0].tools, undefined);
+  assert.equal(f.requests[0].instructions.includes(system), true, 'full admitted system context reaches proposer');
+  const events = readFileSync(join(f.root, 'brain', 'event-ledger.jsonl'), 'utf8');
+  assert.match(events, /ConversationReplySelected/);
+  assert.match(events, /ConversationReplyCompleted/);
+});
+
+test('proposal reserves its own output against the configured model budget and reports ordinary fallback', async t => {
+  const f = fixture(t, 'I spent the afternoon by the water.', { system: 'c'.repeat(100_000), maxTokens: 1_000,
+    compactionPolicy: { reserveChars: 1_000, modelContextTokens: { 'openai-codex/gpt-6.1-sol': 40_000 } } });
+  globalThis.fetch = (async (_url, init) => {
+    const request = JSON.parse(String(init?.body)); f.requests.push(request);
+    assert.ok(Array.isArray(request.tools), 'over-budget proposal must not reach provider');
+    return response('Ordinary response within the original request budget.');
+  }) as typeof fetch;
+  const run = await f.agent.runWithTurn(f.chatId, 'Routing envelope.', { coordinationOrigin: f.origin, contextPurpose: 'conversation' });
+  assert.equal((await run.response).text, 'Ordinary response within the original request budget.');
+  assert.equal(f.requests.length, 1);
+  const events = readFileSync(join(f.root, 'brain', 'event-ledger.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  const decline = events.find(row => row.event_type === 'ConversationProposalDeferred');
+  assert.equal(decline.payload.reason, 'request_exceeds_context_budget');
+  assert.equal(decline.payload.budgetSource, 'configured_context_policy');
+  assert.ok(decline.payload.requestBudgetChars < 95_000, 'model cap retains tools, 6000 output tokens and reserve');
+  assert.ok(decline.payload.requestChars > decline.payload.requestBudgetChars);
+  assert.ok(!events.some(row => row.event_type === 'ConversationReplySelected'));
 });
