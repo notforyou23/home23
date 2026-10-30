@@ -208,6 +208,13 @@ export interface ToolContext {
     chatId: string;
     messageRef: string;
     text: string;
+    /** Canonical Core contact facts, never supplied by a model or tool call. */
+    channelId?: string;
+    channelKind?: 'direct' | 'group';
+    channelSequence?: number;
+    sourceSequence?: number;
+    previousAssistantMessageId?: string | null;
+    createdAt?: string;
   };
   /** Loop-owned store whose correction validator is bound to active recorded turns. */
   memoryObjectStore?: MemoryObjectStore;
@@ -221,6 +228,9 @@ export interface ToolContext {
   relationshipLedger?: RelationshipLedger | null;
   /** Loop-owned owner-distill session boundary configuration, used for read-only recall. */
   ownerConversationSessionGapMinutes?: number;
+  /** Read-only Core projection of committed owner/resident messages. A harness
+   * completion alone does not establish that a conversational reply was sent. */
+  ownerConversationContactPath?: string;
   telegramAdapter: TelegramAdapterRef | null;
   codingBridge?: CodingBridgeRef | null;
   workRegistry?: WorkRegistryRef | null;

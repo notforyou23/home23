@@ -50,6 +50,8 @@ import { ownerConversationQuery, ownerConversationMatch, relationshipOwnerEviden
 import { classifyOwnerConversation, hasConversationTimeIntent } from '../../shared/owner-conversation-policy.cjs';
 import { normalizeLearningFeedback } from '../../shared/seed-learning.cjs';
 import { appendSeedProjectionOnce as appendSourceProjection } from '../../shared/seed-source-projection.cjs';
+import { validateConversationFeedbackClaim, type ConversationFeedbackInterpretation } from './conversation-feedback-contract.js';
+import { conversationResponseHash } from './conversation-judgment.js';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -106,9 +108,14 @@ export interface RelationshipEntry {
   last_surfaced?: string;
   reuse_count: number;
   learning?: RelationshipLearningFeedback;
+  /** One authenticated owner encounter can address several independently selected dimensions. */
+  learning_batch?: RelationshipLearningFeedback[];
+  learning_interpretations?: ConversationFeedbackInterpretation[];
+  conduct_episode?: { selectionId: string; responseHash: string; deliveryMessageRef: string; ownerMessageRef: string };
   /** Pending projections live with their source entry, so a failed append is
    * retryable without creating another store or inventing another experience. */
   seed_projection?: SeedSourceProjection;
+  seed_projections?: SeedSourceProjection[];
 }
 
 export interface RelationshipLearningFeedback {
@@ -429,7 +436,7 @@ export class RelationshipLedger {
     let projected = 0;
     let changed = false;
     for (const entry of this.entries) {
-      const projection = entry.seed_projection;
+      for (const projection of [entry.seed_projection, ...(entry.seed_projections ?? [])]) {
       if (!projection || projection.status !== 'pending') continue;
       try {
         appendSeedProjectionOnce(this.eventsPath, projection.event);
@@ -440,9 +447,89 @@ export class RelationshipLedger {
         projection.error = boundedText(error instanceof Error ? error.message : String(error), MAX_EVIDENCE_NOTE);
       }
       changed = true;
+      }
     }
     if (changed) this.persist();
-    return { projected, pending: this.entries.filter(entry => entry.seed_projection?.status === 'pending').length };
+    return { projected, pending: this.entries.flatMap(entry => [entry.seed_projection, ...(entry.seed_projections ?? [])])
+      .filter(projection => projection?.status === 'pending').length };
+  }
+
+  /** Authenticates once and persists the whole source encounter before any
+   * projection. Callers must verify retained decisions and canonical delivery.
+   * Projection does not assert that every Seed contribution has been applied. */
+  addConversationFeedbackBatch(input: {
+    learning: RelationshipLearningFeedback[];
+    interpretations: ConversationFeedbackInterpretation[];
+    episode: { selectionId: string; responseHash: string; deliveryMessageRef: string; ownerMessageRef: string };
+    deliveredReply: string;
+  }, ingress: AuthenticatedCorrectionIngress): RelationshipEntry {
+    if (!ingress || !ingress.chatId || ingress.chatId.length > MAX_REF || !ingress.messageRef
+      || ingress.messageRef.length > MAX_REF || !ingress.userText || ingress.userText.length > MAX_STATEMENT
+      || !Array.isArray(input.learning) || input.learning.length < 1 || input.learning.length > 4
+      || !Array.isArray(input.interpretations) || input.interpretations.length !== input.learning.length
+      || !input.episode || !/^[a-f0-9]{64}$/.test(input.episode.responseHash)
+      || !input.episode.selectionId || input.episode.selectionId.length > 450
+      || !input.episode.deliveryMessageRef.startsWith('coordination.message:')
+      || input.episode.deliveryMessageRef.length > MAX_REF || !input.episode.ownerMessageRef.startsWith('coordination.message:')
+      || input.episode.ownerMessageRef.length > MAX_REF || input.episode.ownerMessageRef === input.episode.deliveryMessageRef
+      || typeof input.deliveredReply !== 'string' || input.deliveredReply.length > 6000
+      || conversationResponseHash(input.deliveredReply) !== input.episode.responseHash) throw new Error('Invalid conversation feedback batch');
+    const learning = input.learning.map(raw => normalizeLearningFeedback({ ...raw,
+      evidenceRefs: [...new Set([ingress.messageRef, input.episode.deliveryMessageRef, ...raw.evidenceRefs])],
+    }) as RelationshipLearningFeedback | null);
+    const scopes = new Set<string>();
+    for (const [index, item] of learning.entries()) {
+      const interpretation = input.interpretations[index]!;
+      if (!item || item.basis !== 'owner-feedback' || item.decisionId !== interpretation.decisionId
+        || item.scope !== `foreground.conduct.${interpretation.axis}` || scopes.has(item.scope)
+        || item.decisionId !== `${input.episode.selectionId}:${interpretation.axis}`
+        || item.direction !== interpretation.direction || Boolean(item.standing) !== interpretation.standing
+        || JSON.stringify(item.tags) !== JSON.stringify([`situation:${interpretation.situation}`, `choice:${interpretation.value}`])
+        || (item.excludes?.length ?? 0) !== 0 || (item.corroborates?.length ?? 0) !== 0
+        || JSON.stringify(item.supersedes ?? []) !== JSON.stringify(interpretation.supersedes)
+        || validateConversationFeedbackClaim(ingress.userText, interpretation, input.deliveredReply)) throw new Error('Conversation feedback attribution is not valid');
+      scopes.add(item.scope);
+    }
+    return this.mutateEntries(() => {
+      const prior = this.entries.filter(entry => entry.actor === 'jtr' && (entry.provenance.source_refs.includes(ingress.messageRef)
+        || entry.provenance.source_refs.includes(input.episode.ownerMessageRef)));
+      if (prior.length) {
+        const exact = prior.length === 1 && prior[0]!.statement === ingress.userText
+          && JSON.stringify(prior[0]!.learning_batch) === JSON.stringify(learning)
+          && JSON.stringify(prior[0]!.learning_interpretations) === JSON.stringify(input.interpretations)
+          && JSON.stringify(prior[0]!.conduct_episode) === JSON.stringify(input.episode);
+        if (!exact) throw new Error('Owner encounter already spent on different feedback');
+        this.flushSeedTeachingUnlocked();
+        return prior[0]!;
+      }
+      if (this.validateCorrectionIngress?.(ingress) !== true) throw new Error('Conversation feedback requires authenticated owner ingress');
+      const createdAt = this.now();
+      const id = this.newId(createdAt);
+      const entry: RelationshipEntry = {
+        id, type: 'correction', title: 'Feedback on a delivered conversation reply', statement: ingress.userText,
+        actor: 'jtr', agent: this.agent, status: 'active', confidence: 0.7, privacy_class: 'personal',
+        triggers: [], applies_to: [...scopes], provenance: { session_refs: [ingress.chatId],
+          source_refs: [ingress.messageRef, input.episode.ownerMessageRef, input.episode.deliveryMessageRef], generation_method: 'jtr_correction',
+          conversation_kind: 'substantive' },
+        evidence_note: 'Owner words and canonical reply delivery are verified. Dimension mapping is a bounded model interpretation, not a verified judgment of response quality.',
+        createdAt, updatedAt: createdAt, reuse_count: 0,
+        learning_batch: learning as RelationshipLearningFeedback[],
+        learning_interpretations: structuredClone(input.interpretations), conduct_episode: { ...input.episode },
+        seed_projections: learning.map((item, index) => ({ schema: 'home23.seed-source-projection.v1', status: 'pending',
+          event: { event_id: randomUUID(), event_type: 'entry_added', entry_id: id, agent: this.agent, ts: createdAt,
+            payload: { learningVersion: 2, type: item!.direction === 'attenuate' ? 'attenuation' : 'correction',
+              actor: 'jtr', method: 'jtr_correction', head: ingress.userText, learning: item,
+              owner_quote: ingress.userText, owner_message_ref: ingress.messageRef,
+              source_refs: [ingress.messageRef, input.episode.ownerMessageRef, input.episode.deliveryMessageRef], applies_to: [item!.scope],
+              conduct_interpretation: input.interpretations[index], conduct_episode: input.episode },
+            ...buildWriterSemanticStamp({ vector: embedTextSync(ingress.userText), text: ingress.userText }) } })),
+      };
+      this.entries.push(entry);
+      this.evict();
+      this.persist();
+      this.flushSeedTeachingUnlocked();
+      return entry;
+    });
   }
 
   // Best-effort sibling event log. Never throws — continuity annotation only.
@@ -539,6 +626,9 @@ export class RelationshipLedger {
           || input.statement.trim().length > MAX_STATEMENT
           || !normalized.decisionId) {
         throw new Error('Conduct teaching requires a valid scoped owner-feedback record and the exact authenticated owner claim');
+      }
+      if (normalized.scope.startsWith('foreground.conduct.')) {
+        throw new Error('Conversational conduct requires the authenticated batch and canonical delivered-reply evidence');
       }
       learning = normalized;
       // Retrying a stored authenticated entry does not mint authority again or
@@ -938,11 +1028,11 @@ export class RelationshipLedger {
   private evict(): void {
     while (this.entries.length > this.maxEntries) {
       const closedIdx = oldestIndex(this.entries, e =>
-        e.seed_projection?.status !== 'pending' && e.provenance.generation_method !== 'owner_conversation'
+        e.seed_projection?.status !== 'pending' && !e.seed_projections?.some(item => item.status === 'pending') && e.provenance.generation_method !== 'owner_conversation'
         && (e.status === 'resolved' || e.status === 'removed' || e.status === 'superseded'));
       if (closedIdx >= 0) { this.entries.splice(closedIdx, 1); continue; }
       const droppableIdx = oldestIndex(this.entries, e =>
-        e.seed_projection?.status !== 'pending' && e.provenance.generation_method !== 'owner_conversation'
+        e.seed_projection?.status !== 'pending' && !e.seed_projections?.some(item => item.status === 'pending') && e.provenance.generation_method !== 'owner_conversation'
         && e.status === 'active' && !PROTECTED_TYPES.has(e.type));
       if (droppableIdx >= 0) { this.entries.splice(droppableIdx, 1); continue; }
       // Only protected active entries remain — refuse to drop them.

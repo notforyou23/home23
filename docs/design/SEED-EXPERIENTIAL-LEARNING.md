@@ -6,7 +6,7 @@ outcomes need an attributable connection to the earlier choice, and the next
 relevant selector must consume the result.
 
 This implementation extends the existing developmental state and receipts.
-It creates no parallel memory database, service, or recurring model call.
+It creates no parallel memory database, service, or background learning job.
 
 ## Decisions and teaching
 
@@ -80,6 +80,18 @@ experience.
 
 ## Actual consumers
 
+- Conversational reply selection consumes four independent conduct dimensions:
+  engagement, initiative, continuity, and depth. The normal configured model
+  proposes bounded complete replies in its ordinary preference order. The
+  proposal receives ordinary context, without a supplied Seed score or desired
+  winner. Seed contributions then change which exact reply the runtime sends.
+  Only the selected reply's dimensions become experienced decisions. Alternatives
+  remain candidates, and their labels remain model interpretations.
+  A fixed-candidate counterfactual removes only matching contributions and
+  recomputes the winner. A score change with the same winner is not evidence of
+  changed outward behavior. Tasks, required retrieval, unsupported media,
+  incomplete provider output and uncertain proposals retain the ordinary
+  tool-capable path. The proposal can add latency when that fallback is needed.
 - The existing engine owner-attention policy consumes scoped learning before
   durable outbox admission. Routine suppression is limited to problem-kind,
   machine-measurement-only commentary. Grounded connections, mixed owner or Work
@@ -155,6 +167,23 @@ identities and source progress witnesses prevent repeated evidence receiving
 new credit. A delayed teaching whose committed decision has not yet arrived
 waits for that exact witness rather than inventing a context.
 
+The new conduct scopes reserve at most eight recent dimension witnesses within
+the existing thirty-two-decision window. Unrelated runtime churn cannot evict
+all recent conversational eligibility. Histories without these prospective
+scopes retain their original FIFO behavior. This is a bounded opportunity to
+learn from feedback, not an indefinite archive of eligible decisions.
+
+Repeated attributable feedback in the same new conduct scope, situation and
+choice updates one bounded active contribution. Original receipts remain intact.
+A persistent anchor keeps that policy in the existing Seed cell that first
+received it, even as ordinary metabolic routing changes. Thirty finite policy
+keys carry bounded recent occurrence hashes and source-order watermarks. Old
+encounters cannot acquire new credit after the recent-ID window expires;
+out-of-order incidental feedback is refused rather than guessed into the policy.
+A standing instruction remains distinct from feedback about an individual
+encounter. Contrary incidental feedback cannot revoke that instruction; an
+explicit revision can. Old scopes retain their original update rules.
+
 ## Causal verification
 
 `npm run test:seed-learning` exercises authenticated source feedback through Seed
@@ -179,6 +208,38 @@ that every future judgment improves, that a missing historical attachment can
 be reconstructed, or that the resident has subjective experience. Source
 verification, production activation and behavior observed in continued use
 remain separate facts.
+
+## Conversational experience and uncoached verification
+
+A model's completed response is not proof of delivery. Conversational teaching
+requires the prospective selection, exact completed text hash, and matching
+committed contact in the same canonical owner conversation. Feedback must refer
+to the most recent delivered reply; an intervening ordinary tool reply prevents
+silently attaching it to an older conversational selection.
+
+The current authenticated owner message is preserved in full. A bounded model
+interpretation may identify the conduct dimension and an exact supporting span.
+Runtime checks authenticate and attribute the source; they do not prove semantic
+entailment. Ambiguous feedback, generic gratitude, quoted or hypothetical
+instructions, third-party wishes, and operator verification directives do not
+become personal conduct authority. Missing delivery or retained eligibility
+leaves the experience available as history without inventing a lesson.
+
+Multiple supported dimensions share one authenticated source entry and durable
+projection work. Source storage, projection and committed Seed application are
+reported separately. No successful model call, silence or self-assessment earns
+owner-value credit.
+
+The live acceptance criterion is a later ordinary owner message with no lesson
+reminder, requested strategy or proof instruction. Preserve the complete candidate
+set and original ordering. Require a committed contribution, a changed winner
+when only that contribution is removed, and exact delivery of the selected
+reply. When a contribution includes several experiences, compare the same
+candidates against the exact pre-feedback and post-feedback policies as well;
+removing the aggregate alone cannot isolate the newest experience. Independent
+reading of the prose and owner judgment of its quality remain
+separate from this causal trace. One example establishes one effect, not general
+improvement or model-weight training.
 
 ## Decision meaning in natural feedback
 

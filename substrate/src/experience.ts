@@ -3,7 +3,7 @@
 import type { SourceEvent } from './types.js';
 import type { DevelopmentalState } from './plasticity.js';
 import { emptyCellPlasticState } from './plasticity.js';
-import { normalizeLearningDecision, normalizeLearningFeedback, normalizeLearningState, recordLearningDecision, applyLearningFeedback, executionTargetTag, learningStateWithinBudget } from '../../shared/seed-learning.cjs';
+import { normalizeLearningDecision, normalizeLearningFeedback, normalizeLearningState, recordLearningDecision, applyLearningFeedback, executionTargetTag, learningStateWithinBudget, isConductLearningDecision } from '../../shared/seed-learning.cjs';
 
 export function experienceCells(development: DevelopmentalState, before?: DevelopmentalState): Record<string, unknown> {
   return Object.fromEntries(Object.entries(development).filter(([, p]) => p.experience !== undefined)
@@ -18,6 +18,19 @@ export function applyExperienceEvent(development: DevelopmentalState, event: Sou
   const rawDecision = normalizeLearningDecision(event.payload['learningDecision']);
   const feedback = normalizeLearningFeedback(event.payload['learning']);
   let cellId = routedCellId;
+  const conductDecision = isConductLearningDecision(rawDecision);
+  if (conductDecision) {
+    // The existing cell that first receives a prospective conversational choice
+    // owns this policy thereafter. Metabolic routing can keep changing without
+    // scattering one policy into independently accumulating contributions.
+    const anchors = Object.entries(development).filter(([, p]) => p.experience?.conductAnchor === true
+      || p.experience?.conductCredits !== undefined);
+    if (anchors.length > 1) return { rule: 'experience.v1', applied: false, reason: 'conduct_anchor_conflict' };
+    const priorConductCells = anchors.length ? anchors : Object.entries(development).filter(([, p]) =>
+      p.experience?.decisions.some(isConductLearningDecision) || p.experience?.lessons.some(lesson => isConductLearningDecision(lesson.eligibility)));
+    if (priorConductCells.length > 1) return { rule: 'experience.v1', applied: false, reason: 'conduct_anchor_conflict' };
+    cellId = priorConductCells[0]?.[0] ?? routedCellId;
+  }
   if (feedback?.decisionId) {
     cellId = Object.entries(development).find(([, p]) => p.experience?.decisions.some(d => d.decisionId === feedback.decisionId)
       || p.experience?.lessons.some(lesson => lesson.eligibility?.decisionId === feedback.decisionId))?.[0] ?? routedCellId;
@@ -29,9 +42,19 @@ export function applyExperienceEvent(development: DevelopmentalState, event: Sou
   if (rawDecision) {
     // Runtime provenance, semantic source tags and refs are the eligibility
     // witness. Do not use the cell's later mixed numeric residue as credit.
-    const result = recordLearningDecision(existing?.experience, { ...rawDecision, cellId, observedAt: rawDecision.observedAt ?? event.producedAt });
-    if (result.applied) { const p = existing ?? emptyCellPlasticState(); p.experience = result.state; development[cellId] = p; }
+    const occurrence = typeof event.payload['learningStream'] === 'string' && Number.isSafeInteger(event.payload['learningSequence'])
+      && (event.payload['learningSequence'] as number) >= 0
+      ? { stream: event.payload['learningStream'], sequence: event.payload['learningSequence'] as number } : undefined;
+    const result = recordLearningDecision(existing?.experience, { ...rawDecision, cellId,
+      observedAt: conductDecision ? event.producedAt : rawDecision.observedAt ?? event.producedAt,
+      ...(conductDecision ? { occurrence } : {}) });
+    if (result.applied) {
+      if (conductDecision) result.state.conductAnchor = true;
+      if (!learningStateWithinBudget(result.state)) return { rule: 'experience.v1', applied: false, reason: 'learning_state_capacity', cellId };
+      const p = existing ?? emptyCellPlasticState(); p.experience = result.state; development[cellId] = p;
+    }
     const deferred: string[] = [];
+    const deferredRefused: Array<{ feedbackId: string; reason: string }> = [];
     // Source adapters advance independently. A relationship event can precede
     // its already-committed decision projection; retain it until the witness
     // arrives instead of manufacturing a target or silently losing teaching.
@@ -44,16 +67,27 @@ export function applyExperienceEvent(development: DevelopmentalState, event: Sou
         // Keep its ID dedupe, but do not confuse delayed eligibility with a
         // lost-cursor replay or move the newer watermark backwards.
         const { stream: _stream, sequence: _sequence, ...admittedPending } = pending.authority;
-        const applied = applyLearningFeedback(target.experience, pending.feedback, admittedPending);
+        const applied = applyLearningFeedback(target.experience, pending.feedback, { ...admittedPending,
+          ...(isConductLearningDecision(rawDecision) && typeof _stream === 'string' && typeof _sequence === 'number'
+            ? { occurrence: { stream: _stream, sequence: _sequence } } : {}) });
         if (applied.applied) {
           target.experience = applied.state; development[cellId] = target;
           const source = development[pendingCellId]?.experience;
           if (source) source.pendingFeedback = source.pendingFeedback.filter(item => item.authority.feedbackId !== pending.authority.feedbackId);
           deferred.push(pending.authority.feedbackId);
+        } else if (conductDecision && ['conduct_trial_already_credited', 'conduct_revision_precedes_feedback_watermark',
+          'conduct_context_invalid', 'standing_conduct_instruction_requires_revision', 'conduct_corroboration_requires_new_feedback']
+          .includes(applied.reason)) {
+          // This admitted source cannot become applicable by retrying it. Keep
+          // its refusal in the receipt, rather than exhausting pending slots.
+          const source = development[pendingCellId]?.experience;
+          if (source) source.pendingFeedback = source.pendingFeedback.filter(item => item.authority.feedbackId !== pending.authority.feedbackId);
+          deferredRefused.push({ feedbackId: pending.authority.feedbackId, reason: applied.reason });
         }
       }
     }
-    return { rule: 'experience.v1', ...result, state: undefined, cellId, decisionId: rawDecision.decisionId, deferredApplied: deferred };
+    return { rule: 'experience.v1', ...result, state: undefined, cellId, decisionId: rawDecision.decisionId, deferredApplied: deferred,
+      ...(deferredRefused.length ? { deferredRefused } : {}) };
   }
   if (feedback) {
     const ownerAuthenticated = event.sourceAuthority === 'home23.event-ledger' && event.sourceRef.startsWith('relationship.')

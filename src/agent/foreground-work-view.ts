@@ -99,10 +99,21 @@ export function collectForegroundTurnContext(input: {
 
 /** Current canonical assignments are available to app conversation and work
  * returns alike. A read failure is an omission, never a claim of no work. */
-export async function collectCanonicalWorkContext(read: () => Promise<unknown>, onOwnerContact?: (contact: { messageId: string; text: string }) => void,
+export interface CanonicalOwnerContact {
+  messageId: string;
+  text: string;
+  channelId?: string;
+  channelKind?: 'direct' | 'group';
+  channelSequence?: number;
+  sourceSequence?: number;
+  previousAssistantMessageId?: string | null;
+  createdAt?: string;
+}
+
+export async function collectCanonicalWorkContext(read: () => Promise<unknown>, onOwnerContact?: (contact: CanonicalOwnerContact) => void,
   relationshipLedger?: Pick<RelationshipLedger, 'listEntries'>): Promise<string> {
   try {
-    const result = await read() as { registry?: string; work?: Array<Record<string, unknown>>; unseenOwnerMessages?: unknown[]; ownerMessageSequence?: number; ownerContact?: { messageId: string; text: string } | null };
+    const result = await read() as { registry?: string; work?: Array<Record<string, unknown>>; unseenOwnerMessages?: unknown[]; ownerMessageSequence?: number; ownerContact?: CanonicalOwnerContact | null };
     if (result?.registry !== 'canonical' || !Array.isArray(result.work)) throw new Error('Invalid canonical work view');
     if (result.ownerContact && typeof result.ownerContact.messageId === 'string' && typeof result.ownerContact.text === 'string') onOwnerContact?.(result.ownerContact);
     const rows = result.work.map(row => ({ workId: String(row.id), label: String(row.title ?? row.id),

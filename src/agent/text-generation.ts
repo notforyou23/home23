@@ -41,6 +41,47 @@ export interface TextGenerationOptions {
    * (anthropic/minimax, ollama-cloud/local, openai/xai). Values left at 0 mean
    * "not measured" — never an estimate. Lobe receipts consume this. */
   usageSink?: { tokensIn: number; tokensOut: number };
+  /** Published-response callers require an actual provider terminal completion.
+   * Older extraction callers retain their existing best-effort semantics. */
+  requireComplete?: boolean;
+  maxOutputChars?: number;
+  /** Only actual received provider events/chunks renew the enclosing turn. */
+  onProviderActivity?: (sequence: number) => void;
+}
+
+function boundedOutput(text: string, opts: TextGenerationOptions): string {
+  const limit = opts.maxOutputChars;
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || text.length > limit)) {
+    throw Object.assign(new Error('Text generation exceeded its output bound'), { code: 'provider_output_limit' });
+  }
+  return text;
+}
+
+function incompleteProvider(): Error {
+  return Object.assign(new Error('Text generation did not reach a complete text response'), { code: 'provider_incomplete' });
+}
+
+async function providerJson(response: Response, opts: TextGenerationOptions): Promise<Record<string, any>> {
+  if (!opts.requireComplete) return response.json() as Promise<Record<string, any>>;
+  if (!response.body) throw incompleteProvider();
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const maxBytes = Math.max(65_536, (opts.maxOutputChars ?? 32_768) * 4 + 65_536);
+  let bytes = 0; let body = ''; let sequence = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > maxBytes) throw Object.assign(new Error('Provider response exceeded its transport bound'), { code: 'provider_output_limit' });
+      body += decoder.decode(value, { stream: true });
+      opts.onProviderActivity?.(++sequence);
+    }
+    body += decoder.decode();
+    const data: unknown = JSON.parse(body);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw incompleteProvider();
+    return data as Record<string, any>;
+  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
 /**
@@ -132,23 +173,40 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
         ]
       : opts.system;
 
-    const response = await client.messages.create(
-      {
+    const parameters = {
         model,
         max_tokens: maxTokens,
         ...(provider === 'anthropic' && !anthropicSupportsTemperature(model) ? {} : { temperature }),
         ...(system ? { system } : {}),
-        messages: [{ role: 'user', content: opts.prompt }],
+        messages: [{ role: 'user' as const, content: opts.prompt }],
         ...(opts.reasoningEffort ? providerReasoningParameters(provider, model, opts.reasoningEffort) : {}),
-      },
-      { signal: requestSignal },
-    );
+      };
+    let response: Anthropic.Message;
+    if (opts.requireComplete) {
+      const stream = client.messages.stream(parameters, { signal: requestSignal });
+      let sequence = 0; let outputChars = 0;
+      try {
+        for await (const event of stream) {
+          opts.onProviderActivity?.(++sequence);
+          if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+            outputChars += event.delta.text.length;
+            if (opts.maxOutputChars !== undefined && outputChars > opts.maxOutputChars) {
+              throw Object.assign(new Error('Text generation exceeded its output bound'), { code: 'provider_output_limit' });
+            }
+          }
+        }
+        response = await stream.finalMessage();
+      } finally { stream.abort(); }
+      if (response.stop_reason !== 'end_turn' || response.content.some(block => block.type === 'tool_use')) throw incompleteProvider();
+    } else {
+      response = await client.messages.create(parameters, { signal: requestSignal });
+    }
     const anthropicUsage = (response as { usage?: { input_tokens?: number; output_tokens?: number } }).usage;
     if (opts.usageSink && anthropicUsage) {
       opts.usageSink.tokensIn = anthropicUsage.input_tokens ?? 0;
       opts.usageSink.tokensOut = anthropicUsage.output_tokens ?? 0;
     }
-    return extractAnthropicText(response);
+    return boundedOutput(extractAnthropicText(response), opts);
   }
 
   if (provider === 'ollama-cloud' || provider === 'ollama-local') {
@@ -174,7 +232,7 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
         messages,
         stream: false,
         ...(opts.reasoningEffort ? providerReasoningParameters(provider, model, opts.reasoningEffort) : {}),
-        options: { num_ctx: 32768, temperature },
+        options: { num_ctx: 32768, temperature, ...(opts.requireComplete ? { num_predict: maxTokens } : {}) },
       }),
       signal: requestSignal,
     });
@@ -182,12 +240,13 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
       const errText = await res.text().catch(() => '');
       throw new Error(`${provider} HTTP ${res.status}: ${errText.slice(0, 300)}`);
     }
-    const data = await res.json() as { message?: { content?: string }; prompt_eval_count?: number; eval_count?: number };
+    const data = await providerJson(res, opts);
+    if (opts.requireComplete && (data.done !== true || data.done_reason !== 'stop' || data.message?.tool_calls?.length)) throw incompleteProvider();
     if (opts.usageSink) {
       opts.usageSink.tokensIn = data.prompt_eval_count ?? 0;
       opts.usageSink.tokensOut = data.eval_count ?? 0;
     }
-    return (data.message?.content || '').trim();
+    return boundedOutput(String(data.message?.content || '').trim(), opts);
   }
 
   if (provider === 'openai' || provider === 'xai') {
@@ -218,12 +277,14 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
       const errText = await res.text().catch(() => '');
       throw new Error(`${provider} HTTP ${res.status}: ${errText.slice(0, 300)}`);
     }
-    const data = await res.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+    const data = await providerJson(res, opts);
+    if (opts.requireComplete && (data.choices?.length !== 1 || data.choices[0]?.finish_reason !== 'stop'
+      || data.choices[0]?.message?.tool_calls?.length || data.choices[0]?.message?.refusal)) throw incompleteProvider();
     if (opts.usageSink && data.usage) {
       opts.usageSink.tokensIn = data.usage.prompt_tokens ?? 0;
       opts.usageSink.tokensOut = data.usage.completion_tokens ?? 0;
     }
-    return (data.choices?.[0]?.message?.content || '').trim();
+    return boundedOutput(String(data.choices?.[0]?.message?.content || '').trim(), opts);
   }
 
   throw new Error(`Unknown text-generation provider: ${provider}`);
@@ -311,8 +372,9 @@ async function generateCodexText(
   }
   if (!res.body) throw new Error('codex response missing body');
 
-  let text = '';
-  for await (const event of parseSSE(res.body)) {
+  let text = ''; let complete = false; let sequence = 0;
+  for await (const event of parseSSE(res.body, opts)) {
+    opts.onProviderActivity?.(++sequence);
     if (event.type === 'response.output_text.delta') {
       text += String(event.delta ?? '');
     } else if (event.type === 'response.output_text.done') {
@@ -325,20 +387,43 @@ async function generateCodexText(
           .map(part => part.text);
         if (parts.length) text = parts.join('\n');
       }
+    } else if (event.type === 'response.completed') {
+      const response = event.response as { status?: string; output?: Array<{ type?: string; content?: Array<{ type?: string; text?: string }> }>; usage?: { input_tokens?: number; output_tokens?: number } } | undefined;
+      if (opts.requireComplete && response?.status !== 'completed') throw incompleteProvider();
+      if (opts.requireComplete && response?.output?.some(item => item.type === 'function_call')) throw incompleteProvider();
+      const terminalText = response?.output?.filter(item => item.type === 'message')
+        .flatMap(item => item.content ?? []).filter(part => part.type === 'output_text' && typeof part.text === 'string')
+        .map(part => part.text).join('\n');
+      if (terminalText) text = terminalText;
+      if (opts.usageSink && response?.usage) {
+        opts.usageSink.tokensIn = response.usage.input_tokens ?? 0;
+        opts.usageSink.tokensOut = response.usage.output_tokens ?? 0;
+      }
+      complete = true;
+    } else if (opts.requireComplete && (event.type === 'response.failed' || event.type === 'response.incomplete')) {
+      throw incompleteProvider();
     }
+    boundedOutput(text, opts);
   }
-  return text.trim();
+  if (opts.requireComplete && !complete) throw incompleteProvider();
+  return boundedOutput(text.trim(), opts);
 }
 
-async function* parseSSE(stream: ReadableStream<Uint8Array>): AsyncGenerator<Record<string, unknown>> {
+async function* parseSSE(stream: ReadableStream<Uint8Array>, opts: TextGenerationOptions): AsyncGenerator<Record<string, unknown>> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
 
-  while (true) {
+  let transportBytes = 0;
+  try { while (true) {
     const { done, value } = await reader.read();
     if (done) break;
+    transportBytes += value.byteLength;
+    if (opts.requireComplete && transportBytes > Math.max(262_144, (opts.maxOutputChars ?? 32_768) * 32)) {
+      throw Object.assign(new Error('Provider stream exceeded its transport bound'), { code: 'provider_output_limit' });
+    }
     buffer += decoder.decode(value, { stream: true });
+    buffer = buffer.replace(/\r\n/g, '\n');
 
     let boundary = buffer.indexOf('\n\n');
     while (boundary >= 0) {
@@ -351,13 +436,15 @@ async function* parseSSE(stream: ReadableStream<Uint8Array>): AsyncGenerator<Rec
         .map(line => line.slice(5).trim());
       const data = dataLines.join('\n');
       if (data && data !== '[DONE]') {
-        try {
-          yield JSON.parse(data) as Record<string, unknown>;
-        } catch {
+        let parsed: Record<string, unknown> | undefined;
+        try { parsed = JSON.parse(data) as Record<string, unknown>; } catch {
           // Skip malformed SSE payloads.
+          if (opts.requireComplete) throw incompleteProvider();
         }
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) yield parsed;
+        else if (opts.requireComplete) throw incompleteProvider();
       }
       boundary = buffer.indexOf('\n\n');
     }
-  }
+  } } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }

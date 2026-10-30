@@ -589,6 +589,10 @@ async function main(): Promise<void> {
   const coordinationDatabasePath = process.env.HOME23_COORDINATION_DB_PATH
     ?? join(HOME23_ROOT, 'instances', '.house', 'coordination', 'home23-coordination.sqlite3');
   const ownerContactProjectionPath = join(dirname(coordinationDatabasePath), 'resident-contact', `${AGENT_NAME}.jsonl`);
+  // Keep the canonical projection path even before its first record exists.
+  // Conduct feedback waits for committed contact; it never substitutes a model
+  // transcript or the older conversation observation stream as delivery proof.
+  toolContext.ownerConversationContactPath = ownerContactProjectionPath;
   const ownerContactStreamPath = join(INSTANCE_DIR, 'substrate', 'conversation-stream.jsonl');
   const ownerContactSourcePath = existsSync(ownerContactProjectionPath) ? ownerContactProjectionPath : ownerContactStreamPath;
   const ownerDistiller = new OwnerSessionDistiller({

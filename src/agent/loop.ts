@@ -55,6 +55,10 @@ import {
 } from './retrieval-eval.js';
 import { EventLedger } from './event-ledger.js';
 import { createLearningDecisionEvidenceReader } from './learning-decision-evidence.js';
+import { readSeedLearning } from '../substrate/learning-state.js';
+import { generateText } from './text-generation.js';
+import { attemptConversationReply, completeConversationReply, conversationalOwnerOpportunity, type ConversationCompletion } from './conversation-judgment-runtime.js';
+import { readPriorDeliveredConversation, readCurrentConversationOwner, applyConversationFeedback } from './conversation-feedback.js';
 import { TriggerIndex } from './trigger-index.js';
 import { MemoryObjectStore } from './memory-objects.js';
 import { RelationshipLedger } from './relationship-ledger.js';
@@ -409,6 +413,7 @@ export class AgentLoop {
   private activeTurnIds = new Map<string, Set<string>>();
   private authenticatedUserTurns = new Map<string, { chatId: string; userText: string }>();
   private terminalTurnOverrides = new Map<string, TerminalTurnOutcome>();
+  private conversationCompletions = new Map<string, ConversationCompletion>();
   private sessionGapMs: number;
   private workspacePath: string;
   private eventLedger: EventLedger;
@@ -1349,6 +1354,13 @@ export class AgentLoop {
             : endEnv);
           turnBus.close(chatId, turnId);
         }
+        const conversationCompletion = this.conversationCompletions.get(this.turnKey(chatId, turnId));
+        if (conversationCompletion && !terminalOverride && !ac.signal.aborted && endEnv.status === 'complete') {
+          try { completeConversationReply({ completion: conversationCompletion, text: result.text,
+            status: endEnv.status, chatId, eventLedger: this.eventLedger }); }
+          catch { this.eventLedger.record('ConversationCompletionUnrecorded', chatId,
+            { turnId, selectionId: conversationCompletion.selectionId }, { actor: 'conversation' }); }
+        }
         // Coordination turns use a synthetic resident chat id and do not own
         // the canonical product Message yet. Their notification is emitted by
         // the post-commit Connected Agents path, never this legacy hook.
@@ -1400,6 +1412,7 @@ export class AgentLoop {
         }
         throw err;
       } finally {
+        this.conversationCompletions.delete(this.turnKey(chatId, turnId));
         this.executionSteering.finish(chatId, turnId);
         void executionOutput?.close();
         lease.close();
@@ -1470,7 +1483,8 @@ export class AgentLoop {
       memoryObjectStore: this.memoryStore,
       seedStateDir: resolveSubstrateStateDir(this.workspacePath, this.situationalAwareness),
       readLearningDecisionEvidence: createLearningDecisionEvidenceReader(
-        resolve(this.workspacePath, '..', 'brain', 'event-ledger.jsonl'), { signal: ac.signal }),
+        resolve(this.workspacePath, '..', 'brain', 'event-ledger.jsonl'), { signal: ac.signal,
+          contactPath: this.toolContext.ownerConversationContactPath }),
       relationshipLedger: this.relationshipLedger,
       ownerConversationSessionGapMinutes: this.ownerDistill?.sessionGapMinutes,
       parentWorkId: turnRuntime?.coordinationWorkDestination?.parentWorkId
@@ -1703,8 +1717,15 @@ export class AgentLoop {
             args: { operation: 'work_list', assignments_only: true, limit: 8 },
           }), contact => {
             if (contact.messageId !== turnRuntime.coordinationOrigin!.originMessageId) return;
+            if (contact.channelId !== undefined && contact.channelId !== turnRuntime.coordinationOrigin!.channelId) return;
             this.authenticatedUserTurns.set(userMessageRef, { chatId, userText: contact.text });
-            runContext.authenticatedUserMessage = { chatId, messageRef: userMessageRef, text: contact.text };
+            runContext.authenticatedUserMessage = { chatId, messageRef: userMessageRef, text: contact.text,
+              ...(contact.channelId ? { channelId: contact.channelId } : {}),
+              ...(contact.channelKind ? { channelKind: contact.channelKind } : {}),
+              ...(contact.channelSequence !== undefined ? { channelSequence: contact.channelSequence } : {}),
+              ...(contact.sourceSequence !== undefined ? { sourceSequence: contact.sourceSequence } : {}),
+              ...(contact.previousAssistantMessageId !== undefined ? { previousAssistantMessageId: contact.previousAssistantMessageId } : {}),
+              ...(contact.createdAt ? { createdAt: contact.createdAt } : {}) };
           }, this.relationshipLedger)}`;
         } else if (isForegroundConversation({
           chatId,
@@ -1938,6 +1959,66 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
         }
       };
 
+      if (turnRuntime && runContext.seedStateDir && conversationalOwnerOpportunity({ context: runContext,
+        runtime: turnRuntime, mediaCount: userMedia?.length ?? 0 })) {
+        // Canonical authentication was established above from the exact owner
+        // contact. The proposer sees ordinary context, never Seed policy scores.
+        consumeAutomaticEnrichment();
+        maintainModelWindow(messages, false);
+        let steered = false;
+        const current = (): boolean => {
+          this.consumeOperatorSteer(chatId, turnMessages, text => {
+            steered = true;
+            messages.push({ role: 'user', content: text });
+            truncated.push({ role: 'user', content: text });
+          }, onEvent, activeTurnId, runContext);
+          return !steered;
+        };
+        let prior: Awaited<ReturnType<typeof readPriorDeliveredConversation>> = null;
+        const selected = current() ? await attemptConversationReply({ context: runContext, runtime: turnRuntime,
+          mediaCount: userMedia?.length ?? 0, system: rawSystemPrompt, history: messages,
+          provider: runtimeProvider, model: runtimeModel, reasoningEffort: runtimeReasoningEffort,
+          eventLedger: this.eventLedger, readLearning: () => readSeedLearning(runContext.seedStateDir!), stillCurrent: current,
+          verifyOwnerSource: async ({ conversationRef, currentMessageId, text }) => {
+            const source = await readCurrentConversationOwner({ contactPath: runContext.ownerConversationContactPath!,
+              conversationRef, currentMessageId, signal: ac.signal });
+            return source?.text === text;
+          },
+          readPrior: async ({ conversationRef, currentMessageId }) => {
+            const owner = runContext.authenticatedUserMessage;
+            const trustedCurrent = owner?.channelKind === 'direct' && owner.channelId === turnRuntime.coordinationOrigin?.channelId
+              && Number.isSafeInteger(owner.sourceSequence) && (owner.sourceSequence ?? 0) > 0
+              && (owner.previousAssistantMessageId === null || typeof owner.previousAssistantMessageId === 'string')
+              ? { messageRef: `coordination.message:${currentMessageId}`, text: owner.text,
+                sourceSequence: owner.sourceSequence!, previousAssistantMessageId: owner.previousAssistantMessageId }
+              : undefined;
+            prior = await readPriorDeliveredConversation({ ledgerPath: resolve(this.workspacePath, '..', 'brain', 'event-ledger.jsonl'),
+              contactPath: runContext.ownerConversationContactPath!, conversationRef, currentMessageId,
+              ...(trustedCurrent ? { currentOwner: trustedCurrent } : {}), signal: ac.signal });
+            return prior?.modelView ?? null;
+          },
+          feedback: ({ proposals, owner }) => applyConversationFeedback({ proposals, owner, prior,
+            relationshipLedger: this.relationshipLedger, seedStateDir: runContext.seedStateDir! }),
+          generate: request => {
+            maintainModelWindow([{ role: 'system', content: request.system }, { role: 'user', content: request.prompt }]);
+            const base = runtime.providerRequest.baseUrl.replace(/\/+$/, '');
+            const baseURL = ['openai', 'xai'].includes(runtimeProvider) && !base.endsWith('/v1') ? `${base}/v1` : base;
+            return generateText({ ...request, provider: runtimeProvider, model: runtimeModel,
+              reasoningEffort: runtimeReasoningEffort, temperature: this.temperature,
+              apiKey: runtime.providerRequest.apiKey, ...(baseURL ? { baseURL } : {}),
+              signal: ac.signal, codexCredentialsProvider: this.codexCredentialsProvider,
+              onProviderActivity: () => turnRuntime.onProviderActivity?.(++codexProgressSequence) });
+          },
+        }) : null;
+        if (selected) {
+          ac.signal.throwIfAborted();
+          this.conversationCompletions.set(this.turnKey(chatId, activeTurnId), selected.completion);
+          turnMessages.push({ role: 'assistant', content: selected.text });
+          persistTurn();
+          onEvent?.({ type: 'response_chunk', chunk: selected.text });
+          return { text: selected.text, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
+        }
+      }
 
       // Non-Claude model — chat-only, no tools
       const isClaudeModel = runtimeProvider === 'anthropic' || runtimeProvider === 'minimax';

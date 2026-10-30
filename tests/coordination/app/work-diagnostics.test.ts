@@ -8,14 +8,34 @@ import { RESIDENT_OUTCOMES_MIGRATION_SQL } from '../../../src/coordination/migra
 import { AT, BOT_ID, CHANNEL_ID, MESSAGE_ID, OWNER_ID, M11TestDatabase, createFixtureIdGenerator, fixtureId, manifestInput } from '../work/test-fixture.js';
 import type { CoordinationTurnOrigin } from '../../../src/agent/types.js';
 
-function fixture(t: { after(fn: () => void): void }) {
+function fixture(t: { after(fn: () => void): void }, kind: 'resident_work_thread' | 'resident_turn' = 'resident_work_thread', priorReply = false) {
   const database = M11TestDatabase.temporary();
   t.after(() => database.close());
   database.raw.exec(RESIDENT_OUTCOMES_MIGRATION_SQL);
+  let originMessageId = MESSAGE_ID;
+  if (priorReply) {
+    const messages = [
+      { id: fixtureId('message', 298), sequence: 2, principal: BOT_ID, actor: 'bot', text: 'The delivered reply.' },
+      { id: fixtureId('message', 299), sequence: 3, principal: OWNER_ID, actor: 'owner', text: 'The next owner message.' },
+    ];
+    for (const message of messages) {
+      database.raw.prepare(`INSERT INTO messages (id,channel_id,channel_sequence,author_principal_id,author_kind,
+        author_display_name,kind,body_text,stored_visibility,client_message_id,reply_to_message_id,tombstones_message_id,round_id,work_id,created_at)
+        VALUES (?,?,?,?,?,'Fixture','text',?,'visible',NULL,NULL,NULL,NULL,NULL,?)`)
+        .run(message.id, CHANNEL_ID, message.sequence, message.principal, message.actor, message.text, AT);
+      database.raw.prepare(`INSERT INTO events (id,schema_version,type,durability,aggregate_kind,aggregate_id,aggregate_version,
+        channel_id,actor_principal_id,request_id,correlation_id,payload_json,payload_digest,created_at)
+        SELECT ?,schema_version,type,durability,aggregate_kind,?,aggregate_version,channel_id,?,?,?,payload_json,payload_digest,created_at
+        FROM events WHERE aggregate_kind='message' AND aggregate_id=? AND aggregate_version=1`)
+        .run(fixtureId('event', 290 + message.sequence), message.id, message.principal,
+          fixtureId('request', 290 + message.sequence), fixtureId('correlation', 290 + message.sequence), MESSAGE_ID);
+    }
+    originMessageId = messages[1]!.id;
+  }
   const service = createWorkService({ database, generateId: createFixtureIdGenerator(), now: () => new Date(AT) });
   const work = service.create({ principalId: OWNER_ID, targetPrincipalId: BOT_ID, channelId: CHANNEL_ID,
-    originMessageId: MESSAGE_ID, roundId: null, kind: 'resident_work_thread', idempotencyKey: 'old-completed-work',
-    manifest: manifestInput(), maxAutomaticOffers: 1, requestId: fixtureId('request', 90), correlationId: fixtureId('correlation', 90) }).work;
+    originMessageId, roundId: null, kind, idempotencyKey: 'old-completed-work',
+    manifest: manifestInput({ messageIds: [originMessageId] }), maxAutomaticOffers: 1, requestId: fixtureId('request', 90), correlationId: fixtureId('correlation', 90) }).work;
   const leases = createLeaseService({ database, generateId: createFixtureIdGenerator(100), now: () => new Date(AT), leaseTtlMs: 60000 });
   const ids = { requestId: fixtureId('request', 91), correlationId: fixtureId('correlation', 91) };
   const offer = leases.offer({ workId: work.id, holderPrincipalId: BOT_ID, holderInstanceId: 'resident-1',
@@ -47,6 +67,31 @@ test('exact old terminal Work is returned without enumerating resident assignmen
   assert.equal(result.ownerMessageSequence, 1);
   assert.equal(result.acknowledgedSequence, 1);
   assert.deepEqual(result.unseenOwnerMessages, []);
+});
+
+test('canonical owner contact carries direct or group provenance before the asynchronous contact projection catches up', t => {
+  const f = fixture(t, 'resident_turn');
+  const request = { operation: 'work_status', work_id: f.work.id };
+  const direct = f.diagnostics(BOT_ID, request, f.origin).ownerContact;
+  assert.ok(direct);
+  assert.equal(direct.messageId, MESSAGE_ID);
+  assert.equal(direct.channelId, CHANNEL_ID);
+  assert.equal(direct.channelKind, 'direct');
+  assert.ok(Number.isSafeInteger(direct.channelSequence));
+  assert.ok(Number.isSafeInteger(direct.sourceSequence) && direct.sourceSequence > 0);
+  assert.equal(direct.previousAssistantMessageId, null);
+  assert.ok(Number.isFinite(Date.parse(direct.createdAt)));
+  f.database.raw.prepare("UPDATE channels SET kind='group' WHERE id=?").run(CHANNEL_ID);
+  assert.equal(f.diagnostics(BOT_ID, request, f.origin).ownerContact?.channelKind, 'group');
+});
+
+test('canonical owner contact identifies the actual preceding reply independently of projection timing', t => {
+  const f = fixture(t, 'resident_turn', true);
+  const contact = f.diagnostics(BOT_ID, { operation: 'work_status', work_id: f.work.id }, f.origin).ownerContact;
+  assert.equal(contact?.messageId, fixtureId('message', 299));
+  assert.equal(contact?.previousAssistantMessageId, fixtureId('message', 298));
+  assert.equal(contact?.channelSequence, 3);
+  assert.ok(contact && contact.sourceSequence > 1);
 });
 
 test('missing and other-resident exact Work return a clear scoped not-found result', t => {

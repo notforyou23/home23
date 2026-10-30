@@ -7,6 +7,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const MAX_DECISIONS = 32;
+// A natural reply may receive feedback after many unrelated runtime choices.
+// Keep at most two four-axis conversational episodes in the SAME eligibility
+// window. These scopes are prospective; histories without them retain FIFO.
+const CONDUCT_SCOPES = new Set(['engagement', 'initiative', 'continuity', 'depth']
+  .map(axis => `foreground.conduct.${axis}`));
+const MAX_PROTECTED_CONDUCT_DECISIONS = 8;
+const CONDUCT_CHOICES = { engagement: ['acknowledge', 'explore', 'analyze'],
+  initiative: ['stay_with', 'ask_followup', 'offer_next_step'], continuity: ['present_only', 'grounded_connection'],
+  depth: ['brief', 'developed'] };
+const CONDUCT_SITUATIONS = ['sharing', 'reflection', 'deliberation'];
+const MAX_CONDUCT_RECENT_CREDITS = 8;
 const MAX_LESSONS = 64;
 const MAX_FEEDBACK = 512;
 const STEP = 0.25;
@@ -19,6 +30,55 @@ const scopeOf = value => typeof value === 'string' && /^[a-zA-Z][a-zA-Z0-9_.:-]{
 const clone = value => JSON.parse(JSON.stringify(value));
 const learningLessonId = (feedbackId, scope) => `lesson_${hash([feedbackId, scope]).slice(0, 24)}`;
 const learningStateWithinBudget = state => Buffer.byteLength(JSON.stringify(state)) <= MAX_STATE_BYTES;
+const isConductLearningDecision = decision => decision?.criterion === 'owner-value' && CONDUCT_SCOPES.has(decision?.scope);
+const sourceOccurrence = value => value && text(value.stream) && Number.isSafeInteger(value.sequence) && value.sequence >= 0
+  ? { stream: value.stream, sequence: value.sequence } : null;
+function conductPolicyKey(decision, excludes = []) {
+  if (!isConductLearningDecision(decision) || excludes.length || decision.tags.length !== 2) return null;
+  const axis = decision.scope.slice('foreground.conduct.'.length);
+  const situation = CONDUCT_SITUATIONS.find(value => decision.tags.includes(`situation:${value}`));
+  const choice = CONDUCT_CHOICES[axis]?.find(value => decision.tags.includes(`choice:${value}`));
+  return situation && choice ? `${axis}:${situation}:${choice}` : null;
+}
+function normalizeConductCredits(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('invalid conduct credit state');
+  const result = {};
+  for (const [key, credit] of Object.entries(raw)) {
+    const [axis, situation, choice, ...rest] = key.split(':');
+    if (rest.length || !CONDUCT_CHOICES[axis]?.includes(choice) || !CONDUCT_SITUATIONS.includes(situation)
+      || !credit || Object.keys(credit).some(name => !['recentDecisionHashes', 'decisionWatermark', 'feedbackWatermark'].includes(name))
+      || !Array.isArray(credit.recentDecisionHashes) || credit.recentDecisionHashes.length > MAX_CONDUCT_RECENT_CREDITS
+      || !credit.recentDecisionHashes.every(value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value))
+      || !Number.isSafeInteger(credit.decisionWatermark?.observedAtMs) || !Number.isSafeInteger(credit.feedbackWatermark?.observedAtMs)
+      || Object.keys(credit.decisionWatermark).some(name => !['observedAtMs', 'occurrence'].includes(name))
+      || Object.keys(credit.feedbackWatermark).some(name => !['observedAtMs', 'occurrence'].includes(name))
+      || (credit.decisionWatermark.occurrence !== undefined && !sourceOccurrence(credit.decisionWatermark.occurrence))
+      || (credit.feedbackWatermark.occurrence !== undefined && !sourceOccurrence(credit.feedbackWatermark.occurrence))) {
+      throw new Error('invalid conduct credit state');
+    }
+    result[key] = clone(credit);
+  }
+  return result;
+}
+function occurrencePoint(observedAt, occurrence) {
+  const observedAtMs = Date.parse(observedAt);
+  if (!Number.isFinite(observedAtMs)) return null;
+  return { observedAtMs, ...(sourceOccurrence(occurrence) ? { occurrence: sourceOccurrence(occurrence) } : {}) };
+}
+function laterOccurrence(next, previous) {
+  if (next.observedAtMs < previous.observedAtMs) return false;
+  if (next.occurrence && previous.occurrence?.stream === next.occurrence.stream) {
+    return next.occurrence.sequence > previous.occurrence.sequence;
+  }
+  // Different or unavailable source cursors do not order tied timestamps.
+  // Refusing uncertainty loses credit; accepting it could duplicate experience.
+  return next.observedAtMs > previous.observedAtMs;
+}
+function advanceOccurrence(previous, next) {
+  if (!previous) return next;
+  if (!laterOccurrence(next, previous)) return previous;
+  return { ...next, observedAtMs: Math.max(previous.observedAtMs, next.observedAtMs) };
+}
 function executionTargetTag(target) {
   if (typeof target !== 'string' || !target.trim() || target.length > 2000) return null;
   return `target:${hash(target.trim()).slice(0, 24)}`;
@@ -30,8 +90,11 @@ function normalizeLearningDecision(raw) {
   const criterion = raw.criterion || 'owner-value';
   if (!decisionId || !scope || !tags || !sourceRefs?.length || !['owner-value', 'execution', 'prediction'].includes(criterion)) return null;
   if (raw.cellId !== undefined && !text(raw.cellId, 120)) return null;
+  const conduct = criterion === 'owner-value' && CONDUCT_SCOPES.has(scope);
+  if (conduct && raw.occurrence !== undefined && !sourceOccurrence(raw.occurrence)) return null;
   return { schema: raw.schema, decisionId, scope, tags, sourceRefs, criterion,
-    ...(raw.cellId ? { cellId: raw.cellId } : {}), ...(text(raw.observedAt, 100) ? { observedAt: raw.observedAt } : {}) };
+    ...(raw.cellId ? { cellId: raw.cellId } : {}), ...(text(raw.observedAt, 100) ? { observedAt: raw.observedAt } : {}),
+    ...(conduct && raw.occurrence !== undefined ? { occurrence: sourceOccurrence(raw.occurrence) } : {}) };
 }
 
 function normalizeLearningFeedback(raw) {
@@ -49,6 +112,7 @@ function normalizeLearningFeedback(raw) {
 function emptyLearningState() { return { version: 1, decisions: [], lessons: [], seenFeedbackIds: [], watermarks: {}, pendingFeedback: [] }; }
 function normalizeLearningState(raw) {
   if (!raw || raw.version !== 1) return emptyLearningState();
+  if (raw.conductAnchor !== undefined && raw.conductAnchor !== true) throw new Error('invalid conduct anchor state');
   const lessons = clone((Array.isArray(raw.lessons) ? raw.lessons : []).filter(item => item && text(item.lessonId) && scopeOf(item.scope)
     && Number.isFinite(item.value) && Math.abs(item.value) <= CLIP && list(item.tags) && list(item.excludes) && list(item.sourceRefs)));
   if (lessons.filter(item => item.active !== false).length > MAX_LESSONS) throw new Error('active Seed lesson capacity exceeded');
@@ -58,6 +122,8 @@ function normalizeLearningState(raw) {
     seenFeedbackIds: (Array.isArray(raw.seenFeedbackIds) ? raw.seenFeedbackIds : []).filter(item => text(item)).slice(-MAX_FEEDBACK),
     ...(Number.isFinite(Date.parse(raw.lastConsolidatedAt)) ? { lastConsolidatedAt: raw.lastConsolidatedAt } : {}),
     watermarks: Object.fromEntries(Object.entries(raw.watermarks || {}).filter(([key, value]) => text(key) && Number.isSafeInteger(value) && value >= 0).slice(-32)),
+    ...(raw.conductAnchor === true ? { conductAnchor: true } : {}),
+    ...(raw.conductCredits !== undefined ? { conductCredits: normalizeConductCredits(raw.conductCredits) } : {}),
     pendingFeedback: clone((Array.isArray(raw.pendingFeedback) ? raw.pendingFeedback : []).filter(item => normalizeLearningFeedback(item?.feedback) && text(item?.authority?.feedbackId)).slice(0, 16)) };
 }
 
@@ -68,14 +134,22 @@ function recordLearningDecision(rawState, rawDecision) {
   if (prior) return { applied: false, state, reason: hash(prior) === hash(decision) ? 'decision_already_recorded' : 'decision_identity_conflict' };
   // Decisions are a bounded eligibility window; evicting one only prevents
   // future credit, never invents a substitute context or removes its ledger.
-  state.decisions = [...state.decisions, decision].slice(-MAX_DECISIONS);
+  state.decisions = [...state.decisions, decision];
+  const protectedIds = new Set(state.decisions
+    .filter(item => item.criterion === 'owner-value' && CONDUCT_SCOPES.has(item.scope))
+    .slice(-MAX_PROTECTED_CONDUCT_DECISIONS).map(item => item.decisionId));
+  const evictOldest = () => {
+    const index = state.decisions.findIndex(item => !protectedIds.has(item.decisionId));
+    state.decisions.splice(index < 0 ? 0 : index, 1);
+  };
+  while (state.decisions.length > MAX_DECISIONS) evictOldest();
   if (!state.lastConsolidatedAt && Number.isFinite(Date.parse(decision.observedAt))) state.lastConsolidatedAt = decision.observedAt;
-  while (Buffer.byteLength(JSON.stringify(state)) > MAX_STATE_BYTES && state.decisions.length > 1) state.decisions.shift();
+  while (Buffer.byteLength(JSON.stringify(state)) > MAX_STATE_BYTES && state.decisions.length > 1) evictOldest();
   if (Buffer.byteLength(JSON.stringify(state)) > MAX_STATE_BYTES) return { applied: false, state: normalizeLearningState(rawState), reason: 'learning_state_capacity' };
   return { applied: true, state, reason: 'decision_recorded' };
 }
 
-function applyLearningFeedback(rawState, rawFeedback, authority = {}) {
+function applyLearningFeedbackInternal(rawState, rawFeedback, authority = {}, preview = false) {
   const state = normalizeLearningState(rawState), feedback = normalizeLearningFeedback(rawFeedback);
   const before = clone(state);
   const refuse = reason => ({ applied: false, state, reason });
@@ -96,6 +170,23 @@ function applyLearningFeedback(rawState, rawFeedback, authority = {}) {
   if (!explicitOwner && (!decision || verification?.criterion !== decision.criterion || !Array.isArray(verification.evidenceRefs)
       || !feedback.evidenceRefs.every(ref => verification.evidenceRefs.includes(ref)))) return refuse('outcome_criterion_unverified');
   const criterion = decision?.criterion || 'owner-value';
+  const conduct = CONDUCT_SCOPES.has(feedback.scope);
+  if (conduct && (!explicitOwner || criterion !== 'owner-value')) return refuse('conduct_requires_owner_feedback');
+  const conductKey = conduct ? conductPolicyKey(decision, feedback.excludes) : null;
+  if (conduct && !conductKey) return refuse('conduct_context_invalid');
+  if (conduct && feedback.corroborates.length) return refuse('conduct_corroboration_requires_new_feedback');
+  const credit = conduct ? state.conductCredits?.[conductKey] : null;
+  const decisionPoint = conduct ? occurrencePoint(decision.observedAt, decision.occurrence) : null;
+  const feedbackPoint = conduct ? occurrencePoint(authority.observedAt,
+    authority.occurrence ?? (sequenced ? { stream: authority.stream, sequence: authority.sequence } : undefined)) : null;
+  if (conduct && (!decisionPoint || !feedbackPoint)) return refuse('conduct_occurrence_unavailable');
+  const decisionHash = conduct ? hash(decision.decisionId) : null;
+  if (credit && feedback.standing !== true && (credit.recentDecisionHashes.includes(decisionHash)
+      || !laterOccurrence(decisionPoint, credit.decisionWatermark))) return refuse('conduct_trial_already_credited');
+  if (credit && feedback.standing === true) {
+    if (!preview && !feedbackPoint.occurrence) return refuse('conduct_revision_source_order_unavailable');
+    if (!laterOccurrence(feedbackPoint, credit.feedbackWatermark)) return refuse('conduct_revision_precedes_feedback_watermark');
+  }
   const remember = () => {
     state.seenFeedbackIds = [...state.seenFeedbackIds, authority.feedbackId].slice(-MAX_FEEDBACK);
     if (sequenced) state.watermarks[authority.stream] = authority.sequence;
@@ -125,25 +216,57 @@ function applyLearningFeedback(rawState, rawFeedback, authority = {}) {
     && lesson.scope === feedback.scope && lesson.criterion === criterion && lesson.basis === feedback.basis
     && sameSet(lesson.tags, tags) && sameSet(lesson.excludes, feedback.excludes)) : null;
   if (prior?.decisionId === decision.decisionId) return refuse('empirical_trial_already_credited');
-  const retiringIds = new Set([...feedback.supersedes, ...(prior ? [prior.lessonId] : [])]);
+  // New conversational scopes retain one bounded contribution per exact
+  // situation and choice. Repeated genuine experiences strengthen that same
+  // policy instead of using a new active slot forever. Historical scopes keep
+  // their original rule, and the original receipts remain append-only.
+  const priorConduct = conduct ? state.lessons.findLast(lesson => lesson.active !== false && lesson.authority === 'owner'
+    && lesson.scope === feedback.scope && lesson.criterion === criterion
+    && sameSet(lesson.tags, tags) && sameSet(lesson.excludes, feedback.excludes)) : null;
+  if (priorConduct?.decisionId === decision.decisionId && feedback.standing !== true) return refuse('conduct_trial_already_credited');
+  const step = feedback.direction === 'attenuate' ? -STEP : STEP;
+  if (priorConduct?.standing === true && feedback.standing !== true
+    && Math.sign(priorConduct.value) !== Math.sign(step)) return refuse('standing_conduct_instruction_requires_revision');
+  const replaced = priorConduct ?? prior;
+  const retiringIds = new Set([...feedback.supersedes, ...(replaced ? [replaced.lessonId] : [])]);
   if (state.lessons.filter(item => item.active !== false).length - retiringIds.size >= MAX_LESSONS) return refuse('lesson_capacity');
   // A correction can retire an earlier active contribution but never rewrite
   // that earlier record. The new receipt carries both versions.
   for (const lesson of state.lessons) if (retiringIds.has(lesson.lessonId)) lesson.active = false;
-  const step = feedback.direction === 'attenuate' ? -STEP : STEP;
   const corroborated = prior && feedback.basis === 'verified-outcome' && Math.sign(prior.value) === Math.sign(step);
-  const value = Math.max(-CLIP, Math.min(CLIP, (feedback.basis === 'verified-outcome' ? prior?.value ?? 0 : 0) + step));
+  const conductValue = feedback.standing === true ? step
+    : priorConduct?.standing === true ? priorConduct.value : (priorConduct?.value ?? 0) + step;
+  const value = Math.max(-CLIP, Math.min(CLIP, conduct ? conductValue
+    : (feedback.basis === 'verified-outcome' ? prior?.value ?? 0 : 0) + step));
   const lesson = { lessonId, scope: feedback.scope, tags, excludes: feedback.excludes,
-    sourceRefs: [...new Set([...(prior?.sourceRefs ?? []), ...feedback.evidenceRefs])].slice(-16), value,
+    sourceRefs: [...new Set([...(replaced?.sourceRefs ?? []), ...feedback.evidenceRefs])].slice(-16), value,
     basis: feedback.basis, authority: explicitOwner ? 'owner' : 'provisional', criterion,
+    ...(conduct ? { standing: feedback.standing === true || priorConduct?.standing === true } : {}),
     ...(decision ? { decisionId: decision.decisionId, eligibility: clone(decision) } : {}),
     createdAt: authority.observedAt, corroborations: corroborated ? Math.min(32, prior.corroborations + 1) : 0,
     retentionCredits: corroborated ? Math.min(32, (prior.retentionCredits ?? 0) + 1) : 0,
-    ...(prior ? { replacesLessonId: prior.lessonId } : {}), active: value !== 0 };
+    ...(replaced ? { replacesLessonId: replaced.lessonId } : {}), active: value !== 0 };
   state.lessons.push(lesson);
+  if (conduct) {
+    state.conductCredits ??= {};
+    state.conductCredits[conductKey] = {
+      recentDecisionHashes: [...new Set([...(credit?.recentDecisionHashes ?? []), decisionHash])].slice(-MAX_CONDUCT_RECENT_CREDITS),
+      decisionWatermark: advanceOccurrence(credit?.decisionWatermark, decisionPoint),
+      feedbackWatermark: advanceOccurrence(credit?.feedbackWatermark, feedbackPoint),
+    };
+  }
   remember();
   if (Buffer.byteLength(JSON.stringify(state)) > MAX_STATE_BYTES) return { applied: false, state: before, reason: 'learning_state_capacity' };
   return { applied: true, state, reason: 'feedback_applied', lesson };
+}
+
+function applyLearningFeedback(rawState, rawFeedback, authority = {}) {
+  return applyLearningFeedbackInternal(rawState, rawFeedback, authority, false);
+}
+/** Pure capacity/eligibility preview. A future source append has no cursor yet;
+ * only that requirement may be deferred here. Seed never calls this function. */
+function previewLearningFeedback(rawState, rawFeedback, authority = {}) {
+  return applyLearningFeedbackInternal(rawState, rawFeedback, authority, true);
 }
 
 function consolidateLearning(rawState, asOf) {
@@ -182,13 +305,20 @@ function consolidateLearning(rawState, asOf) {
 
 function learningSnapshot(development) {
   const decisions = [], lessons = [], watermarks = {};
+  let conductCredits, conductAnchorCellId;
   for (const [cellId, plastic] of Object.entries(development || {})) {
     const state = normalizeLearningState(plastic?.experience);
+    if (state.conductAnchor || state.conductCredits) {
+      if (conductAnchorCellId && conductAnchorCellId !== cellId) throw new Error('conduct learning anchor conflict');
+      conductAnchorCellId = cellId;
+      if (state.conductCredits) conductCredits = clone(state.conductCredits);
+    }
     decisions.push(...state.decisions.map(item => ({ ...item, cellId: item.cellId || cellId })));
     lessons.push(...state.lessons.map(item => ({ ...item, cellId })));
     for (const [stream, sequence] of Object.entries(state.watermarks)) watermarks[stream] = Math.max(watermarks[stream] || 0, sequence);
   }
   return { version: 1, available: true, decisions, lessons,
+    ...(conductAnchorCellId ? { conductAnchorCellId } : {}), ...(conductCredits ? { conductCredits } : {}),
     watermarks: Object.fromEntries(Object.entries(watermarks).sort(([a], [b]) => a.localeCompare(b)).slice(0, 32)) };
 }
 
@@ -267,5 +397,5 @@ function readSeedLearning(stateDir) {
 }
 
 module.exports = { MAX_DECISIONS, MAX_LESSONS, normalizeLearningDecision, normalizeLearningFeedback, emptyLearningState,
-  normalizeLearningState, recordLearningDecision, applyLearningFeedback, consolidateLearning, learningSnapshot,
+  normalizeLearningState, recordLearningDecision, applyLearningFeedback, previewLearningFeedback, isConductLearningDecision, consolidateLearning, learningSnapshot,
   evaluateLearnedDecision, readSeedLearning, readSeedLearningSync: readSeedLearning, learningLessonId, executionTargetTag, learningStateWithinBudget };

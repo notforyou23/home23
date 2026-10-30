@@ -98,6 +98,11 @@ function preflightLearning(
   if (!feedback || feedback.basis !== 'owner-feedback' || !feedback.decisionId) {
     return refuse('learning_metadata_invalid');
   }
+  if (feedback.scope.startsWith('foreground.conduct.')) {
+    return refuse('conversation_feedback_requires_delivered_reply', {
+      detail: 'Conversational conduct is recorded by the authenticated runtime batch after it verifies the actual canonical reply and current owner contact. This single-note path cannot bypass delivery or interpretation checks. Preserve the feedback in conversation; do not relabel it as another executable scope.',
+    });
+  }
   // An exact stored authenticated source may only retry its existing outbox,
   // including after its witness expires or superseded targets become inactive.
   // The writer independently uses this same predicate before spending authority.
@@ -289,7 +294,7 @@ export const relationshipRecallTool: ToolDefinition = {
         const lessons = snapshot.lessons.filter(lesson => lesson.active !== false && (!scope || lesson.scope === scope)).slice(-limit).reverse();
         return { content: JSON.stringify({ seedSequence: snapshot.seq ?? null,
           requestedScope: scope || null, scopeStatus: scope ? 'matched' : 'all', availableScopes, decisions, lessons,
-          note: 'Decision identities are actual runtime witnesses. Runtime behavior evidence describes the selected component; delivery reports what actually reached context and may be unavailable or partial. Standing owner feedback can teach a matching context-admission choice even when the outward reply was acceptable. Do not equate every AGENCY/pursuit decision with machine status. Missing or ambiguous evidence is not permission to guess. Preserve the exact current owner message and its exclusions. Source projection and Seed application are separate stages.' }, null, 2) };
+          note: 'Decision identities are actual runtime witnesses. Context-selection delivery reports what reached model context. Conversation-response delivery separately requires the exact canonical assistant message; its axis labels remain model interpretations, not proof of quality. Conversational conduct uses the authenticated runtime batch, not a single relationship_note. Standing owner feedback can teach a matching context-admission choice even when the outward reply was acceptable. Do not equate every AGENCY/pursuit decision with machine status. Missing or ambiguous evidence is not permission to guess. Preserve the exact current owner message and its exclusions. Source projection and Seed application are separate stages.' }, null, 2) };
       }
       const ledger = ledgerOf(ctx);
       if (!ledger) return { content: LEDGER_UNAVAILABLE, is_error: true };
@@ -360,6 +365,9 @@ export const relationshipUpdateTool: ToolDefinition = {
 
       const existing = ledger.getEntry(id);
       if (!existing) return { content: `No relationship entry with id ${id}.`, is_error: true };
+      if (existing.learning_batch?.length) {
+        return { content: 'This entry preserves an authenticated conversational feedback encounter. New owner feedback must revise its scoped Seed effect through the verified delivered-reply path. A lifecycle edit cannot erase, relabel or partially replace the original encounter.', is_error: true };
+      }
 
       if (action === 'supersede') {
         const statement = String(input.statement || '');

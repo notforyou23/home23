@@ -3,6 +3,8 @@ import { constants, promises as fs } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import type { LearningDecision } from '../../shared/seed-learning.cjs';
 import { normalizeLearningDecision } from '../../shared/seed-learning.cjs';
+import { CONDUCT_AXES, conversationCandidateSetHash, conversationResponseHash, parseConversationProposal,
+  type ConversationDecisionPayload, type ConversationReplyProposal } from './conversation-judgment.js';
 
 const { readRecentJsonlTail } = createRequire(import.meta.url)('../../shared/bounded-jsonl-tail.cjs') as {
   readRecentJsonlTail: (file: string, options: {
@@ -30,12 +32,14 @@ const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.st
 const timestamp = (value: unknown): number | null => typeof value === 'string' && value.length <= 100
   && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null;
 
-export interface LearningDecisionBehavior {
+export interface ContextDecisionBehavior {
   kind: 'context-selection';
   surface: string;
   component: 'routine-operational-status' | 'pursuit-context' | 'worker-context';
   description: string;
 }
+export type ConversationDecisionBehavior = ConversationDecisionPayload['behavior'] & { component?: undefined; surface?: undefined };
+export type LearningDecisionBehavior = ContextDecisionBehavior | ConversationDecisionBehavior;
 
 export interface LearningDecisionDelivery {
   status: 'observed' | 'unavailable';
@@ -47,6 +51,9 @@ export interface LearningDecisionDelivery {
   deliveredChars?: number;
   pointerOnly?: boolean;
   complete?: boolean;
+  responseHash?: string;
+  messageRef?: string;
+  sourceSequence?: number;
 }
 
 export type LearningDecisionEvidence = {
@@ -57,7 +64,7 @@ export type LearningDecisionEvidence = {
   timestamp: string;
   sessionRef: string;
   behavior: LearningDecisionBehavior;
-  choice: 'admit' | 'omit';
+  choice: string;
   relevant: boolean;
   explicit: boolean;
   delivery: LearningDecisionDelivery;
@@ -72,7 +79,7 @@ function coreWitness(decision: LearningDecision) {
     tags: decision.tags, sourceRefs: decision.sourceRefs, criterion: decision.criterion };
 }
 
-function behaviorOf(value: unknown, witness: LearningDecision): LearningDecisionBehavior | null {
+function behaviorOf(value: unknown, witness: LearningDecision): ContextDecisionBehavior | null {
   const behavior = object(value);
   const expected = behavior && boundedText(behavior.surface, 64) && Object.hasOwn(SURFACE_COMPONENTS, behavior.surface)
     ? SURFACE_COMPONENTS[behavior.surface as keyof typeof SURFACE_COMPONENTS] : undefined;
@@ -81,7 +88,7 @@ function behaviorOf(value: unknown, witness: LearningDecision): LearningDecision
     || !witness.tags.includes(expected.tag) || !boundedText(behavior.description, 600)
     || !witness.sourceRefs.includes(`surface:${behavior.surface}`)) return null;
   return { kind: 'context-selection', surface: behavior.surface,
-    component: behavior.component as LearningDecisionBehavior['component'], description: behavior.description };
+    component: behavior.component as ContextDecisionBehavior['component'], description: behavior.description };
 }
 
 async function completeTailIdentity(file: string) {
@@ -100,7 +107,7 @@ async function completeTailIdentity(file: string) {
   } finally { await handle.close(); }
 }
 
-function deliveryOf(rows: RecordValue[], decision: RecordValue, behavior: LearningDecisionBehavior): LearningDecisionDelivery {
+function deliveryOf(rows: RecordValue[], decision: RecordValue, behavior: ContextDecisionBehavior): LearningDecisionDelivery {
   const matches = rows.filter(row => row.event_type === 'RetrievalExecuted'
     && Array.isArray(object(row.payload)?.learningDecisionIds)
     && (object(row.payload)!.learningDecisionIds as unknown[]).includes(decision.event_id));
@@ -137,12 +144,115 @@ function deliveryOf(rows: RecordValue[], decision: RecordValue, behavior: Learni
     ...(entry ? { pointerOnly: entry.pointer_only as boolean, complete: entry.complete as boolean } : {}) };
 }
 
+/** The same bounded, no-follow, complete-record checks serve source readback
+ * and canonical-contact joins. Missing or torn evidence is never invented. */
+export async function readBoundedLearningEvidenceRows(file: string, signal?: AbortSignal): Promise<RecordValue[]> {
+  if (!isAbsolute(file)) throw new Error('Evidence path must be absolute');
+  const before = await completeTailIdentity(file);
+  const recent = await readRecentJsonlTail(file, {
+    limit: MAX_RECORDS, maxEntries: MAX_RECORDS, maxBytes: MAX_BYTES, maxLineBytes: MAX_LINE_BYTES, signal,
+  });
+  const after = await completeTailIdentity(file);
+  if ((before === null) !== (after === null) || (before && after
+    && (before.device !== after.device || before.inode !== after.inode || after.size < before.size))
+    || recent.some(row => object(row) === null)) throw new Error('Bounded evidence changed or contains malformed records');
+  return recent as RecordValue[];
+}
+
+export interface VerifiedConversationSelection {
+  eventId: string; timestamp: string; sessionRef: string;
+  selectionId: string; conversationRef: string; turnId: string; messageRef: string; originMessageId: string;
+  responseHash: string; candidateSetHash: string; reply: string;
+  proposal: ConversationReplyProposal;
+  decisions: ConversationDecisionPayload[];
+  completedEventId: string;
+}
+
+/** A completed harness reply is distinct from a canonically delivered message. */
+export function verifiedConversationSelections(rows: RecordValue[]): VerifiedConversationSelection[] {
+  const result: VerifiedConversationSelection[] = [];
+  for (const event of rows.filter(row => row.event_type === 'ConversationReplySelected' && row.actor === 'conversation')) {
+    const payload = object(event.payload);
+    if (!payload || payload.schema !== 'home23.conversation-selection.v1'
+      || !boundedText(event.event_id, 512) || timestamp(event.timestamp) === null || !boundedText(event.session_id, 512)
+      || !boundedText(payload.selectionId, 450) || !boundedText(payload.conversationRef, 512)
+      || !payload.conversationRef.startsWith('coordination:') || !boundedText(payload.turnId, 512)
+      || !boundedText(payload.messageRef, 512) || !boundedText(payload.originMessageId, 512)
+      || typeof payload.selectedReply !== 'string' || typeof payload.responseHash !== 'string'
+      || conversationResponseHash(payload.selectedReply) !== payload.responseHash
+      || !stringArray(payload.decisionIds, 4) || payload.decisionIds.length !== 4) continue;
+    const selections = rows.filter(row => row.event_type === 'ConversationReplySelected' && object(row.payload)?.selectionId === payload.selectionId);
+    if (selections.length !== 1) continue;
+    const proposal = parseConversationProposal(JSON.stringify({ schema: 'home23.conversation-proposal.v1', route: 'conversation',
+      situation: payload.situation, candidates: payload.candidates }));
+    if (!proposal || proposal.route !== 'conversation' || conversationCandidateSetHash(proposal) !== payload.candidateSetHash) continue;
+    const selected = proposal.candidates.find(candidate => candidate.id === payload.selectedId);
+    if (!selected || selected.reply !== payload.selectedReply || !same(selected.axes, payload.selectedAxes)) continue;
+    const completed = rows.filter(row => row.event_type === 'ConversationReplyCompleted' && object(row.payload)?.selectionId === payload.selectionId);
+    const terminal = completed.length === 1 ? completed[0] : undefined;
+    const done = object(terminal?.payload);
+    if (!terminal || terminal.actor !== 'conversation' || terminal.session_id !== event.session_id
+      || !boundedText(terminal.event_id, 512) || timestamp(terminal.timestamp) === null
+      || timestamp(terminal.timestamp)! < timestamp(event.timestamp)! || !done || done.schema !== 'home23.conversation-completion.v1' || done.status !== 'complete'
+      || !['conversationRef', 'turnId', 'responseHash', 'candidateSetHash', 'originMessageId'].every(key => done[key] === payload[key])
+      || !same(done.decisionIds, payload.decisionIds)) continue;
+    const decisions: ConversationDecisionPayload[] = [];
+    for (const axis of Object.keys(CONDUCT_AXES) as Array<keyof typeof CONDUCT_AXES>) {
+      const id = `${payload.selectionId}:${axis}`;
+      const events = rows.filter(row => row.event_id === id || object(row.payload)?.decisionId === id);
+      if (events.length !== 1) break;
+      const original = events[0]!;
+      const raw = object(original.payload);
+      const normalized = normalizeLearningDecision(raw);
+      const behavior = object(raw?.behavior);
+      if (!payload.decisionIds.includes(id) || original.event_type !== 'LearningDecisionObserved' || original.actor !== 'conversation'
+        || original.event_id !== id || original.session_id !== event.session_id || timestamp(original.timestamp) === null
+        || timestamp(original.timestamp)! < timestamp(event.timestamp)! || timestamp(original.timestamp)! > timestamp(terminal.timestamp)! || !normalized
+        || normalized.scope !== `foreground.conduct.${axis}` || normalized.criterion !== 'owner-value'
+        || !same(normalized.tags, [`situation:${proposal.situation}`, `choice:${selected.axes[axis]}`])
+        || !same(normalized.sourceRefs, [payload.messageRef, payload.conversationRef, payload.selectionId])
+        || raw?.choice !== selected.axes[axis] || !behavior || behavior.kind !== 'conversation-response'
+        || behavior.axis !== axis || behavior.value !== selected.axes[axis] || behavior.situation !== proposal.situation
+        || !['selectionId', 'conversationRef', 'turnId', 'responseHash', 'candidateSetHash'].every(key => behavior[key] === payload[key])) break;
+      decisions.push({ ...normalized, behavior: behavior as unknown as ConversationDecisionPayload['behavior'], choice: selected.axes[axis] });
+    }
+    if (decisions.length !== 4) continue;
+    result.push({ eventId: event.event_id, timestamp: event.timestamp as string, sessionRef: event.session_id,
+      selectionId: payload.selectionId, conversationRef: payload.conversationRef, turnId: payload.turnId,
+      messageRef: payload.messageRef, originMessageId: payload.originMessageId, responseHash: payload.responseHash,
+      candidateSetHash: payload.candidateSetHash as string, reply: selected.reply, proposal, decisions,
+      completedEventId: terminal.event_id });
+  }
+  return result;
+}
+
+export function canonicalConversationDelivery(selection: VerifiedConversationSelection, contacts: RecordValue[]): LearningDecisionDelivery {
+  const channelId = selection.conversationRef.slice('coordination:'.length);
+  const matches = contacts.filter(row => row.schema === 'home23.resident.contact.v1' && row.channelId === channelId
+    && row.replyToMessageId === selection.originMessageId && row.role === 'assistant' && row.voice === 'self');
+  if (matches.length !== 1) return { status: 'unavailable', reason: matches.length ? 'canonical_delivery_ambiguous' : 'canonical_delivery_not_observed' };
+  const message = matches[0]!;
+  const actor = object(message.actor);
+  if (message.session !== selection.conversationRef || message.channelKind !== 'direct' || actor?.kind !== 'bot'
+    || message.scheduled || message.runtime || message.worker
+    || !boundedText(actor.principalId, 512) || !boundedText(message.messageId, 512)
+    || message.contactId !== `message:${message.messageId}` || message.sourceRef !== `coordination.message:${message.messageId}`
+    || typeof message.content !== 'string' || conversationResponseHash(message.content) !== selection.responseHash
+    || !Number.isSafeInteger(message.sourceSequence) || (message.sourceSequence as number) < 0
+    || timestamp(message.ts) === null || timestamp(message.ts)! < timestamp(selection.timestamp)!) {
+    return { status: 'unavailable', reason: 'canonical_delivery_mismatch' };
+  }
+  return { status: 'observed', sourceEventId: message.sourceRef as string, messageRef: message.sourceRef as string,
+    timestamp: message.ts as string, sourceSequence: message.sourceSequence as number,
+    responseHash: selection.responseHash, deliveredChars: message.content.length, complete: true };
+}
+
 /** Read descriptions from the resident's runtime ledger, never from tool arguments.
  * These details explain an existing Seed witness; they do not grant teaching authority.
  */
 export function createLearningDecisionEvidenceReader(
   ledgerPath: string,
-  { signal }: { signal?: AbortSignal } = {},
+  { signal, contactPath }: { signal?: AbortSignal; contactPath?: string } = {},
 ): ReadLearningDecisionEvidence {
   if (!isAbsolute(ledgerPath)) throw new Error('Learning evidence needs an absolute runtime-owned ledger path');
   return async decisions => {
@@ -156,22 +266,28 @@ export function createLearningDecisionEvidenceReader(
     if (signal?.aborted) return unavailable('bounded_runtime_ledger_unavailable');
     let rows: RecordValue[];
     try {
-      const before = await completeTailIdentity(ledgerPath);
-      const recent = await readRecentJsonlTail(ledgerPath, {
-        limit: MAX_RECORDS, maxEntries: MAX_RECORDS, maxBytes: MAX_BYTES, maxLineBytes: MAX_LINE_BYTES, signal,
-      });
-      const after = await completeTailIdentity(ledgerPath);
-      if ((before === null) !== (after === null) || (before && after
-        && (before.device !== after.device || before.inode !== after.inode || after.size < before.size))) {
-        throw new Error('Runtime ledger changed identity while reading');
-      }
-      if (recent.some(row => object(row) === null)) throw new Error('Runtime ledger contains a malformed event');
-      rows = recent as RecordValue[];
+      rows = await readBoundedLearningEvidenceRows(ledgerPath, signal);
     } catch {
       // A torn tail, cancellation, unsafe link or oversized record cannot become evidence.
       return unavailable('bounded_runtime_ledger_unavailable');
     }
+    const conversations = verifiedConversationSelections(rows);
+    let contacts: RecordValue[] = [];
+    if (contactPath && conversations.length) {
+      try { contacts = await readBoundedLearningEvidenceRows(contactPath, signal); } catch { /* Unavailable means no delivery claim. */ }
+    }
     for (const witness of decisions) {
+      if (witness.scope.startsWith('foreground.conduct.')) {
+        const selection = conversations.find(item => item.decisions.some(decision => decision.decisionId === witness.decisionId));
+        const original = selection?.decisions.find(decision => decision.decisionId === witness.decisionId);
+        if (!selection || !original || !same(coreWitness(original), coreWitness(witness))) {
+          result[witness.decisionId] = { status: 'unavailable', reason: 'conversation_response_evidence_unavailable' }; continue;
+        }
+        result[witness.decisionId] = { status: 'verified', sourceEventId: original.decisionId, timestamp: selection.timestamp,
+          sessionRef: selection.sessionRef, behavior: original.behavior, choice: original.choice, relevant: true, explicit: false,
+          delivery: canonicalConversationDelivery(selection, contacts) };
+        continue;
+      }
       const candidates = rows.filter(row => row.event_id === witness.decisionId
         || (row.event_type === 'LearningDecisionObserved' && object(row.payload)?.decisionId === witness.decisionId));
       if (!candidates.length) { result[witness.decisionId] = { status: 'unavailable', reason: 'decision_outside_recent_window' }; continue; }

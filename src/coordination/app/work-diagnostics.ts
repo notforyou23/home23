@@ -34,8 +34,15 @@ export function createWorkDiagnostics(options: {
       ORDER BY m.channel_sequence`, origin.workId);
     // An exact status read is independent of the resident's assignment backlog.
     const assignments = id ? [] : residentAssignments.list(principalId, args.include_terminal === true, limit);
-    const ownerContact = database.readOne<{ messageId: string; text: string }>(`SELECT m.id AS messageId,m.body_text AS text
-      FROM works w JOIN messages m ON m.id=w.origin_message_id WHERE w.id=?
+    const ownerContact = database.readOne<{ messageId: string; text: string; channelId: string;
+      channelKind: 'direct' | 'group'; channelSequence: number; sourceSequence: number;
+      previousAssistantMessageId: string | null; createdAt: string }>(`SELECT m.id AS messageId,m.body_text AS text,
+      m.channel_id AS channelId,c.kind AS channelKind,m.channel_sequence AS channelSequence,m.created_at AS createdAt,e.sequence AS sourceSequence,
+      (SELECT a.id FROM messages a WHERE a.channel_id=m.channel_id AND a.channel_sequence<m.channel_sequence
+        AND a.author_principal_id=w.target_principal_id AND a.author_kind='bot' AND a.kind IN ('text','result')
+        AND a.stored_visibility='visible' AND a.body_text IS NOT NULL ORDER BY a.channel_sequence DESC LIMIT 1) AS previousAssistantMessageId
+      FROM works w JOIN messages m ON m.id=w.origin_message_id JOIN channels c ON c.id=m.channel_id
+      JOIN events e ON e.aggregate_kind='message' AND e.aggregate_id=m.id AND e.aggregate_version=1 WHERE w.id=?
       AND w.kind IN ('resident_turn','channel.bot_turn') AND m.author_kind='owner' AND m.kind='text' AND m.body_text IS NOT NULL AND m.stored_visibility='visible'
       AND NOT EXISTS(SELECT 1 FROM resident_outcomes o WHERE o.review_work_id=w.id)
       AND NOT EXISTS(SELECT 1 FROM events e WHERE e.aggregate_kind='scheduled_channel_run'
