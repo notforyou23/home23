@@ -86,12 +86,20 @@ export class ToolRegistry {
    */
   constructor(private readonly boundary: 'generic' | 'seeded' = 'generic') {}
 
+  /** Provider-native tools bypass execute(), so seeded capabilities exclude them. */
+  allowsNativeServerTools(): boolean { return this.boundary === 'generic'; }
+
   register(tool: ToolDefinition): void {
     if (this.boundary === 'generic') {
       const execute = tool.execute.bind(tool);
       this.tools.set(tool.name, Object.freeze({
         ...tool,
         async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+          if (ctx.chatId?.startsWith('inspection:')) {
+            const code = 'inspection_authority_refused';
+            ctx.turnRuntime?.abortController.abort(Object.assign(new Error('inspection authority refused'), { code }));
+            return { content: JSON.stringify({ code, tool: tool.name, reason: 'generic registry is unavailable to inspection turns' }), is_error: true };
+          }
           if (ctx.chatId?.startsWith('proposer:') || ctx.chatId?.startsWith('worker:')) {
             return { content: `refused: generic tool '${tool.name}' is unavailable to restricted chat '${ctx.chatId}'`, is_error: true };
           }

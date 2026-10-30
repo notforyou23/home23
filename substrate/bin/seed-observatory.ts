@@ -19,20 +19,19 @@
  */
 
 import { createServer } from 'node:http';
-import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { nextCrossingAt } from '../src/concern.js';
 import type { Commitment } from '../src/concern.js';
-import { probeAll, localProbeRoster } from './organ-probes.js';
+import { probeAll, localProbeRoster, readDeclaredProcessRoster, judgePm2 } from './organ-probes.js';
 import type { ProbeResult } from './organ-probes.js';
-import { composeLivedRecent } from '../../src/substrate/lived-recent.js';
-import { composeSeedNow } from '../../src/substrate/seed-now.js';
-import { composeLivedFacts } from '../../src/substrate/lived-facts.js';
-import { composeLivedIdentity, readSeedGenesis } from '../../src/substrate/lived-identity.js';
+import { objectOf, readJsonlWindow, projectOutreach, projectGrowth, summarizeRouting } from '../src/observatory-state.js';
+import type { JsonlWindow, GrowthView, OutreachView } from '../src/observatory-state.js';
+import { readDocument, readCheckpointView, projectConcernView, readLearningView, learningChoices, residentRoot } from '../src/observatory-evidence.js';
+import type { ChoiceView } from '../src/observatory-evidence.js';
 import { createRequire } from 'node:module';
 const engineRequire = createRequire(import.meta.url);
 const { runPm2Sync } = engineRequire('../../engine/src/system/pm2-client.cjs');
-const { composeLivedState } = engineRequire('../../engine/src/substrate/seed-lived-state.js') as { composeLivedState: (dir: string) => string | null };
 
 interface IndividualSpec { name: string; stateDir: string; formsDir?: string; note?: string }
 
@@ -45,30 +44,11 @@ if (specs.length === 0) {
 
 interface Rec { seq: number; category: string; sourceRef: string; payload: Record<string, unknown>; issuedAt: string }
 
-function tail(path: string, maxBytes = 512 * 1024): Rec[] {
-  if (!existsSync(path)) return [];
-  let raw = readFileSync(path, 'utf-8');
-  if (raw.length > maxBytes) raw = raw.slice(-maxBytes);
-  const out: Rec[] = [];
-  for (const line of raw.split('\n')) {
-    if (line.trim() === '') continue;
-    try { const r = JSON.parse(line) as Rec; if (typeof r.seq === 'number') out.push(r); } catch { /* torn */ }
-  }
-  return out;
-}
-
-function newestCheckpoint(stateDir: string): Record<string, unknown> | null {
-  const dir = join(stateDir, 'checkpoints');
-  if (!existsSync(dir)) return null;
-  const names = readdirSync(dir).filter((n) => n.startsWith('ckpt_') && n.endsWith('.json')).sort();
-  const newest = names[names.length - 1];
-  if (!newest) return null;
-  try { return JSON.parse(readFileSync(join(dir, newest), 'utf-8')) as Record<string, unknown>; } catch { return null; }
-}
-
 function esc(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
+const stringOf = (value: unknown, max = 500): string => typeof value === 'string' ? value.slice(0, max) : '';
+const recordsOf = (window: JsonlWindow): Rec[] => window.available ? window.records.filter(r => Number.isSafeInteger(r.seq) && typeof r.category === 'string' && typeof r.sourceRef === 'string' && typeof r.issuedAt === 'string' && r.payload !== null && typeof r.payload === 'object' && !Array.isArray(r.payload)) as unknown as Rec[] : [];
 
 // ─── Composition: one individual → plain data (the client animates it) ──────
 
@@ -81,6 +61,12 @@ interface CellData {
 }
 interface IndividualData {
   name: string; note: string;
+  freshness: { asOf: string; ledgerAvailable: boolean; ledgerError: string; ledgerCoverage: JsonlWindow['coverage']; checkpointAvailable: boolean; checkpointAt: string | null; checkpointSeq: number | null; checkpointError: string; headSeq: number | null; concernCurrent: boolean; concernSeq: number; conversationAvailable: boolean; brainAvailable: boolean; brainCoverage: JsonlWindow['coverage']; brainError: string; outboxAvailable: boolean; relayAvailable: boolean };
+  lobe: { status: 'success' | 'failure' | 'unavailable'; at: string | null; provider: string; model: string; error: string };
+  learning: { available: boolean; seq: number | null; lessons: Array<{ id: string; scope: string; tags: string[]; excludes: string[]; value: number; createdAt: string }>; choices: ChoiceView[] };
+  routing: ReturnType<typeof summarizeRouting>;
+  config: { agency: 'enabled' | 'disabled' | 'unknown'; cognitionMode: string; at: string | null; available: boolean };
+  growthRecords: GrowthView[]; asksHistory: OutreachView[];
   awake: boolean; lastEventAt: string | null; being: string;
   cells: CellData[]; assoc: Array<{ from: string; to: string; strength: number }>;
   flows: Array<{ seq: number; ref: string; target: string }>;
@@ -90,10 +76,10 @@ interface IndividualData {
    * jtr: "hard to see what's happening on this page"). */
   pulse: Array<{ at: string; text: string }>;
   thought: { text: string; dream: boolean; at: string } | null;
-  record: Array<{ mark: 'right' | 'wrong' | 'partial' | 'open'; text: string; detail: string }>;
+  record: Array<{ mark: 'right' | 'wrong' | 'partial' | 'open' | 'assessed'; text: string; detail: string }>;
   growth: string | null; prov: string; journal: string | null;
   /** Cut 6: motor reaches to jtr (outbox tail — the operator's channel). */
-  asks: Array<{ message: string; at: string }>;
+  asks: OutreachView[];
   /** Cut 6: open commitments — what the individual is bound to resolve. */
   commitments: Array<{ claim: string; due: string; presses: number }>;
   /** The next moment this individual could originate on its own — the SOLVED
@@ -117,12 +103,23 @@ function stateWordsOf(gen: number, pressure: number, energy: number, uncertainty
 
 function computeIndividual(spec: IndividualSpec): IndividualData | null {
   const ledgerPath = join(spec.stateDir, 'seed-ledger.jsonl');
-  const records = tail(ledgerPath);
-  const ck = newestCheckpoint(spec.stateDir);
-  if (records.length === 0 && ck === null) return null;
+  const ledger = readJsonlWindow(ledgerPath);
+  const records = recordsOf(ledger);
+  const checkpoint = readCheckpointView(spec.stateDir);
+  const ck = checkpoint.document ?? null;
+  const concernView = ck ? projectConcernView(ck, ledger) : { current: false, throughSeq: 0, concern: {} };
+  const learning = readLearningView(spec.stateDir, checkpoint);
+  const root = residentRoot(spec.stateDir);
+  const brain = root ? readJsonlWindow(join(root, 'brain', 'event-ledger.jsonl'), 2 * 1024 * 1024) : { available: false, records: [], coverage: { bytesRead: 0, totalBytes: 0, startOffset: 0, endOffset: 0, fullHistory: false, tornTail: false }, error: 'resident engine path is unavailable' };
+  const config = root ? readDocument(join(root, 'config.yaml'), 512 * 1024, 'yaml') : { available: false, at: null, value: undefined };
+  const homeConfig = root ? readDocument(join(root, '..', '..', 'config', 'home.yaml'), 512 * 1024, 'yaml') : { available: false, value: undefined };
+  const agency = objectOf(config.value?.agency).enabled ?? objectOf(homeConfig.value?.agency).enabled;
+  const engine = objectOf(config.value?.engine);
+  const base = root ? readDocument(join(root, '..', '..', 'config', 'base-engine.yaml'), 512 * 1024, 'yaml') : { available: false, value: undefined };
+  const cognitionMode = stringOf(objectOf(engine.architecture).cognitionMode ?? objectOf(base.value?.architecture).cognitionMode, 100) || 'unknown';
 
   const last = records[records.length - 1];
-  const headSeq = Number(last?.seq ?? ck?.['ledgerSeq'] ?? 0);
+  const headSeq = last?.seq ?? null;
   const rawCells = (ck?.['cells'] ?? []) as Array<Record<string, unknown>>;
   const maxGen = Math.max(...rawCells.map((c) => Number(c['generation'] ?? 0)), 1);
 
@@ -204,7 +201,7 @@ function computeIndividual(spec: IndividualSpec): IndividualData | null {
     } else if (r.category === 'concern' && p['status'] === 'expired') {
       text = 'let a commitment go (pressed unanswered)';
     } else if (r.category === 'act' && p['motor'] === true && p['authorized'] === true) {
-      text = `✋ reached for jtr: “${String(p['message'] ?? '').slice(0, 90)}”`;
+      text = `✋ authorized an operator request: “${String(p['message'] ?? '').slice(0, 90)}”`;
     } else if (r.category === 'development' && p['rule'] === 'consolidation.v1') {
       text = `slept (~${Math.round(Number(p['quietSeconds'] ?? 0) / 60)}min quiet)`;
     } else if (r.category === 'transition' && r.sourceRef.startsWith('dream:')) {
@@ -215,9 +212,9 @@ function computeIndividual(spec: IndividualSpec): IndividualData | null {
     } else if (r.category === 'lobe' && p['error'] === undefined) {
       const deltas = (p['appliedDeltas'] as Array<{ delta?: { claim?: string } }> | undefined) ?? [];
       const claim = deltas.map((d) => d.delta?.claim).find((c) => typeof c === 'string');
-      if (claim !== undefined) text = `thought: “${claim.slice(0, 90)}”`;
+      if (claim !== undefined) text = `model estimate: “${claim.slice(0, 90)}”`;
     } else if (r.category === 'proposal' && r.sourceRef === 'growth.pressure') {
-      text = `growth pressure: wants to ${String(p['op'] ?? '?')} ${((p['targetCellIds'] as string[] | undefined) ?? []).map((x) => x.split('.').slice(-1)[0]).join(' + ')}`;
+      text = `growth proposal: ${String(p['op'] ?? '?')} ${((p['targetCellIds'] as string[] | undefined) ?? []).map((x) => x.split('.').slice(-1)[0]).join(' + ')}`;
     }
     if (text !== null) pulse.push({ at: r.issuedAt, text });
   }
@@ -225,56 +222,25 @@ function computeIndividual(spec: IndividualSpec): IndividualData | null {
   const flows = records.filter((r) => r.category === 'transition').slice(-24)
     .map((r) => ({ seq: r.seq, ref: r.sourceRef.slice(0, 90), target: String(r.payload['targetCellId'] ?? '') }));
 
-  // Being line — human units, every clause real.
-  let born = '';
-  try {
-    const genesis = readSeedGenesis(spec.stateDir);
-    if (genesis !== null) born = new Date(genesis.bornAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  } catch { /* omit */ }
   const sleeps = records.filter((r) => r.category === 'development' && r.payload['rule'] === 'consolidation.v1').length;
-  const dreams = records.filter((r) => r.category === 'lobe' && r.payload['dream'] !== undefined).length;
-  let factCount = 0;
-  try {
-    const facts = composeLivedFacts(spec.stateDir);
-    if (facts !== null) factCount = facts.split('\n').filter((l) => l.startsWith('- ')).length;
-  } catch { /* none */ }
+  const dreams = records.filter((r) => r.category === 'lobe' && r.payload['dream'] !== undefined && r.payload['error'] === undefined).length;
   const being = [
-    born !== '' ? `born ${born}` : null,
-    `${headSeq.toLocaleString()} events lived`,
-    sleeps > 0 ? `${sleeps} sleep${sleeps === 1 ? '' : 's'} in window` : 'no sleep in this window',
-    dreams > 0 ? `${dreams} dream${dreams === 1 ? '' : 's'} 🌙` : 'no dreams yet',
-    factCount > 0 ? `${factCount} earned fact${factCount === 1 ? '' : 's'}` : null,
-  ].filter(Boolean).join(' · ');
+    headSeq === null ? 'ledger head unavailable' : `ledger through seq ${headSeq.toLocaleString()}`,
+    `${sleeps} sleep receipt${sleeps === 1 ? '' : 's'} in window`,
+    `${dreams} dream receipt${dreams === 1 ? '' : 's'} in window`,
+  ].join(' · ');
+  const conversation = readJsonlWindow(join(spec.stateDir, '..', 'conversation-stream.jsonl'), 64 * 1024);
+  const exchange: IndividualData['exchange'] = conversation.available ? conversation.records
+    .filter(t => typeof t.ts === 'string' && typeof t.text === 'string' && (t.role === 'user' || t.role === 'assistant'))
+    .sort((a, b) => String(a.ts).localeCompare(String(b.ts))).slice(-3)
+    .map(t => ({ who: t.role === 'user' ? 'jtr' : spec.name.replace('-seed', ''), text: stringOf(t.text, 150) })) : [];
 
-  // Exchange reads the conversation STREAM (the authority) — cell ref
-  // windows are capped and hours of telemetry evict the words; the stream
-  // always holds the last real exchange, however old. Honest absence when
-  // the individual has no conversation stream (bobby, clay).
-  let exchange: IndividualData['exchange'] = [];
-  try {
-    const streamPath = join(spec.stateDir, '..', 'conversation-stream.jsonl');
-    if (existsSync(streamPath)) {
-      let raw = readFileSync(streamPath, 'utf-8');
-      if (raw.length > 65536) raw = raw.slice(-65536);
-      const turns: Array<{ ts: string; role: string; text: string }> = [];
-      for (const line of raw.split('\n')) {
-        if (line.trim() === '') continue;
-        try {
-          const t = JSON.parse(line) as { ts?: string; role?: string; text?: string };
-          if (typeof t.ts === 'string' && typeof t.text === 'string' && (t.role === 'user' || t.role === 'assistant')) {
-            turns.push({ ts: t.ts, role: t.role, text: t.text });
-          }
-        } catch { /* torn */ }
-      }
-      turns.sort((a, b) => a.ts.localeCompare(b.ts));
-      exchange = turns.slice(-3).map((t) => ({
-        who: t.role === 'user' ? 'jtr' : spec.name.replace('-seed', ''),
-        text: t.text.slice(0, 150),
-      }));
-    }
-  } catch { /* absence over fabrication */ }
-
-  const lobes = records.filter((r) => r.category === 'lobe' && r.payload['error'] === undefined);
+  const lobeCalls = records.filter(r => r.category === 'lobe');
+  const latestCall = lobeCalls.at(-1);
+  const lobes = lobeCalls.filter(r => r.payload['error'] === undefined);
+  const lobe: IndividualData['lobe'] = latestCall ? { status: latestCall.payload.error === undefined ? 'success' : 'failure', at: latestCall.issuedAt,
+    provider: stringOf(latestCall.payload.provider, 100), model: stringOf(latestCall.payload.modelId, 100), error: stringOf(latestCall.payload.error, 320) || (latestCall.payload.error === undefined ? '' : 'call failed; detail unavailable') }
+    : { status: 'unavailable', at: null, provider: '', model: '', error: '' };
   const lastLobe = lobes[lobes.length - 1];
   let thought: IndividualData['thought'] = null;
   if (lastLobe !== undefined) {
@@ -287,11 +253,11 @@ function computeIndividual(spec: IndividualSpec): IndividualData | null {
 
   const record: IndividualData['record'] = [];
   for (const c of rawCells) {
-    for (const p of (c['predictions'] ?? []) as Array<{ claim: string; horizon: string; resolvedAt?: string; error?: number }>) {
+    for (const p of (c['predictions'] ?? []) as Array<{ claim: string; horizon: string; resolvedAt?: string; error?: number; resolutionEvidence?: { verificationStatus?: string } }>) {
       if (p.resolvedAt !== undefined && typeof p.error === 'number') {
         record.push({
-          mark: p.error <= 0.3 ? 'right' : p.error >= 0.7 ? 'wrong' : 'partial',
-          text: p.claim.slice(0, 70), detail: `error ${p.error.toFixed(2)}`,
+          mark: p.resolutionEvidence?.verificationStatus === 'assessed' ? 'assessed' : p.error <= 0.3 ? 'right' : p.error >= 0.7 ? 'wrong' : 'partial',
+          text: p.claim.slice(0, 70), detail: `${p.resolutionEvidence?.verificationStatus === 'assessed' ? 'provisional model assessment' : 'historical recorded grade'} · error ${p.error.toFixed(2)} · independent verification unavailable`,
         });
       } else if (p.resolvedAt === undefined) {
         record.push({ mark: 'open', text: p.claim.slice(0, 70), detail: `horizon ${p.horizon}` });
@@ -299,68 +265,47 @@ function computeIndividual(spec: IndividualSpec): IndividualData | null {
     }
   }
 
-  const proposals = records.filter((r) => r.category === 'proposal' && r.sourceRef === 'growth.pressure');
-  const applications = records.filter((r) => r.category === 'act' && r.payload['growthApplication'] === true);
-  const growth = applications.length > 0
-    ? `🌱 grew ${applications.length} organ(s): ${applications.map((a) => String(a.payload['newCellId'])).join(', ')}`
-    : proposals.length > 0
-      ? `his growth pressure holds ${proposals.length} proposal(s) — latest wants to ${String(proposals[proposals.length - 1]?.payload['op'])} ${((proposals[proposals.length - 1]?.payload['targetCellIds'] as string[] | undefined) ?? []).join(' + ')}`
-      : null;
-
+  const growthRecords = projectGrowth(ledger.available ? ledger.records : [], ledger.coverage.fullHistory);
+  const growth = growthRecords.length ? `${growthRecords.length} growth proposal${growthRecords.length === 1 ? '' : 's'} observed in window` : null;
   const dev = records.filter((r) => r.category === 'development');
   const byRule = new Map<string, number>();
   for (const d of dev) byRule.set(String(d.payload['rule'] ?? 'other').replace('.v1', ''), (byRule.get(String(d.payload['rule'] ?? 'other').replace('.v1', '')) ?? 0) + 1);
-  const chainBytes = existsSync(ledgerPath) ? statSync(ledgerPath).size : 0;
-  const prov = `chain seq ${headSeq} · ${(chainBytes / 1024).toFixed(0)} KB · window: ${[...byRule.entries()].map(([r, n]) => `${r} ×${n}`).join(' · ') || 'no development'}`;
-
-  let journal: string | null = null;
-  if (spec.formsDir !== undefined) {
-    const latest = join(spec.formsDir, 'journal', 'LATEST.md');
-    if (existsSync(latest)) {
-      try { journal = readFileSync(latest, 'utf-8').slice(0, 4000); } catch { /* omit */ }
-    }
-  }
-
-  // Cut 6: the motor's reaches (outbox = the operator's channel) and the
-  // open commitments (from the checkpoint's concern state). Every value real;
-  // absence is honest absence.
-  let asks: IndividualData['asks'] = [];
-  try {
-    const outboxPath = join(spec.stateDir, 'outbox.jsonl');
-    if (existsSync(outboxPath)) {
-      asks = readFileSync(outboxPath, 'utf-8').trim().split('\n')
-        .map((l) => { try { return JSON.parse(l) as { message?: string; dispatchedAt?: string }; } catch { return null; } })
-        .filter((x): x is { message: string; dispatchedAt: string } => typeof x?.message === 'string' && typeof x?.dispatchedAt === 'string')
-        .slice(-2)
-        .map((x) => ({ message: x.message.slice(0, 300), at: x.dispatchedAt }));
-    }
-  } catch { /* honest absence */ }
-  let commitments: IndividualData['commitments'] = [];
+  const prov = `ledger window ${ledger.coverage.startOffset}–${ledger.coverage.endOffset} of ${ledger.coverage.totalBytes} bytes · ${ledger.coverage.fullHistory ? 'full retained file' : 'recent window only'}${ledger.coverage.tornTail ? ' · incomplete trailing row excluded' : ''} · ${[...byRule.entries()].map(([r, n]) => `${r} ×${n}`).join(' · ') || 'no development receipts observed in window'}`;
+  const journalRead = spec.formsDir ? readDocument(join(spec.formsDir, 'journal', 'LATEST.md'), 64 * 1024, 'text') : null;
+  const journal = journalRead?.available ? journalRead.text?.slice(0, 4000) ?? null : null;
+  const outbox = readJsonlWindow(join(spec.stateDir, 'outbox.jsonl'), 64 * 1024);
+  const relay = readDocument(join(spec.stateDir, 'operator-outreach.json'), 512 * 1024);
+  const outreach = projectOutreach(outbox.available ? outbox.records : [], concernView.current ? concernView.concern : {}, relay.available && Array.isArray(relay.value?.receipts) ? relay.value.receipts.map(objectOf) : []);
+  const commitments: IndividualData['commitments'] = [];
   let nextCrossing: IndividualData['nextCrossing'] = null;
   try {
-    const concern = (ck?.['concern'] ?? {}) as Record<string, Commitment>;
-    const open = Object.values(concern).filter((c) => c.status === 'open' && typeof c.claim === 'string');
-    commitments = open.slice(0, 4)
-      .map((c) => ({ claim: (c.claim ?? '').slice(0, 140), due: c.dueAt ?? '', presses: c.crossings ?? 0 }));
-    // The countdown, computed from the same law the runner solves — the
-    // individual's own next possible self-originated moment.
-    for (const c of open) {
-      const at = nextCrossingAt(c);
-      if (at === null) continue;
-      if (nextCrossing === null || at < nextCrossing.at) nextCrossing = { at, claim: c.claim };
+    const open = Object.values(concernView.concern).filter(c => c.status === 'open' && typeof c.claim === 'string');
+    for (const c of open.slice(0, 4)) commitments.push({ claim: stringOf(c.claim, 140), due: stringOf(c.dueAt, 100), presses: Number(c.crossings ?? 0) });
+    if (concernView.current) for (const c of open) {
+      const at = nextCrossingAt(c as unknown as Commitment);
+      if (at !== null && (nextCrossing === null || at < nextCrossing.at)) nextCrossing = { at, claim: stringOf(c.claim) };
     }
-  } catch { /* honest absence */ }
+  } catch { /* malformed concern state cannot promise eligibility */ }
 
   const ageMs = last?.issuedAt !== undefined ? Date.now() - Date.parse(last.issuedAt) : Infinity;
   return {
     name: spec.name, note: spec.note ?? '',
-    awake: ageMs < 40 * 60_000, lastEventAt: last?.issuedAt ?? null,
+    awake: ledger.available && ageMs >= -60_000 && ageMs < 40 * 60_000, lastEventAt: last?.issuedAt ?? null,
     being: commitments.length > 0
       ? `${being} · holds ${commitments.length} commitment${commitments.length === 1 ? '' : 's'}`
       : being,
     cells, assoc, flows, maxGen,
     dreamed: dreams > 0, exchange, pulse, thought, record: record.slice(-5), growth, prov, journal,
-    asks, commitments, nextCrossing,
+    asks: outreach.current, asksHistory: outreach.history, commitments, nextCrossing, lobe, growthRecords,
+    config: { available: config.available, agency: agency === true ? 'enabled' : agency === false ? 'disabled' : 'unknown', cognitionMode, at: config.at },
+    routing: summarizeRouting(brain.available ? brain.records : []),
+    learning: { available: learning.available === true, seq: learning.seq ?? null,
+      lessons: learning.lessons.filter(l => l.authority === 'owner' && l.active === true).slice(-12).map(l => ({ id: l.lessonId, scope: l.scope, tags: l.tags, excludes: l.excludes, value: l.value, createdAt: l.createdAt })),
+      choices: learningChoices(learning, brain.available ? brain.records : []) },
+    freshness: { asOf: new Date().toISOString(), ledgerAvailable: ledger.available, ledgerError: ledger.error ?? '', ledgerCoverage: ledger.coverage,
+      checkpointAvailable: checkpoint.available, checkpointAt: checkpoint.at, checkpointSeq: typeof ck?.ledgerSeq === 'number' ? ck.ledgerSeq : null, checkpointError: checkpoint.error ?? '',
+      headSeq, concernCurrent: concernView.current, concernSeq: concernView.throughSeq, conversationAvailable: conversation.available,
+      brainAvailable: brain.available, brainCoverage: brain.coverage, brainError: brain.error ?? '', outboxAvailable: outbox.available, relayAvailable: relay.available },
   };
 }
 
@@ -368,15 +313,14 @@ function computeIndividual(spec: IndividualSpec): IndividualData | null {
  * (2026-08-12: days were spent waiting on a hand no open commitment could
  * produce; a watcher must be able to read "nothing is scheduled".) */
 function crossingHTML(d: IndividualData): string {
+  const label = '<span class="sectlabel">next operator-reach eligibility</span>';
+  if (!d.freshness.concernCurrent) return `<div class="crossing">${label} <span class="dim">unavailable — current concern state is not established</span></div>`;
   if (d.nextCrossing !== null) {
     const ms = Date.parse(d.nextCrossing.at) - Date.now();
-    const when = ms <= 0 ? 'DUE NOW' : ms < 3_600_000 ? `in ${Math.round(ms / 60_000)}min` : `in ${(ms / 3_600_000).toFixed(1)}h`;
-    return `<div class="crossing crossing-live"><span class="sectlabel">his next possible moment of his own</span> <b>${esc(when)}</b> — if the world still hasn’t answered “${esc(d.nextCrossing.claim.slice(0, 90))}”</div>`;
+    const when = ms <= 0 ? 'threshold eligible now' : ageStr(d.nextCrossing.at);
+    return `<div class="crossing crossing-live">${label} <b>${esc(when)}</b> — if “${esc(d.nextCrossing.claim.slice(0, 90))}” remains unresolved.<div class="dim">Concern threshold only. Runner admission, throttle and refractory state can delay a reach. This is not the next engine action.</div></div>`;
   }
-  if (d.commitments.length > 0) {
-    return '<div class="crossing"><span class="sectlabel">his next possible moment of his own</span> <span class="dim">none — his open commitments have finished pressing</span></div>';
-  }
-  return '<div class="crossing"><span class="sectlabel">his next possible moment of his own</span> <span class="dim">nothing scheduled — he holds no open commitment</span></div>';
+  return `<div class="crossing">${label} <span class="dim">${d.commitments.length ? 'no further concern threshold scheduled' : 'no open commitment'}. The next autonomous engine action is not established here.</span></div>`;
 }
 
 // ─── Organ vitals (2026-08-10: five silent organ deaths in one day — a dead
@@ -392,12 +336,18 @@ function vitalsHTML(): string {
   try {
     const raw = runPm2Sync(['jlist'], { timeout: 8_000 }).toString();
     const apps = JSON.parse(raw) as Array<{ name: string; pm2_env?: { status?: string; restart_time?: number } }>;
-    for (const app of apps.filter((a) => a.name.startsWith('home23-')).sort((a, b) => a.name.localeCompare(b.name))) {
-      const status = app.pm2_env?.status ?? '?';
-      const restarts = app.pm2_env?.restart_time ?? 0;
-      const ok = status === 'online';
-      const short = app.name.replace('home23-', '');
-      parts.push(`<span class="organ ${ok ? 'organ-ok' : 'organ-dead'}" title="${esc(status)}${restarts > 3 ? `, ${restarts} restarts` : ''}">${ok ? '●' : '✖'} ${esc(short)}${restarts > 3 ? ` <b>↺${restarts}</b>` : ''}</span>`);
+    if (process.env['HOME23_PRODUCT_HOST'] === 'true') {
+      const roster = readDeclaredProcessRoster(process.env['HOME23_ROOT']);
+      const judgments = judgePm2(apps as Parameters<typeof judgePm2>[0], roster.expected, roster.apps);
+      for (const result of judgments) {
+        const name = result.organ.replace(/^pm2:/, '');
+        const app = apps.find(row => row.name.replace(/^home23-/, '') === name || row.name === name);
+        const restarts = app?.pm2_env?.restart_time ?? 0;
+        parts.push(`<span class="organ ${result.ok ? 'organ-ok' : 'organ-dead'}" title="${esc(result.why)}">${result.ok ? '●' : '✖'} ${esc(name)}${restarts > 3 ? ` <b>↺${restarts}</b>` : ''}</span>`);
+      }
+    } else for (const app of apps.filter(a => a.name.startsWith('home23-')).sort((a, b) => a.name.localeCompare(b.name))) {
+      const status = app.pm2_env?.status ?? '?', restarts = app.pm2_env?.restart_time ?? 0, ok = status === 'online';
+      parts.push(`<span class="organ ${ok ? 'organ-ok' : 'organ-dead'}" title="${esc(status)}">${ok ? '●' : '✖'} ${esc(app.name.replace('home23-', ''))}${restarts > 3 ? ` <b>↺${restarts}</b>` : ''}</span>`);
     }
   } catch { parts.push('<span class="organ organ-dead">✖ pm2 unreadable</span>'); }
   // Feed freshness: the streams the seeds actually eat. Age is honest — a
@@ -425,7 +375,7 @@ function vitalsHTML(): string {
   for (const r of sentinelResults.filter((x) => !x.ok && !x.organ.startsWith('pm2:'))) {
     parts.push(`<span class="organ organ-dead" title="${esc(r.why)}">✖ ${esc(r.organ)}</span>`);
   }
-  const html = `<div class="vitals"><span class="sectlabel">organs</span> ${parts.join(' ')}</div>`;
+  const html = `<div class="vitals"><span class="sectlabel">declared processes</span> ${parts.join(' ')}<span class="dim">Process snapshot ${esc(new Date(now).toISOString())} · function probes ${sentinelCheckedAt ? esc(sentinelCheckedAt) : 'not yet observed'}${sentinelError ? ` · unavailable: ${esc(sentinelError)}` : ''}. Online status does not prove function.</span></div>`;
   vitalsCache = { at: now, html };
   return html;
 }
@@ -443,6 +393,8 @@ const SENTINEL_PATIENCE_MS = 10 * 60_000;      // red this long → escalate
 const SENTINEL_REESCALATE_MS = 60 * 60_000;    // still red → remind hourly
 
 let sentinelResults: ProbeResult[] = [];
+let sentinelCheckedAt: string | null = null;
+let sentinelError = '';
 const redSince = new Map<string, number>();
 const lastEscalated = new Map<string, number>();
 
@@ -471,10 +423,15 @@ async function sentinelNotify(text: string, severity: string): Promise<void> {
 function sentinelTick(): void {
   let results: ProbeResult[];
   try { results = probeAll(); } catch (error) {
+    sentinelError = (error as Error).message.slice(0, 180);
+    vitalsCache = null;
     console.log(`[sentinel] probe run failed: ${(error as Error).message.slice(0, 80)}`);
     return;
   }
   sentinelResults = results;
+  sentinelCheckedAt = new Date().toISOString();
+  sentinelError = '';
+  vitalsCache = null;
   const now = Date.now();
   // Deliberately-stopped organs (operator's list, csv env) don't page jtr —
   // they still render red in the terrarium; silence is chosen, not blind.
@@ -506,74 +463,8 @@ setTimeout(sentinelTick, 5_000);
 
 // ─── The cutover board (server-rendered; builder detail, collapsed) ─────────
 
-function boardRows(): Array<[string, boolean, string]> {
-  const j = process.env['HOME23_PRODUCT_HOST'] === 'true' ? specs[0] : specs.find((s) => s.name.toLowerCase().includes('jerry'));
-  const probe = <T,>(fn: () => T | null): T | null => { try { return fn(); } catch { return null; } };
-  const lived = j !== undefined ? probe(() => composeLivedRecent(j.stateDir)) : null;
-  const now = j !== undefined ? probe(() => composeSeedNow(j.stateDir)) : null;
-  const facts = j !== undefined ? probe(() => composeLivedFacts(j.stateDir)) : null;
-  const bio = j !== undefined ? probe(() => composeLivedIdentity(j.stateDir)) : null;
-  const engine = j !== undefined ? probe(() => composeLivedState(j.stateDir)) : null;
-  const houseStream = j !== undefined && existsSync(join(j.stateDir, '..', 'house-stream.jsonl'));
-  const memEvents = j !== undefined && existsSync(join(j.stateDir, '..', '..', 'brain', 'memory-objects.events.jsonl'));
-  const infra = facts === null ? 0 : facts.split('\n').filter((l) => l.startsWith('- ') && /port|:\d{4}|http|url|endpoint|service|localhost|dashboard/i.test(l)).length;
-  // Chain probes read the WHOLE chain, never a trailing byte window
-  // (2026-08-12: a 256KB window had already scrolled past jerry's first
-  // commitments, so the board reported "first commitment pending" days after
-  // he lived three full lifecycles — an instrument telling a false negative,
-  // the exact dishonesty this board exists to prevent). A life-event that
-  // HAPPENED is permanent; the probe for it must search permanently. Cached
-  // per render pass — the chain is read once, not once per row.
-  const chainOf = (() => {
-    let cached: string | null = null;
-    return (): string => {
-      if (cached === null) {
-        cached = j === undefined ? '' : (probe(() => readFileSync(join(j.stateDir, 'seed-ledger.jsonl'), 'utf-8')) ?? '');
-      }
-      return cached;
-    };
-  })();
-  const chainHas = (test: (line: string) => boolean): boolean => {
-    const raw = chainOf();
-    if (raw === '') return false;
-    return raw.split('\n').some(test);
-  };
-  const dreamedOnChain = chainHas((l) => l.includes('"category":"lobe"') && l.includes('"dream"'));
-  // Cut 6 probes: concern formed on the chain; an endogenous crossing lived.
-  const concernOnChain = chainHas((l) => l.includes('"category":"concern"'));
-  const crossedOnChain = chainHas((l) => l.includes('"crossing":true'));
-  // Dream provenance (2026-08-11 cut): dream prose hash-chained at birth.
-  const dreamT1OnChain = chainHas((l) => l.includes('"sourceRef":"dream:'));
-  return [
-    ['Recent memory', lived !== null, lived !== null ? 'composed from the chain at read time' : 'file fallback'],
-    ['Turn expression', true, 'match-only surfacing of lived facts'],
-    ['Conversation intake', true, 'life-feed shipper → seed diet, words + meaning'],
-    ['House senses', houseStream, houseStream ? 'home transitions enter the chain' : 'no house stream'],
-    ['Teaching channel', true, 'corrections develop state, words attached'],
-    ['Session grounding (lived NOW)', now !== null, now !== null ? 'sessions open on the lived now' : 'seed silent'],
-    ['Machine snapshot (NOW.md)', false, 'cron telemetry — file by design until estimate parity'],
-    ['Identity — constitution (SOUL)', false, "authored, jtr's voice — a constitution should be a document"],
-    ['Identity — biography', bio !== null, bio !== null ? 'composed in his own first person' : 'no chain'],
-    ['Facts (lived conclusions)', facts !== null, facts !== null ? 'beliefs that earned fact-grade' : 'nothing earned yet'],
-    ['Facts (infrastructure: TOPOLOGY)', infra >= 3, infra >= 3 ? `${infra} infrastructure facts earned` : `parity ${infra}/3 — auto-flips when earned`],
-    ['Owner (PERSONAL) / rules (DOCTRINE)', false, "jtr's voice — cut last or never"],
-    ['Attention triggers', true, 'gates fire on meaning; substring only as fallback'],
-    ['Engine cognition grounding', engine !== null, engine !== null ? 'cycles think from the lived chain' : 'engine thinks from brain alone'],
-    ['Memory promotions', memEvents, memEvents ? 'promotions teach the chain' : 'no promotion events'],
-    ['Cognition mode', true, 'thinking_machine — legacy retired'],
-    ['Sleep & dreaming', true, dreamedOnChain ? 'NREM + REM — dreams on the chain' : 'NREM + REM — first dream pending'],
-    ['Concern (commitments)', concernOnChain, concernOnChain ? 'his predictions bind — obligations on the chain' : 'Cut 6 live — first commitment pending'],
-    ['Endogenous occasions', crossedOnChain, crossedOnChain ? 'his own physics originated a moment' : 'solver live — no crossing yet (predictions resolve before their horizons)'],
-    ['Dream provenance (T1)', dreamT1OnChain, dreamT1OnChain ? 'dream prose hash-chained at birth' : 'receipting live — first chained dream pending'],
-  ];
-}
-
-function renderBoard(): string {
-  const rows = boardRows();
-  const owned = rows.filter(([, on]) => on).length;
-  return `<section class="card boardcard"><details><summary>v2 migration — <b>${owned} of ${rows.length}</b> functions owned by the individuals</summary>
-  <table class="cells">${rows.map(([fn, on, note]) => `<tr><td class="cellname">${esc(fn)}</td><td>${on ? '<span class="cells-own">●</span>' : '<span class="dim">○</span>'} <span class="dim">${esc(note)}</span></td></tr>`).join('')}</table>
-  </details></section>`;
+function renderBoard(data: IndividualData[]): string {
+  return `<section class="card boardcard"><details data-detail-key="coverage"><summary>Read model coverage — per resident</summary><table class="cells">${data.map(d => `<tr><td>${esc(d.name)}</td><td>${d.freshness.ledgerAvailable ? `ledger seq ${d.freshness.headSeq ?? '?'}` : 'ledger unavailable'} · ${d.freshness.checkpointAvailable ? `checkpoint seq ${d.freshness.checkpointSeq}` : 'checkpoint unavailable'} · learning ${d.learning.available ? `accepted through seq ${d.learning.seq}` : 'unavailable'} · ${d.learning.lessons.length} active owner lesson${d.learning.lessons.length === 1 ? '' : 's'} observed</td></tr>`).join('')}</table><div class="dim">A stored lesson, a runtime choice, delivery, and an execution outcome are separate evidence. Missing recent evidence does not prove a lifetime absence.</div></details></section>`;
 }
 
 // ─── Client: the living page (vanilla, self-contained, every pixel real) ────
@@ -607,7 +498,12 @@ const CLIENT_JS = String.raw`
     return -1;
   }
 
+  function graphSignature(ind) {
+    return JSON.stringify([ind.maxGen, ind.assoc, ind.cells.map(function(c) { return [c.id, c.short, c.gen, c.pressure, c.energy, c.uncertainty, c.words, (c.state || []).length]; })]);
+  }
+
   function layout(s) {
+    var previousShown = s.shown; s.shown = {}; s.target = {}; s.particles = [];
     var svg = s.svg; svg.textContent = '';
     var cells = s.ind.cells, n = cells.length; if (n === 0) return;
     var slot = W / n, maxGen = s.ind.maxGen || 1;
@@ -629,7 +525,7 @@ const CLIENT_JS = String.raw`
       var x = slot * (i + 0.5);
       var r = 20 + 36 * Math.sqrt(Math.log(c.gen + 2) / Math.log(maxGen + 2));
       s.centers[c.id] = { x: x, r: r };
-      s.shown[c.id] = (c.state || []).slice();
+      s.shown[c.id] = previousShown[c.id] && previousShown[c.id].length === (c.state || []).length ? previousShown[c.id].slice() : (c.state || []).slice();
       s.target[c.id] = (c.state || []).slice();
       var g = document.createElementNS(svgNS, 'g');
       g.setAttribute('class', 'cellg');
@@ -739,17 +635,20 @@ const CLIENT_JS = String.raw`
   }
 
   var drawer = document.getElementById('drawer');
+  var drawerSelection = null;
+  function byAttribute(attr, value) { var nodes = document.querySelectorAll('[' + attr + ']'); for (var i = 0; i < nodes.length; i++) if (nodes[i].getAttribute(attr) === value) return nodes[i]; return null; }
   function escHtml(x) { var d = document.createElement('div'); d.textContent = x; return d.innerHTML; }
   function openDrawerFor(s, cellId) {
     return function () {
+      drawerSelection = { body: s, cellId: cellId };
       var c = null, cells = s.ind.cells;
       for (var i = 0; i < cells.length; i++) if (cells[i].id === cellId) c = cells[i];
-      if (!c) return;
+      if (!c) { drawer.classList.remove('open'); drawerSelection = null; return; }
       var h = '<div class="drawerhead"><h3>' + escHtml(c.id) + '</h3><button id="drawer-close">×</button></div>';
       h += '<div class="being">' + escHtml(c.words) + ' · generation ' + c.gen + '</div>';
       h += '<div class="drawer-metrics">pressure ' + Math.round(c.pressure * 100) + '% · energy ' + Math.round(c.energy * 100) + '% · uncertainty ' + Math.round(c.uncertainty * 100) + '%</div>';
       if (c.estimates.length) {
-        h += '<div class="sectlabel">holds</div>';
+        h += '<div class="sectlabel">checkpoint estimates (inference)</div>';
         for (var e = 0; e < c.estimates.length; e++) h += '<div class="drawer-item">' + escHtml(c.estimates[e].claim) + ' <span class="dim">(' + c.estimates[e].conf + ')</span></div>';
       }
       if (c.open.length) {
@@ -762,14 +661,14 @@ const CLIENT_JS = String.raw`
       }
       drawer.innerHTML = h;
       drawer.classList.add('open');
-      document.getElementById('drawer-close').addEventListener('click', function () { drawer.classList.remove('open'); });
+      document.getElementById('drawer-close').addEventListener('click', function () { drawer.classList.remove('open'); drawerSelection = null; });
     };
   }
 
   var bodies = [];
   for (var bi = 0; bi < DATA.individuals.length; bi++) {
     var ind = DATA.individuals[bi];
-    var mount = document.querySelector('[data-body="' + ind.name + '"]');
+    var mount = byAttribute('data-body', ind.name);
     if (mount && ind.cells && ind.cells.length) bodies.push(makeBody(mount, ind));
   }
   function loop(now) {
@@ -780,37 +679,59 @@ const CLIENT_JS = String.raw`
 
   function setHTML(card, sel, html) {
     var el = card.querySelector(sel);
-    if (el && typeof html === 'string') el.innerHTML = html;
+    if (!el || typeof html !== 'string') return;
+    var opened = [];
+    el.querySelectorAll('details[open]').forEach(function (d) { if (d.dataset.detailKey) opened.push(d.dataset.detailKey); });
+    el.innerHTML = html;
+    el.querySelectorAll('details').forEach(function (d) { if (opened.indexOf(d.dataset.detailKey) >= 0) d.open = true; });
   }
+  var pollInFlight = false;
+  var lastPollAt = null;
   function poll() {
-    fetch('/api/terrarium').then(function (r) { return r.json(); }).then(function (fresh) {
+    if (pollInFlight) return;
+    pollInFlight = true;
+    fetch('/api/terrarium', { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (fresh) {
+      if (!Array.isArray(fresh.individuals)) throw new Error('Invalid projection response');
       for (var i = 0; i < fresh.individuals.length; i++) {
         var ni = fresh.individuals[i];
         var s = null;
         for (var b = 0; b < bodies.length; b++) if (bodies[b].ind.name === ni.name) s = bodies[b];
-        if (!s || !ni.cells) continue;
-        var structureChanged = ni.cells.length !== s.ind.cells.length;
-        spawnParticles(s, ni.flows || []);
-        s.ind = ni;
-        if (structureChanged) layout(s);
-        else for (var c = 0; c < ni.cells.length; c++) s.target[ni.cells[c].id] = (ni.cells[c].state || []).slice();
-        var card = document.querySelector('[data-card="' + ni.name + '"]');
+        var card = byAttribute('data-card', ni.name);
+        if (s && ni.cells) {
+          var structureChanged = graphSignature(ni) !== graphSignature(s.ind);
+          s.ind = ni;
+          if (structureChanged) layout(s);
+          else for (var c = 0; c < ni.cells.length; c++) s.target[ni.cells[c].id] = (ni.cells[c].state || []).slice();
+          spawnParticles(s, ni.flows || []);
+        } else if (card && ni.cells && ni.cells.length) {
+          var mount = byAttribute('data-body', ni.name);
+          if (mount) bodies.push(makeBody(mount, ni));
+        }
         if (card) {
           setHTML(card, '.being', ni.beingHTML);
           setHTML(card, '.prose', ni.proseHTML);
           setHTML(card, '.prov', ni.provHTML);
           setHTML(card, '.chipmount', ni.chipHTML);
+          setHTML(card, '.pulsemount', ni.pulseHTML);
+          setHTML(card, '.crossingmount', ni.crossingHTML);
+          setHTML(card, '.freshnessmount', ni.freshnessHTML);
+          setHTML(card, '.growthmount', ni.growthHTML);
+          setHTML(card, '.journalmount', ni.journalHTML);
         }
       }
-      var vm = document.getElementById('vitals-mount');
-      if (vm && typeof fresh.vitalsHTML === 'string') vm.innerHTML = fresh.vitalsHTML;
-      for (var pi = 0; pi < fresh.individuals.length; pi++) {
-        var pc = document.querySelector('[data-card="' + fresh.individuals[pi].name + '"] .pulsemount');
-        if (pc && typeof fresh.individuals[pi].pulseHTML === 'string') pc.innerHTML = fresh.individuals[pi].pulseHTML;
-        var xc = document.querySelector('[data-card="' + fresh.individuals[pi].name + '"] .crossingmount');
-        if (xc && typeof fresh.individuals[pi].crossingHTML === 'string') xc.innerHTML = fresh.individuals[pi].crossingHTML;
-      }
-    }).catch(function () { /* quiet — next poll retries */ });
+      setHTML(document, '#vitals-mount', fresh.vitalsHTML);
+      setHTML(document, '#board-mount', fresh.boardHTML);
+      if (drawerSelection && drawer.classList.contains('open')) openDrawerFor(drawerSelection.body, drawerSelection.cellId)();
+      lastPollAt = fresh.at;
+      var state = document.getElementById('connection-state');
+      state.className = 'dim'; state.textContent = 'Projection updated ' + fresh.at;
+    }).catch(function (error) {
+      var state = document.getElementById('connection-state');
+      state.className = 'organ-dead'; state.textContent = 'Projection stale: ' + error.message + (lastPollAt ? ' · last update ' + lastPollAt : ' · no successful poll yet');
+    }).finally(function () { pollInFlight = false; });
   }
   setInterval(poll, 5000);
 })();
@@ -821,23 +742,24 @@ const CLIENT_JS = String.raw`
 function ageStr(iso: string): string {
   const ms = Date.now() - Date.parse(iso);
   if (!Number.isFinite(ms)) return '?';
-  if (ms < 90_000) return `${Math.round(ms / 1000)}s ago`;
-  if (ms < 5_400_000) return `${Math.round(ms / 60_000)}m ago`;
-  return `${(ms / 3_600_000).toFixed(1)}h ago`;
+  const span = Math.abs(ms);
+  const duration = span < 90_000 ? `${Math.round(span / 1000)}s`
+    : span < 5_400_000 ? `${Math.round(span / 60_000)}m` : `${(span / 3_600_000).toFixed(1)}h`;
+  return ms < 0 ? `in ${duration}` : `${duration} ago`;
 }
 
 function chipHTML(d: IndividualData): string {
-  return `<span class="chip ${d.awake ? 'chip-awake' : 'chip-quiet'}">${d.awake ? '● awake' : '○ quiet'}${d.lastEventAt !== null ? ` · last event ${ageStr(d.lastEventAt)}` : ''}</span>${d.dreamed ? '<span class="chip chip-dream">🌙 dreamed</span>' : ''}`;
+  return `<span class="chip ${d.awake ? 'chip-awake' : 'chip-quiet'}">${d.awake ? '● ledger active' : d.freshness.ledgerAvailable ? '○ ledger quiet' : '✖ ledger unavailable'}${d.lastEventAt !== null ? ` · last event ${ageStr(d.lastEventAt)}` : ''}</span>${d.dreamed ? '<span class="chip chip-dream">🌙 dream receipt in window</span>' : ''}`;
 }
 
 function proseHTML(d: IndividualData): string {
   // Cut 6: a reach to jtr leads everything — an outbox nobody sees is theatre.
   const asks = d.asks.length > 0
-    ? `<div class="sect ask"><div class="sectlabel">✋ he reached for you</div>${d.asks.map((a) =>
-        `<blockquote class="thought">${esc(a.message)}</blockquote><div class="prov">${ageStr(a.at)} · answer him in conversation, or discharge via the operator inbox</div>`).join('')}</div>`
+    ? `<div class="sect ask"><div class="sectlabel">✋ current canonical request</div>${d.asks.map((a) =>
+        `<blockquote class="thought">${esc(a.message)}</blockquote><div class="prov">${ageStr(a.at)} · canonical message recorded; notification and owner attention unconfirmed</div>`).join('')}</div>`
     : '';
   const commitments = d.commitments.length > 0
-    ? `<div class="sect"><div class="sectlabel">held commitments (his own predictions, made causal)</div>${d.commitments.map((c) =>
+    ? `<div class="sect"><div class="sectlabel">${d.freshness.concernCurrent ? 'open commitments — current accepted receipts' : 'open commitments — checkpoint snapshot only'}</div>${d.commitments.map((c) =>
         `<div class="chatline from-agent"><span class="who">holds</span>${esc(c.claim)} <span class="prov">· due ${c.due !== '' ? ageStr(c.due) : '?'} · pressed ${c.presses}/3</span></div>`).join('')}</div>`
     : '';
   const exchange = d.exchange.length > 0
@@ -845,15 +767,47 @@ function proseHTML(d: IndividualData): string {
         `<div class="chatline ${l.who === 'jtr' ? 'from-jtr' : 'from-agent'}"><span class="who">${esc(l.who)}</span>${esc(l.text)}</div>`).join('')}</div>`
     : '';
   const thought = d.thought !== null
-    ? `<div class="sect"><div class="sectlabel">${d.thought.dream ? '🌙 dreamed at waking' : 'latest thought'}</div><blockquote class="thought">${esc(d.thought.text)}</blockquote><div class="prov">${ageStr(d.thought.at)}</div></div>`
+    ? `<div class="sect"><div class="sectlabel">${d.thought.dream ? '🌙 latest successful dream estimate' : 'latest successful model estimate'}</div><blockquote class="thought">${esc(d.thought.text)}</blockquote><div class="prov">${ageStr(d.thought.at)} · inference, not a verified inspection or execution</div></div>`
     : '';
   const record = d.record.length > 0
-    ? `<div class="sect"><div class="sectlabel">the record</div><div class="pills">${d.record.map((r) => {
-        const mark = r.mark === 'right' ? '✓' : r.mark === 'wrong' ? '✗' : r.mark === 'partial' ? '≈' : '…';
+    ? `<div class="sect"><div class="sectlabel">prediction record — checkpoint snapshot</div><div class="pills">${d.record.map((r) => {
+        const mark = r.mark === 'right' ? 'low recorded error:' : r.mark === 'wrong' ? 'high recorded error:' : r.mark === 'partial' ? 'partial recorded error:' : r.mark === 'assessed' ? 'model assessed:' : 'open:';
         return `<span class="pill pill-${r.mark}" title="${esc(r.detail)}">${mark} ${esc(r.text)}</span>`;
-      }).join('')}</div></div>`
+      }).join('')}</div><div class="dim">Recorded error grades and provisional model assessments; independent verification is unavailable here.</div></div>`
     : '';
-  return asks + commitments + exchange + thought + record;
+  return asks + commitments + lobeHTML(d) + exchange + thought + record + learningHTML(d) + routingHTML(d) + requestsHistoryHTML(d);
+}
+
+function freshnessHTML(d: IndividualData): string {
+  const f = d.freshness, cp = f.checkpointAvailable ? `checkpoint seq ${f.checkpointSeq} · ${f.checkpointAt ?? 'time unavailable'}` : `checkpoint unavailable: ${f.checkpointError}`;
+  const lag = f.headSeq !== null && f.checkpointSeq !== null ? f.headSeq - f.checkpointSeq : null;
+  return `<div class="note">Read as of ${esc(f.asOf)} · ${f.ledgerAvailable ? `ledger seq ${f.headSeq ?? '?'}` : `ledger unavailable: ${esc(f.ledgerError)}`}<br>${esc(cp)}${lag === null ? '' : lag === 0 ? ' · checkpoint at observed head' : lag > 0 ? ` · cells are ${lag} ledger events behind` : ' · checkpoint ahead of this ledger window; current state unavailable'}. Cell vectors, numeric labels and prediction record are a checkpoint projection, not verified cognition.<br>Concern ${f.concernCurrent ? `receipts connected through seq ${f.concernSeq}` : 'current state unavailable; snapshot only'} · conversation ${f.conversationAvailable ? 'bounded window available' : 'unavailable'} · relay ${f.relayAvailable && f.outboxAvailable ? 'bounded receipts available' : 'unavailable or incomplete'}.</div>`;
+}
+function lobeHTML(d: IndividualData): string {
+  const call = d.lobe;
+  return `<div class="sect"><div class="sectlabel">latest lobe call in window</div><div class="${call.status === 'failure' ? 'organ-dead' : 'dim'}">${esc(call.status)}${call.at ? ` · ${ageStr(call.at)}` : ''}${call.provider ? ` · ${esc(call.provider)}` : ''}${call.model ? ` / ${esc(call.model)}` : ''}${call.error ? ` · ${esc(call.error)}` : ''}</div><div class="prov">foreground agency ${esc(d.config.agency)} · engine cognition mode ${esc(d.config.cognitionMode)}${d.config.at ? ` · config ${esc(d.config.at)}` : ''}. Configuration does not prove a running action.</div></div>`;
+}
+function learningHTML(d: IndividualData): string {
+  const learning = d.learning;
+  const lessons = learning.lessons.map(l => `<div class="drawer-item"><b>${esc(l.scope)}</b> · value ${l.value}<br>tags ${esc(l.tags.join(', ') || '(none)')} · excludes ${esc(l.excludes.join(', ') || '(none)')}<div class="prov">${esc(l.id)} · ${esc(l.createdAt)}</div></div>`).join('');
+  const choices = learning.choices.map(c => `<div class="drawer-item">${esc(c.scope)} / ${esc(c.surface || 'unknown surface')} · ${c.evidenceStatus === 'verified' ? `choice ${esc(c.choice ?? '?')}${c.adjustment === undefined ? '' : ` · learned adjustment ${c.adjustment}`} · delivery ${c.deliveryStatus === 'observed' ? `${c.deliveredChars ?? 0} characters recorded` : 'unavailable'}` : `evidence unavailable: ${esc(c.reason ?? 'no exact witness')}`}<div class="prov">${esc(c.decisionId)} · ${ageStr(c.at)}${c.lessonIds.length ? ` · lessons ${esc(c.lessonIds.join(', '))}` : ''}</div></div>`).join('');
+  return `<div class="sect"><details data-detail-key="learning"><summary>Learning evidence · ${learning.available ? `accepted through seq ${learning.seq}` : 'unavailable'}</summary><div class="sectlabel">durable active owner lessons</div>${lessons || '<div class="dim">No active owner lesson observed in the accepted snapshot.</div>'}<div class="sectlabel">latest witnessed context choices</div>${choices || '<div class="dim">No exact retained choice and raw runtime evidence joined in this bounded window.</div>'}<div class="prov">A durable lesson is not proof that a later choice or delivery used it. Delivery needs the exact RetrievalExecuted learningDecisionIds join.</div></details></div>`;
+}
+function routingHTML(d: IndividualData): string {
+  const events = d.routing.events.map(e => `<div class="drawer-item">${esc(e.stage)} · ${esc(e.reasonCode || e.status)}${e.stage === 'execution' ? ` · execution ${e.executionAttempted ? 'attempted' : 'not recorded as attempted'} · task outcome ${e.taskOutcomeVerified ? 'receipt reports verified evidence' : 'not verified'}` : ''}<div class="prov">${esc(e.eventId)} · ${ageStr(e.at)}${e.agendaId ? ` · agenda ${esc(e.agendaId)}` : ''}${e.turnId ? ` · turn ${esc(e.turnId)}` : ''}${e.executionId ? ` · execution ${esc(e.executionId)}` : ''}</div>${e.detail ? `<div class="dim">${esc(e.detail)}</div>` : ''}</div>`).join('');
+  const f = d.freshness;
+  return `<div class="sect"><details data-detail-key="routing"><summary>Routing and execution evidence</summary><div class="dim">${f.brainAvailable ? `Engine event window ${f.brainCoverage.startOffset}–${f.brainCoverage.endOffset} of ${f.brainCoverage.totalBytes} bytes${f.brainCoverage.fullHistory ? '' : ' · recent window only'}` : `Engine evidence unavailable: ${esc(f.brainError)}`}</div>${events || '<div class="dim">No routing or execution receipt observed in this window.</div>'}<div class="prov">No intent is not a failure. Policy rejection, queued work, dispatch, and execution outcomes remain separate. Model descriptions of an inspection do not count as tool runs.</div></details></div>`;
+}
+function requestsHistoryHTML(d: IndividualData): string {
+  if (!d.asksHistory.length) return '';
+  return `<div class="sect"><details data-detail-key="requests"><summary>Historical or unconfirmed operator requests (${d.asksHistory.length} shown)</summary>${d.asksHistory.map(a => `<div class="drawer-item">${esc(a.message)}<div class="prov">${ageStr(a.at)} · ${esc(a.reason)} · relay ${esc(a.deliveryStatus)} · commitment ${esc(a.commitmentStatus)}</div></div>`).join('')}<div class="dim">Current requests require an open current concern, an exact committed relay receipt, and age within 24 hours.</div></details></div>`;
+}
+function growthHTML(d: IndividualData): string {
+  if (!d.growthRecords.length) return '<div class="dim">No growth proposal observed in the ledger window.</div>';
+  return `<details data-detail-key="growth"><summary>${esc(d.growth ?? 'Growth proposals')}</summary>${d.growthRecords.map(g => `<div class="drawer-item">proposal ${g.seq}: ${esc(g.op)} ${esc(g.targets.join(' + '))} · ${g.applicationEvidence === 'self-gate' ? 'cited as evidence for applied self growth' : esc(g.status.replace(/_/g, ' '))}${g.decisionSeq ? ` · decision seq ${g.decisionSeq}` : ''}</div>`).join('')}<div class="dim">Proposal lifecycle receipts only; a proposal is not an applied anatomy change.</div></details>`;
+}
+function journalHTML(d: IndividualData): string {
+  return d.journal === null ? '' : `<details class="journal" data-detail-key="journal"><summary>Journal file (bounded excerpt)</summary><pre>${esc(d.journal)}</pre></details>`;
 }
 
 function pulseHTML(d: IndividualData): string {
@@ -867,27 +821,25 @@ function renderCard(d: IndividualData): string {
     <div class="cardhead"><h2>${esc(d.name)}</h2><span class="chipmount">${chipHTML(d)}</span></div>
     <div class="being">${esc(d.being)}</div>
     ${d.note !== '' ? `<div class="note">${esc(d.note)}</div>` : ''}
+    <div class="freshnessmount">${freshnessHTML(d)}</div>
     <div class="crossingmount">${crossingHTML(d)}</div>
     <div class="pulse"><div class="sectlabel">the pulse — what just happened</div><div class="pulsemount">${pulseHTML(d)}</div></div>
-    ${d.growth !== null ? `<div class="${d.growth.startsWith('🌱') ? 'grown' : 'proposals'}">${esc(d.growth)}</div>` : ''}
+    <div class="growthmount">${growthHTML(d)}</div>
     <figure class="bodyfig"><div data-body="${esc(d.name)}"></div>
-    <figcaption>his body, live — it breathes with his energy, the spokes are his actual state morphing as he lives, arriving dots are real events flowing into the cell that ate them · click a cell to open it</figcaption></figure>
+    <figcaption>checkpoint cell projection — size and animation derive from stored numeric state; arriving dots show recent ledger transitions · click a cell to open it</figcaption></figure>
     <div class="prose">${proseHTML(d)}</div>
     <div class="prov">${esc(d.prov)}</div>
-    ${d.journal !== null ? `<details class="journal"><summary>his journal (his own words, from receipts)</summary><pre>${esc(d.journal)}</pre></details>` : ''}
+    <div class="journalmount">${journalHTML(d)}</div>
   </section>`;
 }
 
 function withFragments(d: IndividualData): Record<string, unknown> {
-  return { ...d, beingHTML: esc(d.being), proseHTML: proseHTML(d), provHTML: esc(d.prov), chipHTML: chipHTML(d), pulseHTML: pulseHTML(d), crossingHTML: crossingHTML(d) };
+  return { ...d, beingHTML: esc(d.being), proseHTML: proseHTML(d), provHTML: esc(d.prov), chipHTML: chipHTML(d), pulseHTML: pulseHTML(d), crossingHTML: crossingHTML(d), freshnessHTML: freshnessHTML(d), growthHTML: growthHTML(d), journalHTML: journalHTML(d) };
 }
 
 function apiPayload(): string {
-  const individuals = specs.map((spec) => {
-    const d = computeIndividual(spec);
-    return d === null ? { name: spec.name, cells: [], flows: [], assoc: [], maxGen: 1 } : withFragments(d);
-  });
-  return JSON.stringify({ individuals, vitalsHTML: vitalsHTML(), at: new Date().toISOString() });
+  const data = specs.map(computeIndividual).filter((d): d is IndividualData => d !== null);
+  return JSON.stringify({ individuals: data.map(withFragments), vitalsHTML: vitalsHTML(), boardHTML: renderBoard(data), at: new Date().toISOString() });
 }
 
 function page(): string {
@@ -941,7 +893,7 @@ function page(): string {
   blockquote.thought { margin:0; padding:10px 14px; border-left:3px solid #c795f0; background:#151b26; border-radius:10px; font-size:14.5px; color:#d7dde6; }
   .pills { display:flex; flex-wrap:wrap; gap:7px; }
   .pill { font-size:12.5px; padding:5px 11px; border-radius:999px; background:#151b26; border:1px solid #232c3d; color:#aeb9c9; }
-  .pill-right { border-color:#1f4030; color:#69d58c; }
+  .pill-right, .pill-assessed { border-color:#263043; color:#aeb9c9; }
   .pill-wrong { border-color:#4a2020; color:#e0653a; }
   .pill-partial { border-color:#443a1e; color:#e0a458; }
   .pill-open { border-style:dashed; }
@@ -969,12 +921,13 @@ function page(): string {
   .who-house { color:#e6b450; font-weight:600; } .who-teaching { color:#c795f0; font-weight:600; } .who-lived { color:#7d8798; }
 </style></head><body>
 <h1>the terrarium</h1>
-<div class="pagesub">${specs.length} individuals, read live from their chains · the page breathes — you never refresh · looking changes nothing</div>
+<div class="pagesub">${specs.length} individuals, read-only projections · sources and timestamps shown below · updates every five seconds</div>
+<div id="connection-state" class="dim" role="status">Snapshot loaded; waiting for the next poll.</div>
 <div id="vitals-mount">${vitalsHTML()}</div>
 ${cards}
-${renderBoard()}
+<div id="board-mount">${renderBoard(data)}</div>
 <div id="drawer"></div>
-<footer>every number is read from a hash-chained ledger or its checkpoint — nothing here is state. individuals: ${specs.map((s) => esc(s.name)).join(' · ')}.</footer>
+<footer>Read-only evidence projection. Estimates and computed labels remain separate from verified outcomes. individuals: ${specs.map((s) => esc(s.name)).join(' · ')}.</footer>
 <script type="application/json" id="terrarium-data">${initial.replace(/</g, '\\u003c')}</script>
 <script>${CLIENT_JS}</script>
 </body></html>`;
@@ -988,21 +941,21 @@ const server = createServer((req, res) => {
       return;
     }
     if (req.url === '/api/terrarium') {
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' }).end(apiPayload());
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(apiPayload());
       return;
     }
     if (req.url === '/api/organs') {
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-        .end(JSON.stringify({ organs: sentinelResults, at: new Date().toISOString() }));
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+        .end(JSON.stringify({ organs: sentinelResults, checkedAt: sentinelCheckedAt, error: sentinelError || null }));
       return;
     }
     if (req.url !== undefined && req.url !== '/' && req.url !== '/index.html') {
       res.writeHead(404, { 'content-type': 'text/plain' }).end('not found');
       return;
     }
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(page());
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(page());
   } catch (error) {
-    res.writeHead(500, { 'content-type': 'text/plain' }).end(`observatory error: ${(error as Error).message}`);
+    res.writeHead(500, { 'content-type': 'text/plain', 'cache-control': 'no-store' }).end(`observatory error: ${(error as Error).message}`);
   }
 });
 server.listen({ port, host: process.env.HOME23_PRODUCT_HOST === 'true' ? '127.0.0.1' : undefined }, () => {

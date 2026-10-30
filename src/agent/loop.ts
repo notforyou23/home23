@@ -307,7 +307,7 @@ function normalizeXaiToolSchema(value: unknown): unknown {
   return normalized;
 }
 
-function buildXaiResponseTools(registry: ToolRegistry): XaiResponseTool[] {
+function buildXaiResponseTools(registry: ToolRegistry, nativeAllowed: boolean): XaiResponseTool[] {
   const localTools = (registry.getOpenAITools() as OpenAIFunctionTool[])
     // Avoid a name collision with xAI's native web_search tool.
     .filter((tool) => tool.function.name !== 'web_search')
@@ -318,7 +318,7 @@ function buildXaiResponseTools(registry: ToolRegistry): XaiResponseTool[] {
       parameters: normalizeXaiToolSchema(tool.function.parameters ?? null),
     }));
 
-  return [...XAI_SERVER_TOOLS, ...localTools];
+  return [...(nativeAllowed ? XAI_SERVER_TOOLS : []), ...localTools];
 }
 
 function getXaiServerToolName(itemType: string | undefined): string | null {
@@ -2511,7 +2511,11 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               }
             }
 
-            const xaiTools = buildXaiResponseTools(registry);
+            // Native provider tools do not pass through registry.execute(). A
+            // restricted registry or chat must never acquire this side channel.
+            const nativeServerToolsAllowed = !/^(?:proposer|worker|inspection):/.test(chatId)
+              && registry.allowsNativeServerTools?.() === true;
+            const xaiTools = buildXaiResponseTools(registry, nativeServerToolsAllowed);
 
             const initialInput: Array<Record<string, unknown>> = [
               ...(sysText ? [{ role: 'system', content: sysText }] : []),
@@ -2618,6 +2622,15 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   } else {
                     const toolName = getXaiServerToolNameFromItem(item);
                     if (toolName) {
+                      if (!nativeServerToolsAllowed) {
+                        const code = chatId.startsWith('inspection:') ? 'inspection_authority_refused' : 'restricted_native_tool_refused';
+                        onEvent?.({ type: 'tool_result', tool: toolName,
+                          toolCallId: typeof item?.id === 'string' ? item.id : 'refused-native-tool',
+                          result: 'Native provider tool refused for restricted registry or chat.',
+                          exactResult: JSON.stringify({ code, tool: toolName }), success: false,
+                          sourceEventType: 'response.output_item.done' });
+                        throw Object.assign(new Error('native provider tool refused for restricted registry or chat'), { code });
+                      }
                       toolCallCount++;
                       const toolCallId = typeof item?.id === 'string' && item.id
                         ? item.id

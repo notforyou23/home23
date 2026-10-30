@@ -15,6 +15,7 @@
 'use strict';
 
 const { parseWithFallback } = require('../core/json-repair');
+const { hasBoundedIntent, normalizeBoundedAgendaIntent, boundedIntentForItem } = require('./bounded-intent');
 
 const DEFAULT_CONFIG = {
   maxTokens: 2500,
@@ -97,7 +98,7 @@ Output format (STRICT — JSON inside a markdown code block, no prose outside):
   "rationale": "<1-3 sentences explaining why>",
   "gaps": ["<specific gap>", "..."],
   "agendaCandidates": [
-    { "content": "<1-2 sentence actionable item>", "kind": "decision" | "question" | "idea", "topicTags": ["..."] }
+    { "content": "<1-2 sentence inspection or verification>", "kind": "decision" | "question" | "idea", "topicTags": ["..."], "boundedIntent": { "schema": "home23.bounded-agenda-intent.v1", "operation": "inspect" | "verify", "targetRef": "<one exact supplied reference>", "question": "<specific question to answer>", "expectedEvidence": "<what observable evidence answers it>", "stopCondition": "<when to stop, including unavailable evidence>", "evidenceRefs": ["<exact supplied references, including targetRef>"] } }
   ],
   "ownerOutreach": null | { "category": "question" | "insight" | "action", "text": "<message in the resident's voice>", "reason": "<why this is worth contacting the owner now>", "evidenceRefs": ["<exact supplied reference>"], "attention": { "kind": "problem" | "recovery" | "progress" | "decision" | "connection", "consequence": "<specific grounded consequence making contact worthwhile>", "evidenceRefs": ["<subset of this message's exact references supporting that consequence>"] } },
   "residentInitiative": null | { "purpose": "action" | "exploration" | "question", "scope": "private_research" | "private_artifact" | "verification", "why": "<why this specific move is worthwhile now>", "nextMove": "<one bounded move with a named subject or artifact>", "stopCondition": "<what ends this move, including uncertainty or unavailable evidence>", "evidenceRefs": ["<exact supplied reference>"] }
@@ -116,9 +117,10 @@ Rules:
 - agendaCandidates: ONLY on verdict "keep". Extract things that warrant jtr's attention — decisions to make, questions worth answering, concrete next-step ideas. MUST be [] on "discard" or "revise". 0-3 items typical. Each item: 1-2 short sentences, actionable, reference specific graph material where relevant. Leave agendaCandidates: [] if nothing genuinely actionable emerged — not every kept thought needs an agenda item.
 - Do NOT emit agendaCandidates for broad theory prompts, graph archaeology, or open-ended "consider/explore/map/trace" questions unless they cash out into a named decision, a bounded investigation against a specific artifact, or a direct question to jtr that would change what gets built next.
 - Prefer no agenda item over a vague one. If the thought is mainly interpretive/philosophical framing, agendaCandidates should usually be [].
-- For Home23 specifically: agendaCandidates should overwhelmingly be operational. Good examples: fix a broken bridge, verify a stale sensor, resolve a recurring SyntaxError, audit a specific cron/process/log/API mismatch, or ask jtr for a decision that changes what gets built now. Bad examples: "follow this node", "map the mythology", "trace this theme", "answer what Home23 really is", "consider whether absence means X".
-- A node id by itself is NOT enough to justify an agenda item. "Investigate node 77762" is only valid if tied to a concrete operational failure mode, artifact, or fix path.
-- If the thought is fresh research, speculative synthesis, philosophy, or worldbuilding, keep the thought if it deserves to be kept — but agendaCandidates should be [].
+- These references identify supplied material, not owner permissions. Prefer a stable memory or observed target reference for repeat inspections; do not substitute a fresh call identifier for the same target.
+- New agendaCandidates require boundedIntent. This is an inspection-only path: it can read and verify evidence, not edit schedules, repair production, restart services, write files, publish, spend, contact people or delegate unrestricted work. It grants no owner authority. Use only exact references supplied below; targetRef must also appear in evidenceRefs. Invented references are refused.
+- Useful checks are not limited to machine maintenance. Verifying the owner's existing daily briefing or weekend schedule can qualify, as can checking an actual ledger, artifact or process snapshot. Name one grounded subject, the evidence to inspect, the question it answers and a stopping point. A node id without a specific question is not enough. Silence remains available.
+- For a new private research or artifact move use residentInitiative and its existing authority path. For an owner decision or conversational question use ownerOutreach. Do not disguise a mutation as inspection or duplicate the same responsibility across these paths.
 - ownerOutreach is a separate, optional conversational act, independent of tasks, predictions, and agendaCandidates. Only on an explicit keep, propose a question worth asking, an insight worth sharing, or a concrete next action to discuss. Do not require every thought to be sent. Silence remains available.
 - Outreach must use the actual conversation/material and exact references supplied below, with a concrete reason to contact the owner. Preserve uncertainty and historical/source labels. Never present a failed, superseded, or unverified hypothesis as a current fact. A tentative connection may be shared as a tentative connection. An action proposal is not a claim of completed work.
 - Do not repeat an earlier outreach without new relevant evidence or owner contact. If the source does not support a useful message, set ownerOutreach to null. Never invent a source reference. MUST be null on revise or discard.
@@ -177,7 +179,7 @@ IMPORTANT: do not penalize the thought for lacking cross-partition connections. 
 
     const materialBlock = args.materialContext ? `## Source material and authority labels\n${args.materialContext}` : '';
     const livedBlock = args.livedContext ? `## Lived context and correction history (respect uncertainty and failure labels)\n${args.livedContext}` : '';
-    const outreachBlock = `## Permitted outreach evidence references\n${(args.outreachEvidenceRefs || []).join('\n') || '(none; do not propose outreach)'}`;
+    const outreachBlock = `## Permitted source references for inspection, outreach and resident initiative\n${(args.outreachEvidenceRefs || []).join('\n') || '(none; do not propose a sourced action or outreach)'}`;
     const recentOutreachBlock = (args.recentOutreach || []).length
       ? `## Recent owner outreach (delivery state, not proof it was read)\n${args.recentOutreach.map(item => `${item.status}: ${item.text}\nBasis: ${(item.evidenceRefs || []).join(', ')}`).join('\n\n')}` : '';
     const attentionBlock = args.ownerAttentionContext ? `## Durable owner attention history and current condition\n${args.ownerAttentionContext}` : '';
@@ -225,11 +227,18 @@ ${args.thought || '(empty thought)'}`;
     if (verdict === 'keep' && Array.isArray(parsed?.agendaCandidates)) {
       agendaCandidates = parsed.agendaCandidates
         .filter(a => a && typeof a === 'object' && typeof a.content === 'string' && a.content.trim().length > 0)
-        .map(a => ({
-          content: String(a.content).trim(),
-          kind: ['decision', 'question', 'idea'].includes(a.kind) ? a.kind : 'idea',
-          topicTags: Array.isArray(a.topicTags) ? a.topicTags.filter(t => typeof t === 'string') : [],
-        }))
+        .map(a => {
+          const normalized = { content: String(a.content).trim(),
+            kind: ['decision', 'question', 'idea'].includes(a.kind) ? a.kind : 'idea',
+            topicTags: Array.isArray(a.topicTags) ? a.topicTags.filter(t => typeof t === 'string') : [] };
+          // Compatibility belongs to already-stored agenda records. A fresh
+          // model cannot omit this envelope to obtain legacy repair authority.
+          if (!hasBoundedIntent(a)) return null;
+          const intent = normalizeBoundedAgendaIntent(a.boundedIntent, args.outreachEvidenceRefs);
+          if (!intent) return null; // A malformed typed proposal never falls back to repair authority.
+          return { ...normalized, boundedIntent: intent, intentEvidenceRefs: [...new Set(args.outreachEvidenceRefs)] };
+        })
+        .filter(Boolean)
         .filter(a => this._isActionableAgendaCandidate(a));
     }
 
@@ -263,6 +272,7 @@ ${args.thought || '(empty thought)'}`;
     if (!item || typeof item.content !== 'string') return false;
     const text = item.content.trim();
     if (text.length < 24) return false;
+    if (hasBoundedIntent(item)) return !!boundedIntentForItem(item);
 
     const lower = text.toLowerCase();
     const operationalAnchor = /(?:api\b|endpoint\b|dashboard\b|shortcut\b|health\b|sauna\b|pressure\b|sensor\b|bridge\b|pipeline\b|correlation\b|cron\b|pm2\b|process\b|syntaxerror\b|log\b|config\b|workflow\b|harness\b|chrome cdp\b|disk\b|port\b|recent\.md\b|heartbeat\.md\b|run-intraday-review\.js\b|brain-housekeeping\b|node count\b|regression\b)/i.test(text);

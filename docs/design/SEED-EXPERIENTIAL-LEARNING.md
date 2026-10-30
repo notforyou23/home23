@@ -194,3 +194,7 @@ actual permitted values for a same-turn retry. The direct-request exclusion is
 the selector tag `requested`, not a prose description. Native source projection
 and final Seed application remain distinct stages; a projected entry is not an
 applied lesson.
+
+The [Terrarium and action evidence contract](TERRARIUM-ACTION-EVIDENCE.md) covers
+bounded diagnostic proposals, enforced inspection capabilities, native terminal
+outcome feedback, neutral routing telemetry and the observatory's evidence view.

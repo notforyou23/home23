@@ -635,6 +635,89 @@ function buildDashboardProcessIdentity(server) {
   };
 }
 
+function receiveLiveProblemFixRecipe(server, req, res, { liveProblemTarget, loadLiveProblems, saveLiveProblems, normalizeDispatchOutcome, normalizeVerifierStatus }) {
+  try {
+    const targetAgent = liveProblemTarget(req);
+    const targetContext = server.getHome23AgentContext(targetAgent);
+    const data = loadLiveProblems(targetAgent);
+    const list = data.problems || [];
+    const idx = list.findIndex(x => x.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ error: 'not found' });
+    const {
+      summary,
+      turnId,
+      toolCallCount,
+      durationMs,
+      dispatchOutcome,
+      verifierStatus,
+    } = req.body || {};
+    if (!summary || typeof summary !== 'string') {
+      return res.status(400).json({ error: 'summary (string) required' });
+    }
+    const p = list[idx];
+    let inspectionTerminal = null;
+    if (Object.hasOwn(p, 'inspection')) {
+      const { validInspectionCompletion, readInspectionTerminal } = require('../cognition/agenda-learning');
+      const expectedToken = loadQueryNotebookBridgeToken({ home23Root: targetContext.home23Root,
+        requesterAgent: targetContext.agentName }) || process.env.BRIDGE_TOKEN || process.env.HOME23_BRIDGE_TOKEN || '';
+      if (!validInspectionCompletion(p, req.body, { expectedToken, authorization: req.headers?.authorization })) {
+        return res.status(409).json({ error: 'inspection completion requires bridge authority and the exact native terminal receipt' });
+      }
+      inspectionTerminal = readInspectionTerminal(p);
+      const prior = (p.fixRecipeHistory || []).find(entry => entry.inspectionExecutionId === p.inspectionExecution.executionId
+        && entry.inspectionTerminalDigest === inspectionTerminal.terminalDigest);
+      if (prior) return res.json({ ok: true, fixRecipe: prior });
+    }
+    const recipe = {
+      at: inspectionTerminal?.endedAt || new Date().toISOString(),
+      summary: String(summary).slice(0, 2000),
+      turnId: turnId || null,
+      toolCallCount: typeof toolCallCount === 'number' ? toolCallCount : null,
+      durationMs: typeof durationMs === 'number' ? durationMs : null,
+      dispatchOutcome: normalizeDispatchOutcome(dispatchOutcome),
+      verifierStatus: normalizeVerifierStatus(verifierStatus),
+      ...(inspectionTerminal ? {
+        inspectionExecutionId: p.inspectionExecution.executionId,
+        inspectionCompletionSource: 'agent-loop-terminal',
+        inspectionTerminalDigest: inspectionTerminal.terminalDigest,
+        inspectionCompletedAt: inspectionTerminal.endedAt,
+        executionStatus: inspectionTerminal.status === 'success' ? 'completed' : 'failed',
+        dispatchOutcome: 'unknown', verifierStatus: 'unknown',
+        reportedDispatchOutcome: normalizeDispatchOutcome(req.body.reportedDispatchOutcome),
+        reportedVerifierStatus: normalizeVerifierStatus(req.body.reportedVerifierStatus),
+      } : {}),
+    };
+    const history = Array.isArray(p.fixRecipeHistory) ? p.fixRecipeHistory : [];
+    history.push(recipe);
+    // Keep last 5
+    p.fixRecipeHistory = history.slice(-5);
+    p.fixRecipe = recipe;  // shortcut — most recent
+    saveLiveProblems({ problems: list }, targetAgent);
+
+    // Preserve the distinction between inspection completion and a reported fix.
+    try {
+      const { appendSignal } = require('../cognition/signals');
+      appendSignal(targetContext.runtimeDir || server.logsDir || '', {
+        type: inspectionTerminal ? `inspection_${recipe.executionStatus}` : 'autonomous_fix',
+        source: 'agent-dispatch',
+        title: `${inspectionTerminal ? 'inspection' : 'agent fix'}: ${p.claim || p.id}`,
+        message: recipe.summary,
+        evidence: {
+          problemId: p.id,
+          turnId: recipe.turnId,
+          toolCallCount: recipe.toolCallCount,
+          durationMs: recipe.durationMs,
+        },
+      });
+    } catch (sigErr) {
+      console.warn(`[live-problems] fix-recipe signal emit failed: ${sigErr.message}`);
+    }
+    res.json({ ok: true, fixRecipe: recipe });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
 class DashboardServer {
   constructor(port = 3344, logsDir, options = {}) {
     if (!options || Array.isArray(options) || typeof options !== 'object') {
@@ -7407,65 +7490,9 @@ Be specific, actionable, and maintain research continuity.`;
     //   2. emit an autonomous_fix signal so the dashboard Signals tile shows it
     // Next time this problem re-opens, the engine's diagnose mission prompt
     // can include the prior recipe so the agent doesn't start from scratch.
-    this.app.post('/api/live-problems/:id/fix-recipe', (req, res) => {
-      try {
-        const targetAgent = liveProblemTarget(req);
-        const targetContext = this.getHome23AgentContext(targetAgent);
-        const data = loadLiveProblems(targetAgent);
-        const list = data.problems || [];
-        const idx = list.findIndex(x => x.id === req.params.id);
-        if (idx < 0) return res.status(404).json({ error: 'not found' });
-        const {
-          summary,
-          turnId,
-          toolCallCount,
-          durationMs,
-          dispatchOutcome,
-          verifierStatus,
-        } = req.body || {};
-        if (!summary || typeof summary !== 'string') {
-          return res.status(400).json({ error: 'summary (string) required' });
-        }
-        const recipe = {
-          at: new Date().toISOString(),
-          summary: String(summary).slice(0, 2000),
-          turnId: turnId || null,
-          toolCallCount: typeof toolCallCount === 'number' ? toolCallCount : null,
-          durationMs: typeof durationMs === 'number' ? durationMs : null,
-          dispatchOutcome: normalizeDispatchOutcome(dispatchOutcome),
-          verifierStatus: normalizeVerifierStatus(verifierStatus),
-        };
-        const p = list[idx];
-        const history = Array.isArray(p.fixRecipeHistory) ? p.fixRecipeHistory : [];
-        history.push(recipe);
-        // Keep last 5
-        p.fixRecipeHistory = history.slice(-5);
-        p.fixRecipe = recipe;  // shortcut — most recent
-        saveLiveProblems({ problems: list }, targetAgent);
-
-        // Emit an autonomous_fix signal so the dashboard Signals tile shows it.
-        try {
-          const { appendSignal } = require('../cognition/signals');
-          appendSignal(targetContext.runtimeDir || this.logsDir || '', {
-            type: 'autonomous_fix',
-            source: 'agent-dispatch',
-            title: `agent fix: ${p.claim || p.id}`,
-            message: recipe.summary,
-            evidence: {
-              problemId: p.id,
-              turnId: recipe.turnId,
-              toolCallCount: recipe.toolCallCount,
-              durationMs: recipe.durationMs,
-            },
-          });
-        } catch (sigErr) {
-          console.warn(`[live-problems] fix-recipe signal emit failed: ${sigErr.message}`);
-        }
-        res.json({ ok: true, fixRecipe: recipe });
-      } catch (err) {
-        res.status(500).json({ error: err.message });
-      }
-    });
+    this.app.post('/api/live-problems/:id/fix-recipe', (req, res) => receiveLiveProblemFixRecipe(this, req, res, {
+      liveProblemTarget, loadLiveProblems, saveLiveProblems, normalizeDispatchOutcome, normalizeVerifierStatus,
+    }));
 
     // Dry-run a verifier spec without writing anything. Promoter uses this
     // to test LLM-proposed verifiers before committing them to the registry.
@@ -12502,6 +12529,7 @@ if (require.main === module) {
 
 module.exports = {
   DashboardServer,
+  receiveLiveProblemFixRecipe,
   PROCESS_IDENTITY_ROUTE,
   buildDashboardProcessIdentity,
   registerProcessIdentityRoute,

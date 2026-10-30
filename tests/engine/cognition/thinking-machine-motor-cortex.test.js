@@ -18,11 +18,15 @@ test('kept thinking-machine agenda candidates are routed to motor cortex before 
     content: 'Investigate the 182-second field report cycle; verify whether a cron partition is stalled.',
     kind: 'question',
     topicTags: ['ops'],
+    boundedIntent: { schema: 'home23.bounded-agenda-intent.v1', operation: 'inspect', targetRef: 'memory:node-1',
+      question: 'Which part of the observed field report cycle is taking 182 seconds?',
+      expectedEvidence: 'The current bounded report timing evidence.', stopCondition: 'Report observed timing or unavailable evidence; make no changes.',
+      evidenceRefs: ['memory:node-1'] },
   };
 
   const machine = new ThinkingMachine({
     unifiedClient: {},
-    memory: {},
+    memory: { nodes: new Map([['node-1', { id: 'node-1', concept: 'The field report took 182 seconds.' }]]) },
     discoveryEngine: { pop: () => [] },
     logger,
     emitThought: (thought) => emitted.push(thought),
@@ -89,6 +93,7 @@ test('kept thinking-machine agenda candidates are routed to motor cortex before 
           content: agendaRecord.content,
           kind: agendaRecord.kind,
           topicTags: agendaRecord.topicTags,
+          boundedIntent: agendaRecord.boundedIntent,
         }],
       };
     },

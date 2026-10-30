@@ -18,6 +18,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { hasBoundedIntent, boundedIntentForItem, sameBoundedIntent } = require('./bounded-intent');
 
 const VALID_STATUSES = new Set(['candidate', 'surfaced', 'acknowledged', 'acted_on', 'stale', 'discarded']);
 
@@ -117,6 +118,7 @@ class AgendaStore {
       content,
       kind: params.kind || 'idea',
       topicTags: Array.isArray(params.topicTags) ? params.topicTags : [],
+      ...(hasBoundedIntent(params) ? { boundedIntent: params.boundedIntent, intentEvidenceRefs: params.intentEvidenceRefs } : {}),
     });
 
     if (!this._passesAgendaPolicy(incoming, params)) {
@@ -149,6 +151,7 @@ class AgendaStore {
       sourceSignal: params.sourceSignal || null,
       referencedNodes: Array.isArray(params.referencedNodes) ? params.referencedNodes : [],
       temporalContext: params.temporalContext || null,
+      ...(incoming.boundedIntent ? { boundedIntent: incoming.boundedIntent, intentEvidenceRefs: [...params.intentEvidenceRefs] } : {}),
       createdAt: now,
       updatedAt: now,
       lastSeenAt: now,
@@ -388,6 +391,13 @@ class AgendaStore {
       if (Array.isArray(evt.topicTags) && evt.topicTags.length > 0) {
         rec.topicTags = Array.from(new Set([...(rec.topicTags || []), ...evt.topicTags]));
       }
+      if (hasBoundedIntent(evt)) {
+        const intent = boundedIntentForItem(evt);
+        if (intent && sameBoundedIntent(rec.boundedIntent, intent)) {
+          rec.boundedIntent = intent;
+          rec.intentEvidenceRefs = [...evt.intentEvidenceRefs];
+        }
+      }
       this._hydrateRecord(rec);
     } else if (evt.type === 'status' && evt.id) {
       const rec = this.items.get(evt.id);
@@ -427,6 +437,7 @@ class AgendaStore {
     const topicTags = Array.isArray(params.topicTags) ? Array.from(new Set(params.topicTags.filter(Boolean))) : [];
     return {
       content: String(params.content || '').trim(),
+      ...(hasBoundedIntent(params) ? { boundedIntent: boundedIntentForItem(params), intentEvidenceRefs: params.intentEvidenceRefs } : {}),
       kind,
       topicTags,
       normContent: this._normalizeContent(params.content || ''),
@@ -499,6 +510,8 @@ class AgendaStore {
   }
 
   _similarityScore(a, b) {
+    // Similar prose is not authority to merge different inspection scopes.
+    if (!sameBoundedIntent(a.boundedIntent, b.boundedIntent)) return 0;
     const normA = a.normContent || a._normContent || '';
     const normB = b.normContent || b._normContent || '';
     if (!normA || !normB) return 0;
@@ -548,6 +561,10 @@ class AgendaStore {
     rec.referencedNodes = Array.from(new Set([...(rec.referencedNodes || []), ...(Array.isArray(params.referencedNodes) ? params.referencedNodes : [])]));
     if (params.sourceSignal) rec.sourceSignal = params.sourceSignal;
     if (params.temporalContext) rec.temporalContext = params.temporalContext;
+    if (envelope.boundedIntent) {
+      rec.boundedIntent = envelope.boundedIntent;
+      rec.intentEvidenceRefs = [...params.intentEvidenceRefs];
+    }
     this._hydrateRecord(rec);
     this._appendEvent({
       type: 'merge',
@@ -558,6 +575,7 @@ class AgendaStore {
       referencedNodes: rec.referencedNodes,
       sourceThoughtId: rec.sourceThoughtId,
       sourceCycleSessionId: rec.sourceCycleSessionId,
+      ...(rec.boundedIntent ? { boundedIntent: rec.boundedIntent, intentEvidenceRefs: rec.intentEvidenceRefs } : {}),
     });
   }
 
@@ -661,6 +679,9 @@ class AgendaStore {
   _passesAgendaPolicy(envelope, params = {}) {
     const text = String(envelope.content || '').trim();
     if (!text) return false;
+    if (hasBoundedIntent(envelope) || hasBoundedIntent(params)) {
+      return !!boundedIntentForItem(hasBoundedIntent(params) ? params : envelope);
+    }
 
     const lower = text.toLowerCase();
     const sourceSignal = String(params.sourceSignal || envelope.sourceSignal || '').toLowerCase();

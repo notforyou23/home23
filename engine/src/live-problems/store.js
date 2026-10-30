@@ -37,6 +37,7 @@ const {
 } = require('../evidence/evidence-v1');
 const { EventLedger } = require('../core/event-ledger');
 const { TrustKernel } = require('../trust/trust-kernel');
+const { projectInspectionTerminal, readInspectionTerminal } = require('../cognition/agenda-learning');
 
 const RESOLVED_KEEP_MS = 24 * 60 * 60 * 1000;   // keep resolved 24h so pulse can mention once
 const CHRONIC_AFTER_MS = 6 * 60 * 60 * 1000;    // open >6h with no progress → chronic
@@ -180,7 +181,7 @@ class LiveProblemStore {
       const list = raw.problems || [];
       this.problems.clear();
       for (const p of list) this.problems.set(p.id, p);
-      const reconciled = this._reconcileAgendaHandoffs();
+      const reconciled = this._projectInspectionExecutions() + this._reconcileAgendaHandoffs();
       this.logger.info?.(`[live-problems] loaded ${this.problems.size} problems`);
       if (reconciled > 0) {
         this.save();
@@ -200,7 +201,13 @@ class LiveProblemStore {
     try {
       if (!fs.existsSync(this.filePath)) return false;
       const stat = fs.statSync(this.filePath);
-      if (stat.mtimeMs === this._lastLoadMtimeMs) return false;
+      if (stat.mtimeMs === this._lastLoadMtimeMs) {
+        // Native conversation completion can outlive a lost HTTP callback.
+        // Poll the exact dispatched journals even when this JSON did not change.
+        const recovered = this._projectInspectionExecutions();
+        if (recovered) this.save();
+        return recovered > 0;
+      }
       this.load();
       return true;
     } catch {
@@ -218,6 +225,25 @@ class LiveProblemStore {
     } catch (err) {
       this.logger.warn?.(`[live-problems] save failed: ${err.message}`);
     }
+  }
+
+  _projectInspectionExecutions() {
+    let changed = 0;
+    for (const problem of this.problems.values()) {
+      if (!problem.inspectionExecution || problem.inspectionExecution.terminalDigest) continue;
+      try {
+        const terminal = readInspectionTerminal(problem);
+        if (!terminal || !projectInspectionTerminal(this.brainDir, problem)) continue;
+        applyAgendaHandoffTerminal(problem, { outcome: terminal.status === 'success' ? 'inspection_completed' : 'inspection_failed',
+          source: 'native_execution', detail: terminal.status === 'success'
+            ? 'Inspection execution completed; findings and world outcome require their own evidence.'
+            : 'Inspection execution ended unsuccessfully; no world repair claimed.', terminalAt: terminal.endedAt });
+        changed++;
+      } catch (error) {
+        this.logger.warn?.('[live-problems] inspection outcome projection pending', { problemId: problem.id, error: error.message });
+      }
+    }
+    return changed;
   }
 
   /**
@@ -536,6 +562,7 @@ class LiveProblemStore {
     const now = this._touch(p);
     p.dispatchedAt = now;
     p.dispatchedTurnId = turnId || null;
+    if (p.inspectionExecution && turnId) p.inspectionExecution.turnId = turnId;
     this.save();
   }
 

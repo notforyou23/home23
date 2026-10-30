@@ -32,6 +32,8 @@ const { buildTemporalContext } = require('./temporal-context');
 const { DiscoveryEngine } = require('../cognition/discovery-engine');
 const { ThinkingMachine } = require('../cognition/thinking-machine');
 const { MotorCortex } = require('../cognition/motor-cortex');
+const { hasBoundedIntent, boundedIntentForItem } = require('../cognition/bounded-intent');
+const { prepareAgendaInspection } = require('../cognition/agenda-learning');
 const { ConversationSalience } = require('../cognition/conversation-salience');
 
 // Evidence Receipt Trail — Cryptographic Evidence Schema
@@ -1172,10 +1174,12 @@ class Orchestrator {
         this.agendaStore = brainDir ? new AgendaStore({ brainDir, logger: this.logger }) : null;
         if (this.agendaStore) this.agendaStore.startDecayReview();
         this.motorCortex = new MotorCortex({
+          autonomousOptional: true,
           agendaStore: this.agendaStore,
           logger: this.logger,
           executeAgendaItem: (item, opts = {}) => this.executeAgendaItem(item, opts),
-          canAct: (item) => Boolean(this.inferAgendaAction(item) || this.isBoundedOperationalAgendaItem(item)),
+          canAct: (item) => hasBoundedIntent(item) ? !!boundedIntentForItem(item)
+            : Boolean(this.inferAgendaAction(item) || this.isBoundedOperationalAgendaItem(item)),
         });
         this.thinkingMachine = this.createThinkingMachine({
           unifiedClient: pipelineClient,
@@ -8714,6 +8718,7 @@ class Orchestrator {
   }
 
   isBoundedOperationalAgendaItem(item) {
+    if (hasBoundedIntent(item)) return !!boundedIntentForItem(item);
     const text = String(item?.content || '').trim();
     if (!text) return false;
     if (/\bask jtr\b|\bjtr needs to pick\b|\bjtr should decide\b/i.test(text)) return false;
@@ -8733,13 +8738,32 @@ class Orchestrator {
     const now = new Date().toISOString();
     const problemId = `agenda_${String(item.id || Date.now()).replace(/[^a-z0-9_-]+/gi, '_')}`;
     const existing = this.liveProblems.store.get(problemId);
+    const inspection = hasBoundedIntent(item) ? boundedIntentForItem(item) : null;
+    if (inspection && existing && JSON.stringify(existing.inspection) !== JSON.stringify(inspection)) {
+      throw new Error('existing diagnostic has a different inspection scope; no authority downgrade or replay');
+    }
+    if (inspection && existing?.handoff?.status === 'terminal') return {
+      directAction: false, action: 'diagnose_agenda', target: problemId, problemId, turnId: null,
+      status: 'not_attempted', detail: 'inspection handoff is already terminal; no redispatch',
+    };
 
     if (!existing) {
-      const budgetHours = 4;
+      const prepared = inspection ? prepareAgendaInspection({ brainDir: this.logsDir,
+        workspaceDir: process.env.COSMO_WORKSPACE_PATH,
+        conversationsDir: opts.conversationsDir,
+        agentName: opts.agentName || process.env.HOME23_AGENT || this.config?.agent?.name || 'agent',
+        problemId, agendaId: item.id, intent: inspection,
+        autonomousOptional: opts.autonomousOptional === true, ownerRequested: opts.ownerRequested === true || opts.actor === 'owner',
+        criticalRecovery: opts.criticalRecovery === true, readLearning: opts.readLearning }) : null;
+      if (prepared && !prepared.admitted) return { directAction: false, action: 'diagnose_agenda', target: problemId,
+        problemId, turnId: null, status: 'not_attempted', detail: prepared.detail, learning: prepared.learning };
+      const budgetHours = inspection ? 1 / 6 : 4;
       this.liveProblems.store.upsert({
         id: problemId,
         problemKind: 'agenda_handoff',
         seedOrigin: 'agenda',
+        ...(inspection ? { inspection, inspectionEvidenceRefs: [...item.intentEvidenceRefs],
+          inspectionExecution: { executionId: prepared.receipt.executionId, receipt: prepared.receipt } } : {}),
         claim: `Agenda action: ${String(item.content || '').slice(0, 500)}`,
         handoff: {
           status: 'pending',
@@ -8754,6 +8778,19 @@ class Orchestrator {
           { type: 'dispatch_to_agent', args: { budgetHours }, cooldownMin: 0 },
         ],
       });
+    }
+
+    if (inspection) {
+      // The consumer and its eventual native terminal must retain the exact
+      // original execution witness across process restarts before any dispatch.
+      const current = this.liveProblems.store.get(problemId);
+      let durable;
+      try { durable = JSON.parse(await fs.readFile(this.liveProblems.store.filePath, 'utf8')).problems.find(p => p.id === problemId); }
+      catch { /* Fail closed when the store swallowed a persistence error. */ }
+      if (!durable || JSON.stringify(durable.inspectionExecution) !== JSON.stringify(current.inspectionExecution)
+        || JSON.stringify(durable.inspection) !== JSON.stringify(inspection)) {
+        throw new Error('durable inspection provenance unavailable; no diagnostic dispatched');
+      }
     }
 
     const processed = typeof this.liveProblems.processNow === 'function'
@@ -8816,6 +8853,9 @@ class Orchestrator {
     }
 
     const actor = opts.actor || 'agenda';
+    // A typed inspection never falls through to an inferred mutating ACT or
+    // to the legacy full-toolbox diagnostic, even if its prose names one.
+    if (hasBoundedIntent(item)) return this.enqueueAgendaDiagnostic(item, opts);
     if (item.sourceSignal === 'good-life' || opts.origin === 'good-life') {
       return this.recordGoodLifeAgendaAction(item, { ...opts, actor });
     }

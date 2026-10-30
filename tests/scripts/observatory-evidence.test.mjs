@@ -1,0 +1,153 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, realpathSync, mkdirSync, writeFileSync, readFileSync, appendFileSync, rmSync, truncateSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, relative, resolve } from 'node:path';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { createHash } from 'node:crypto';
+import { computeStateHash } from '../../substrate/src/checkpoint.ts';
+import { productRoleEnvironment } from '../../cli/lib/product-environment.js';
+import { seedOutreachDeliveryId } from '../../src/substrate/operator-outreach.ts';
+
+const sourceRoot = new URL('../../', import.meta.url);
+const hash = line => createHash('sha256').update(line).digest('hex');
+const jsonl = records => records.map(row => JSON.stringify(row)).join('\n')+'\n';
+function fixture(t) {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'observatory-evidence-http-')));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const root = join(home, 'app'), resident = join(root, 'instances/milo'), stateDir = join(resident, 'substrate/seed-01');
+  for (const dir of [stateDir, join(stateDir, 'checkpoints'), join(home, 'runtime'), join(root, 'cli/lib'), join(resident, 'brain'), join(root, 'config')]) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(root, 'package.json'), '{"type":"module"}');
+  writeFileSync(join(resident, 'config.yaml'), 'substrate:\n  enabled: true\nagency:\n  enabled: false\nengine:\n  architecture:\n    cognitionMode: thinking_machine\n');
+  writeFileSync(join(root, 'config/home.yaml'), 'agency:\n  enabled: true\n');
+  writeFileSync(join(root, 'config/base-engine.yaml'), 'architecture:\n  cognitionMode: legacy_roles\n');
+  const service = { name: 'shakedown-desk', executable: join(home, 'bin/node'), cwd: root, args: [join(root, 'external.js')], env: { ROLE_MARKER: 'continuation' }, stateRoots: [], startOnHomeStart: true };
+  const state = { schema: 'home23.host.v2', homeRoot: home, profile: { name: 'milo' }, encoderRequired: false,
+    ports: { coordination: 24010, engine: 24011, dashboard: 24012, mcp: 24013, bridge: 24014, evobrew: 24015, observatory: 24016 }, continuationServices: [service] };
+  writeFileSync(join(home, '.home23-host.json'), JSON.stringify(state), { mode: 0o600 });
+  const definition = (name, env, entry = 'engine/src/index.js') => ({ name, min_uptime: 100, script: relative(root, join(home, 'bin/node')), cwd: root, args: [join(root, entry)], env: productRoleEnvironment(home, env) });
+  const apps = [definition('home23-milo', { HOME23_AGENT: 'milo' }), definition('home23-milo-seed', { HOME23_AGENT: 'milo', SEED_STATE_DIR: stateDir, SEED_LOBE: '' }, 'substrate/bin/seed-runner.ts'),
+    { name: service.name, min_uptime: 100, script: service.executable, cwd: service.cwd, args: service.args, env: productRoleEnvironment(home, service.env) }];
+  writeFileSync(join(home, 'runtime/ecosystem.config.json'), JSON.stringify({ apps }), { mode: 0o600 });
+  const observed = apps.map(app => ({ name: app.name, pid: 100, pm2_env: { ...app.env, min_uptime: app.min_uptime, pm_exec_path: resolve(app.cwd, app.script), pm_cwd: app.cwd, args: app.args, status: 'online' } }));
+  // This is the actual guarded client's module boundary. It accepts jlist only,
+  // records requests, and never imports a supervisor or invokes a process tool.
+  writeFileSync(join(root, 'cli/lib/product-supervisor.js'), `import { appendFileSync } from 'node:fs';
+export async function productSupervisorCommand(home, args) {
+  if (home !== ${JSON.stringify(home)} || JSON.stringify(args) !== '["jlist"]') throw new Error('Unexpected control request');
+  appendFileSync(${JSON.stringify(join(home, 'commands.log'))}, JSON.stringify(args)+'\\n');
+  return { stdout: ${JSON.stringify(JSON.stringify(observed))} };
+}\n`);
+  return { home, root, resident, stateDir };
+}
+function writeSeed(f, { sparse = false } = {}) {
+  const now = Date.now(), at = new Date(now - 2000).toISOString();
+  const witness = { schema: 'home23.learning-decision.v1', decisionId: 'context:fixture-choice', scope: 'foreground.context', tags: ['operational', 'agency_status', 'automatic'], sourceRefs: ['surface:AGENCY_STATUS'], criterion: 'owner-value', observedAt: at };
+  const lesson = { lessonId: 'lesson-owner', scope: 'foreground.context', tags: ['operational', 'agency_status', 'automatic'], excludes: ['requested'], sourceRefs: ['owner-feedback:fixture'], value: -0.25, basis: 'owner-feedback', authority: 'owner', criterion: 'owner-value', createdAt: at, active: true, corroborations: 0 };
+  const development = { 'world.home23': { experience: { version: 1, decisions: [witness], lessons: [lesson], seenFeedbackIds: [], watermarks: {}, pendingFeedback: [] } } };
+  const makeConcern = (id, dueAt) => ({ commitmentId: id, kind: 'resolve-prediction', cellId: 'world.home23', predictionId: id, claim: id === 'future' ? 'Future obligation' : 'Closed old question', confidence: 0.8, authority: 'concern.v1', formedAt: at, formedAtSeq: 1, dueAt, qAnchor: 0, anchorAt: at, status: 'open', crossings: 0 });
+  const concern = { future: makeConcern('future', new Date(now + 10 * 3600_000).toISOString()), closed: makeConcern('closed', at) };
+  const stateHash = computeStateHash({ cells: [], dispositions: {}, development, concern });
+  let cursor = '', seq = 0; const lines = [];
+  const append = (category, sourceRef, payload, timestamp = at) => { const line = JSON.stringify({ seq: ++seq, prevHash: cursor, category, sourceRef, payload, issuedAt: timestamp, ...(seq === 1 ? { stateHashAfter: stateHash } : {}) }); lines.push(line); cursor = hash(line); return cursor; };
+  const anchor = append('checkpoint', 'checkpoint', {});
+  const cp = { schema: 'home23.seed.checkpoint.v1', version: 3, checkpointId: 'ckpt_fixture_00000001', ledgerSeq: 1, ledgerCursor: anchor, stateHash, createdAt: at, cells: [], dispositions: {}, development, concern };
+  append('lobe', 'lobe.fixture', { provider: 'old-provider', modelId: 'old-model', appliedDeltas: [{ delta: { claim: 'Earlier successful estimate' } }] });
+  append('lobe', 'lobe.fixture', { provider: 'current-provider', modelId: 'current-model', error: 'Current authentication failure' }, new Date(now).toISOString());
+  append('concern', 'concern.expiry', { commitmentId: 'closed', status: 'expired', reason: 'closed in fixture' });
+  append('proposal', 'growth.pressure', { op: 'crystallize', targetCellIds: ['world.home23'] });
+  const proposalSeq = seq;
+  append('act', 'growth.operator-decision', { proposalSeq, operatorDecision: 'declined' });
+  const ledger = join(f.stateDir, 'seed-ledger.jsonl');
+  writeFileSync(ledger, ''); if (sparse) truncateSync(ledger, 64 * 1024 * 1024);
+  appendFileSync(ledger, (sparse ? '\n' : '') + lines.join('\n') + '\n');
+  writeFileSync(join(f.stateDir, 'checkpoints', cp.checkpointId+'.json'), JSON.stringify(cp));
+  writeFileSync(join(f.stateDir, 'checkpoints/CHECKPOINT_INDEX.json'), JSON.stringify({ checkpoints: [{ checkpointId: cp.checkpointId, stateHash, ledgerSeq: 1 }] }));
+  const ask = { idempotencyKey: 'old-ask', actSeq: 2, commitmentId: 'closed', message: 'Already closed old request', dispatchedAt: at };
+  writeFileSync(join(f.stateDir, 'outbox.jsonl'), jsonl([ask]));
+  writeFileSync(join(f.stateDir, 'operator-outreach.json'), JSON.stringify({ receipts: [{ deliveryId: seedOutreachDeliveryId(ask), actSeq: ask.actSeq, commitmentId: ask.commitmentId, status: 'committed', messageIds: ['canonical-message'], at }] }));
+  writeFileSync(join(f.resident, 'substrate/conversation-stream.jsonl'), jsonl([{ ts: at, role: 'user', text: 'Keep machine details out of personal conversation <img src=x onerror="bad">' }]));
+  const decision = { event_id: witness.decisionId, event_type: 'LearningDecisionObserved', actor: 'assembly', session_id: 'session-fixture', timestamp: at, payload: { ...witness, choice: 'omit', relevant: true, explicit: false,
+    behavior: { kind: 'context-selection', surface: 'AGENCY_STATUS', component: 'routine-operational-status', description: 'Routine status' }, learning: { available: true, adjustment: -0.25, lessonIds: ['lesson-owner'] } } };
+  const retrieval = { event_id: 'retrieval-fixture', event_type: 'RetrievalExecuted', actor: 'assembly', session_id: 'session-fixture', timestamp: at, payload: { learningDecisionIds: [witness.decisionId], surfaces_selected: [], surfaces_loaded: [], surface_delivery: [] } };
+  const route = { event_id: 'route-fixture', event_type: 'MotorActionRouted', timestamp: at, payload: { routingVersion: 2, status: 'no_intent', reasonCode: 'no_intent', agendaId: 'agenda-fixture', turnId: 'turn-fixture' } };
+  writeFileSync(join(f.resident, 'brain/event-ledger.jsonl'), jsonl([decision, retrieval, route]));
+  return { cp, proposalSeq };
+}
+async function server(t, f, specs) {
+  const child = spawn(process.execPath, ['--import', 'tsx', 'substrate/bin/seed-observatory.ts'], { cwd: sourceRoot,
+    env: { PATH: '/usr/bin:/bin', HOME23_PRODUCT_HOST: 'true', HOME23_ROOT: f.root, OBSERVATORY_PORT: '0', OBSERVATORY_INDIVIDUALS: JSON.stringify(specs) }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stderr = ''; child.stderr.on('data', chunk => { stderr += chunk; });
+  const exited = once(child, 'exit'); const timer = setTimeout(() => child.kill('SIGKILL'), 4000);
+  t.after(async () => { clearTimeout(timer); child.kill('SIGKILL'); await exited; });
+  const port = await new Promise((resolvePort, reject) => { child.stdout.on('data', chunk => { const match = String(chunk).match(/on :(\d+)/); if (match) resolvePort(Number(match[1])); }); child.once('error', reject); child.once('exit', () => reject(new Error(`Observatory stopped: ${stderr}`))); });
+  return `http://127.0.0.1:${port}`;
+}
+test('actual HTTP projection separates current failure, closed ask, future due, durable learning and runtime delivery', { timeout: 8000 }, async t => {
+  const f = fixture(t); const { proposalSeq } = writeSeed(f);
+  const base = await server(t, f, [{ name: 'milo-seed', stateDir: f.stateDir, note: '" data-bad="escaped' }, { name: 'unavailable', stateDir: join(f.home, 'missing') }]);
+  const response = await fetch(base+'/api/terrarium'); assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');
+  const payload = await response.json(), d = payload.individuals[0], missing = payload.individuals[1];
+  assert.equal(d.lobe.status, 'failure'); assert.equal(d.lobe.model, 'current-model'); assert.match(d.proseHTML, /Current authentication failure/); assert.match(d.proseHTML, /Earlier successful estimate/);
+  assert.match(d.proseHTML, /due in 10.0h/); assert.doesNotMatch(d.proseHTML, /-\d+s ago/);
+  assert.equal(d.asks.length, 0); assert.equal(d.asksHistory[0].commitmentStatus, 'expired'); assert.doesNotMatch(d.proseHTML, /he reached for you/);
+  assert.equal(d.learning.available, true); assert.equal(d.learning.lessons[0].value, -0.25); assert.deepEqual(d.learning.lessons[0].excludes, ['requested']);
+  assert.equal(d.learning.choices[0].evidenceStatus, 'verified'); assert.equal(d.learning.choices[0].deliveryStatus, 'observed'); assert.equal(d.learning.choices[0].deliveredChars, 0);
+  assert.equal(missing.learning.available, false); assert.match(missing.freshnessHTML, /checkpoint unavailable/); assert.match(missing.chipHTML, /ledger unavailable/);
+  assert.equal(d.config.agency, 'disabled'); assert.equal(d.config.cognitionMode, 'thinking_machine'); assert.equal(d.routing.events[0].reasonCode, 'no_intent');
+  assert.equal(d.growthRecords[0].status, 'declined'); assert.equal(d.growthRecords[0].seq, proposalSeq); assert.match(d.freshnessHTML, /cells are 5 ledger events behind/);
+  assert.match(payload.vitalsHTML, /shakedown-desk/); assert.doesNotMatch(payload.vitalsHTML, /RUNTIME BINDING DIFFERS|pm2 unreadable/);
+  const htmlResponse = await fetch(base+'/'); const html = await htmlResponse.text(); assert.equal(htmlResponse.headers.get('cache-control'), 'no-store');
+  assert.doesNotMatch(html, /v2 migration|Teaching channel|\d+ of 20/); assert.match(html, /&lt;img src=x onerror=&quot;bad&quot;&gt;/); assert.doesNotMatch(html, /<img src=x/);
+  assert.match(html, /setHTML\(card, '\.growthmount', ni.growthHTML\)/); assert.match(html, /setHTML\(card, '\.freshnessmount', ni.freshnessHTML\)/); assert.match(html, /Projection stale:/); assert.match(html, /details\[open\]/);
+  // Change a runtime source between polls. Every derived fragment is recomposed.
+  appendFileSync(join(f.resident, 'brain/event-ledger.jsonl'), jsonl([{ event_id: 'execution-next', event_type: 'ExecutionOutcomeObserved', timestamp: new Date().toISOString(), payload: { schema: 'home23.execution-outcome.v1', status: 'failed', executionAttempted: true, taskOutcomeVerified: false, executionId: 'execution-next', detail: 'Actual tool boundary failure' } }]));
+  const updated = await (await fetch(base+'/api/terrarium')).json(); assert.equal(updated.individuals[0].routing.events[0].status, 'failed'); assert.match(updated.individuals[0].proseHTML, /Actual tool boundary failure/); assert.ok(updated.boardHTML);
+  assert.ok(readFileSync(join(f.home, 'commands.log'), 'utf8').split('\n').filter(Boolean).every(line => line === '["jlist"]'));
+});
+test('actual HTTP projection reads a bounded recent window from a large ledger and invalidates a changed checkpoint', { timeout: 8000 }, async t => {
+  const f = fixture(t); const { cp } = writeSeed(f, { sparse: true });
+  const base = await server(t, f, [{ name: 'milo-seed', stateDir: f.stateDir }]);
+  const data = (await (await fetch(base+'/api/terrarium')).json()).individuals[0];
+  assert.ok(data.freshness.ledgerCoverage.totalBytes > 64 * 1024 * 1024); assert.ok(data.freshness.ledgerCoverage.bytesRead <= 512 * 1024); assert.equal(data.freshness.ledgerCoverage.fullHistory, false);
+  assert.equal(data.learning.available, true); assert.match(data.provHTML, /recent window only/);
+  writeFileSync(join(f.stateDir, 'checkpoints', cp.checkpointId+'.json'), JSON.stringify({ ...cp, stateHash: 'invalid' }));
+  const changed = (await (await fetch(base+'/api/terrarium')).json()).individuals[0];
+  assert.equal(changed.freshness.checkpointAvailable, false); assert.equal(changed.learning.available, false); assert.deepEqual(changed.cells, []); assert.match(changed.freshnessHTML, /state hash or index binding mismatch/);
+});
+
+test('the actual browser poll refreshes checkpoint graph labels and associations even when cell IDs stay the same', async () => {
+  const { runInNewContext } = await import('node:vm');
+  const source = readFileSync(new URL('../../substrate/bin/seed-observatory.ts', import.meta.url), 'utf8');
+  const client = source.match(/const CLIENT_JS = String.raw`([\s\S]*?)\n`;/)?.[1]; assert.ok(client);
+  class Element {
+    constructor(tag = 'div') { this.tag = tag; this.children = []; this.attrs = {}; this.dataset = {}; this.classList = { add() {}, remove() {}, contains() { return false; } }; }
+    appendChild(child) { this.children.push(child); }
+    setAttribute(key, value) { this.attrs[key] = String(value); }
+    getAttribute(key) { return this.attrs[key]; }
+    set textContent(value) { this.text = value; this.children = []; }
+    get textContent() { return this.text ?? ''; }
+    set innerHTML(value) { this.html = value; this.children = []; }
+    get innerHTML() { return this.html ?? ''; }
+    addEventListener() {}
+    querySelectorAll() { return []; }
+  }
+  const cell = (id, gen, words) => ({ id, short: id, gen, words, pressure: .1, energy: .2, uncertainty: .3, state: [.1, .2], estimates: [], open: [], refs: [] });
+  const first = { name: 'fixture', cells: [cell('a', 1, 'young'), cell('b', 2, 'calm')], assoc: [{ from: 'a', to: 'b', strength: .1 }], flows: [], maxGen: 2 };
+  const later = { ...first, cells: [cell('a', 10, 'lived-in'), cell('b', 20, 'pressurized')], assoc: [{ from: 'a', to: 'b', strength: .8 }], maxGen: 20 };
+  const mount = new Element(), card = new Element(), drawer = new Element(), status = new Element(), data = new Element();
+  mount.setAttribute('data-body', 'fixture'); card.setAttribute('data-card', 'fixture'); data.textContent = JSON.stringify({ individuals: [first] });
+  const fragments = new Map(); card.querySelector = selector => { if (!fragments.has(selector)) fragments.set(selector, new Element()); return fragments.get(selector); };
+  const document = { createElementNS: (_ns, tag) => new Element(tag), createElement: tag => new Element(tag), getElementById: id => ({ 'terrarium-data': data, drawer, 'connection-state': status })[id],
+    querySelectorAll: selector => selector === '[data-body]' ? [mount] : selector === '[data-card]' ? [card] : [], querySelector: () => null };
+  let poll;
+  runInNewContext(client, { document, performance: { now: () => 0 }, requestAnimationFrame() {}, setInterval(fn) { poll = fn; }, fetch: async () => ({ ok: true, json: async () => ({ individuals: [later], at: 'next-checkpoint' }) }), console });
+  const all = node => [node, ...node.children.flatMap(all)];
+  assert.ok(all(mount).some(node => node.tag === 'title' && /generation 1 ·/.test(node.textContent)));
+  assert.ok(all(mount).some(node => node.tag === 'path' && node.attrs['stroke-width'] === '0.8'));
+  poll(); await new Promise(resolveDone => setImmediate(resolveDone));
+  assert.ok(all(mount).some(node => node.tag === 'title' && /generation 10 ·/.test(node.textContent)), 'graph title must advance with the checkpoint');
+  assert.ok(all(mount).some(node => node.attrs.class === 'cellstate-svg' && node.textContent === 'lived-in'), 'computed graph labels must advance');
+  assert.ok(all(mount).some(node => node.tag === 'path' && node.attrs['stroke-width'] === '2.2'), 'association evidence must advance');
+});

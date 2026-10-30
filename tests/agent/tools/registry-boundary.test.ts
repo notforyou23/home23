@@ -15,14 +15,15 @@ const probe = (log: string[]): ToolDefinition => ({
 });
 const ctxFor = (chatId: string) => ({ chatId } as unknown as ToolContext);
 
-test('generic registry refuses proposer: and worker: chat ids before the tool runs', async () => {
+test('generic registry refuses proposer:, worker: and inspection: chat ids before the tool runs', async () => {
   const log: string[] = [];
   const registry = new ToolRegistry();
   registry.register(probe(log));
-  for (const chatId of ['proposer:shakedown', 'worker:shakedown-jerry']) {
+  for (const chatId of ['proposer:shakedown', 'worker:shakedown-jerry', 'inspection:agenda-bounded']) {
     const out = await registry.execute('probe', {}, ctxFor(chatId));
     assert.equal(out.is_error, true);
-    assert.match(out.content, /refused: generic tool/);
+    if (chatId.startsWith('inspection:')) assert.equal(JSON.parse(out.content).code, 'inspection_authority_refused');
+    else assert.match(out.content, /refused: generic tool/);
   }
   assert.equal(log.length, 0, 'guarded tool must never execute');
   const ok = await registry.execute('probe', {}, ctxFor('chat-normal'));

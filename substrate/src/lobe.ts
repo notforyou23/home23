@@ -242,6 +242,39 @@ function originalMessageId(ref: RealityRef): string | undefined {
   return ref.messageId ?? /^conversation\.(?:jtr|self|jerry):coordination\.message:(.+)$/.exec(ref.sourceRef)?.[1];
 }
 
+const EVIDENCE_STOP_WORDS = new Set('a an the is are was were be been being will would should could may might can do does did to of in on at for from with and or that this it its as by within next during over i we our my there then than after before remains'.split(' '));
+function evidenceWords(value: string): Set<string> {
+  return new Set((value.toLowerCase().normalize('NFKC').match(/[\p{L}\p{N}]+/gu) ?? [])
+    .filter(word => word.length >= 4 && !EVIDENCE_STOP_WORDS.has(word) && !/^\d+$/.test(word))
+    .map(word => word.length > 5 && word.endsWith('s') ? word.slice(0, -1) : word));
+}
+
+/** Ordinary estimates are beliefs, not a second advisory notebook. Repeating
+ * one on unchanged evidence cannot make it younger, more confident, or evict
+ * another estimate. This is a prospective admission check only; accepted
+ * historical receipts preserve their original state transition on replay. */
+function estimateRepeatRefusal(cell: SituationCell, claim: string, refs: string[], asOf: string): string | null {
+  const related = cell.estimates.filter(estimate => estimate.claimKind === undefined && claimsRelated(estimate.claim, claim));
+  if (related.length === 0) return null;
+  const floor = Math.max(...related.map(estimate => Date.parse(estimate.createdAt)).filter(Number.isFinite));
+  const ceiling = Date.parse(asOf);
+  const cited = new Set(refs);
+  const used = new Set(related.flatMap(estimate => estimate.evidenceRefs));
+  const claimWords = evidenceWords(claim);
+  const fresh = Number.isFinite(floor) && Number.isFinite(ceiling) && cell.realityRefs.some(ref => {
+    if (!cited.has(ref.refId) || used.has(ref.refId) || !isExternalEvidenceRef(ref, 'execution')) return false;
+    const at = Date.parse(ref.observedAt);
+    if (at <= floor || at > ceiling) return false;
+    // A fresh question, unrelated contact, or the lobe's own previous account
+    // is not a new observation supporting this operational claim.
+    const assertions = (ref.head ?? '').split(/(?<=[.!?])\s+/)
+      .filter(sentence => !sentence.trim().endsWith('?')
+        && !/^\s*(?:is|are|was|were|can|could|do|does|did|has|have|will|would|why|what|when|where|how)\b/i.test(sentence)).join(' ');
+    return [...evidenceWords(assertions)].filter(word => claimWords.has(word)).length >= 2;
+  });
+  return fresh ? null : 'estimate repeat refused: cite newer collected claim-relevant external evidence; unchanged evidence or new wording cannot refresh a belief. Use advisory observations or interpretations while exploring.';
+}
+
 /** Needed outcome witnesses can live in the protected owner lane while the
  * prediction lives elsewhere. Selection and admission share the same bounded
  * provenance/relevance test; unrelated new contact is not an answer. */
@@ -360,6 +393,10 @@ export function applyLobeDeltas(
           continue;
         }
         evidenceRefs = ownerEvidence.map(r => r.messageId as string);
+      }
+      if (feedbackAdmission !== undefined && body.claimKind === undefined) {
+        const refusal = estimateRepeatRefusal(cell, body.claim, stringRefs(body.evidenceRefs), asOf);
+        if (refusal) { failed.push({ kind: 'stateDelta', reason: refusal }); continue; }
       }
       const evidence = feedbackAdmission !== undefined
         ? revisionEvidence(cell, { claim: body.claim, createdAt: asOf,
@@ -673,6 +710,33 @@ export class ModelLobe implements LobeAdapter {
 
 export function buildLobePrompt(packet: WorkspacePacket): string {
   const cellIds = packet.activeCellIds;
+  // This projection labels the provenance already present in the packet. It
+  // never upgrades routing narration into an attempt or verified world fact.
+  const evidenceStages = packet.eventRefs.slice(-16).map(ref => {
+    const trusted = ref.flag === 'COLLECTED' && ref.sourceAuthority === 'home23.event-ledger';
+    if (trusted && /^(?:MotorActionRouted:|MotorRouting\.[^:]+:)/.test(ref.sourceRef)) {
+      return { refId: ref.refId, stage: 'routing-decision', taskOutcomeVerified: false };
+    }
+    const outcome = ref.executionOutcome;
+    const canonicalExecution = trusted && outcome?.schema === 'home23.execution-outcome.v1'
+      && ['action', 'work'].includes(outcome.executionKind)
+      && (ref.sourceRef.startsWith(`${outcome.executionKind}:`)
+        || outcome.executionKind === 'work' && ref.sourceRef.startsWith('coordination.work:'))
+      && typeof outcome.receiptEventId === 'string' && outcome.receiptEventId.length > 0
+      && Array.isArray(outcome.evidenceRefs) && outcome.evidenceRefs.some(id => typeof id === 'string' && id.length > 0)
+      && typeof ref.head === 'string' && ref.head.trim().length > 0 && Number.isFinite(Date.parse(ref.observedAt));
+    if (canonicalExecution && outcome) {
+      const stage = ['intent', 'queued', 'dispatched'].includes(outcome.status) ? 'execution-pending'
+        : ['simulated', 'not_attempted'].includes(outcome.status) ? 'execution-not-attempted'
+        : ['completed', 'failed', 'blocked', 'rejected', 'cancelled'].includes(outcome.status) ? 'execution-outcome' : 'execution-reference';
+      return { refId: ref.refId, stage, status: outcome.status,
+        receiptEventId: outcome.receiptEventId,
+        verificationStatus: outcome.verificationStatus,
+        taskOutcomeVerified: isExternalEvidenceRef(ref, 'world') && outcome.taskOutcomeVerified === true };
+    }
+    return { refId: ref.refId, stage: ref.sourceAuthority === 'seed.internal' ? 'prior-thought'
+      : isExternalEvidenceRef(ref, 'execution') ? 'collected-observation' : 'unverified-reference', taskOutcomeVerified: false };
+  });
   return [
     ...(packet.dream !== undefined ? [
       `DREAM CYCLE — an event-time quiet gap of ~${Math.round(packet.dream.quietSeconds / 60)} minutes just ended; this recruitment is the mind working the day's residue at waking. The refs in the packet are what was lived before sleep (many carry the words). Recombine across cells: connect what belongs together, revise estimates the residue contradicts, RESOLVE open predictions the gap answered, propose intentions the lived day earned. The typed-delta contract below is unchanged — only the occasion is special. Work the residue; do not narrate the dream.`,
@@ -736,6 +800,11 @@ export function buildLobePrompt(packet: WorkspacePacket): string {
     'The packet recentConsiderations carries earlier receipted observations and',
     'interpretations so an idea can develop without becoming a belief or debt.',
     'These are prior thoughts, not independent evidence or established truth.',
+    'A related ordinary estimate needs explicitly cited newer collected evidence that addresses the claim.',
+    'Rewording it, increasing confidence, or citing your previous thought cannot refresh its age or evidential basis.',
+    'A routing no_action or policy rejection is not an execution failure. A queued or dispatched task has no completed outcome yet.',
+    'A blocked or rejected outcome establishes its recorded disposition, not an attempted physical effect.',
+    'Execution completion, independently reported task verification, and owner value are different stages; preserve the recorded criterion.',
     'The packet\'s "tensions" are YOUR OWN open intentions — unfinished business',
     'you named earlier and have not closed. An empty tensions array does not mean',
     'nothing is unfinished; it means no current open intention is recorded. An intention is',
@@ -766,6 +835,8 @@ export function buildLobePrompt(packet: WorkspacePacket): string {
     '(0 = it held exactly, 1 = it was wrong). A prediction still inside its',
     'window is not unfinished business — leave it open and let it run; that',
     'waiting is the individual\'s own obligation accruing, and it is the point.',
+    '',
+    `EVIDENCE STAGES (bounded provenance view of ${evidenceStages.length}/${packet.eventRefs.length} refs; full refs remain in PACKET): ${JSON.stringify(evidenceStages)}`,
     '',
     `PACKET: ${JSON.stringify(packet)}`,
   ].join('\n');

@@ -48,9 +48,22 @@ test('pm2: unreadable pm2 is RED — it cannot confirm ANY organ', () => {
   assert.equal(r.every((x) => !x.ok), true);
 });
 
+test('pm2: malformed supervisor inventory is RED rather than throwing or reading as an empty healthy fleet', () => {
+  for (const value of [{ error: 'unavailable' }, [null], [{ name: 7 }]]) {
+    assert.equal(judgePm2(value as never, ['home23-milo']).every(row => !row.ok), true);
+  }
+});
+
 test('pm2: a stopped organ is RED, and a healthy fleet is GREEN', () => {
   assert.equal(judgePm2([{ name: 'home23-jerry', pm2_env: { status: 'stopped' } }], []).every((x) => !x.ok), true);
   assert.equal(judgePm2([online('home23-jerry')], ['home23-jerry']).every((x) => x.ok), true);
+});
+
+test('pm2: a declared continuation is judged by its exact name and unrelated processes are excluded', () => {
+  const result = judgePm2([online('music-desk'), online('unrelated-app')], ['music-desk']);
+  assert.equal(result.find(row => row.organ === 'pm2:music-desk')?.ok, true);
+  assert.equal(result.some(row => row.organ === 'pm2:unrelated-app'), false);
+  assert.equal(judgePm2([], ['music-desk']).find(row => row.organ === 'pm2:music-desk')?.ok, false);
 });
 
 // ── engines ──────────────────────────────────────────────────────────────────

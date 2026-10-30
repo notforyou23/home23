@@ -18,8 +18,11 @@ import { readFileSync, readdirSync, statSync, existsSync, openSync, readSync, cl
 import { createRequire } from 'node:module';
 import { canonicalContactTurn, isLegacyConversationSession, shippableTurn } from '../src/conversation-turn.js';
 import { onPi, unreachableWhy } from '../src/pi-host.js';
-import { join, resolve } from 'node:path';
-const { runPm2Sync } = createRequire(import.meta.url)('../../engine/src/system/pm2-client.cjs');
+import { isAbsolute, join, resolve } from 'node:path';
+const require = createRequire(import.meta.url);
+const { runPm2Sync } = require('../../engine/src/system/pm2-client.cjs');
+const { readHostState, ownedProcessNamesForState, safeProcesses, definitionMatchesProcess } = require('../../cli/lib/product-host.js');
+const { absoluteHome, readPrivateJSON } = require('../../cli/lib/product-environment.js');
 
 const ROOT = process.env['HOME23_PRODUCT_HOST'] === 'true'
   ? resolve(process.env['HOME23_ROOT'] ?? process.cwd())
@@ -49,7 +52,20 @@ function tailLines(path: string, n: number): string[] {
   } catch { return []; }
 }
 
-export interface Pm2App { name: string; pm2_env?: { status?: string; restart_time?: number; pm_uptime?: number } }
+export interface Pm2App {
+  name: string;
+  pid?: number;
+  owned?: boolean;
+  pm2_env?: { status?: string; restart_time?: number; pm_uptime?: number; [key: string]: unknown };
+}
+
+function isPm2Inventory(value: unknown): value is Pm2App[] {
+  return Array.isArray(value) && value.every(app => app && typeof app === 'object' && !Array.isArray(app)
+    && typeof app.name === 'string' && app.name.length > 0
+    && (app.pid === undefined || (Number.isSafeInteger(app.pid) && app.pid >= 0))
+    && (app.pm2_env === undefined || (app.pm2_env && typeof app.pm2_env === 'object' && !Array.isArray(app.pm2_env)
+      && (app.pm2_env.status === undefined || typeof app.pm2_env.status === 'string'))));
+}
 
 /**
  * The organs an install is SUPPOSED to run, from the generated ecosystem —
@@ -77,16 +93,28 @@ export function expectedOrgans(root: string = ROOT): string[] {
 }
 
 /** Pure judgment — proven against synthetic input; see the audit harness. */
-export function judgePm2(apps: Pm2App[] | null, expected: string[]): ProbeResult[] {
-  if (apps === null) return [{ organ: 'pm2', ok: false, why: 'pm2 unreadable — cannot confirm ANY organ is alive' }];
-  const seen = new Map(apps.filter((x) => x.name.startsWith('home23-')).map((a) => [a.name, a]));
+export function judgePm2(apps: Pm2App[] | null, expected: string[], definitions?: readonly DeclaredOrgan[]): ProbeResult[] {
+  if (!isPm2Inventory(apps)) return [{ organ: 'pm2', ok: false, why: 'pm2 unreadable — cannot confirm ANY organ is alive' }];
+  const wanted = new Set(expected);
+  // Installed homes use their exact submitted roster, including adopted roles.
+  // Legacy callers still report their Home23 processes plus any declared name.
+  const scoped = apps.filter(app => wanted.has(app.name) || (!definitions && app.name.startsWith('home23-')));
+  const seen = new Map(scoped.map(app => [app.name, app]));
+  const declared = definitions && new Map(definitions.map(app => [app.name, app]));
   const out: ProbeResult[] = [];
   for (const a of seen.values()) {
     const status = a.pm2_env?.status ?? '?';
+    const duplicate = scoped.filter(app => app.name === a.name).length > 1;
+    const binding = declared?.get(a.name);
+    const owned = a.owned !== false && (!definitions || (binding && Number.isSafeInteger(a.pid) && a.pid! > 0
+      && definitionMatchesProcess(binding, a)));
+    const why = duplicate ? 'AMBIGUOUS PM2 NAME — multiple registrations claim this declared organ'
+      : !owned ? 'RUNTIME BINDING DIFFERS FROM SUBMITTED HOST PLAN — ownership not confirmed'
+      : status === 'online' ? `online (↺${a.pm2_env?.restart_time ?? 0})` : status;
     out.push({
       organ: `pm2:${a.name.replace('home23-', '')}`,
-      ok: status === 'online',
-      why: status === 'online' ? `online (↺${a.pm2_env?.restart_time ?? 0})` : status,
+      ok: status === 'online' && !duplicate && Boolean(owned),
+      why,
     });
   }
   // THE HOLE THIS CLOSES: an organ the ecosystem declares but pm2 has never
@@ -101,7 +129,10 @@ export function judgePm2(apps: Pm2App[] | null, expected: string[]): ProbeResult
 
 export function readPm2Apps(): Pm2App[] | null {
   let apps: Pm2App[] | null = null;
-  try { apps = JSON.parse(runPm2Sync(['jlist'], { timeout: 8_000 }).toString()) as Pm2App[]; } catch { apps = null; }
+  try {
+    const value: unknown = JSON.parse(runPm2Sync(['jlist'], { timeout: 8_000 }).toString());
+    if (isPm2Inventory(value)) apps = value;
+  } catch { apps = null; }
   return apps;
 }
 
@@ -505,13 +536,51 @@ function houseStreamLog(root: string = ROOT): string | null {
   } catch { return null; }
 }
 
-interface DeclaredOrgan {
+export interface DeclaredOrgan {
   name: string;
-  env?: Record<string, string>;
+  script: string;
+  cwd: string;
+  args: string[];
+  env: Record<string, string>;
+  min_uptime?: number;
+  restart_delay?: number;
+  exp_backoff_restart_delay?: number;
+}
+
+export interface DeclaredProcessRoster {
+  homeRoot: string;
+  expected: string[];
+  apps: DeclaredOrgan[];
+}
+
+/** Read the private plan and validate its ownership using the same Host
+ * authorities that admit these processes. Names alone grant no ownership. */
+export function readDeclaredProcessRoster(root: string = ROOT): DeclaredProcessRoster {
+  const homeRoot = absoluteHome(resolve(root, '..')) as string;
+  if (resolve(root) !== join(homeRoot, 'app')) throw new Error('Host application root differs from this home');
+  const invalid = (detail: string): never => { throw new Error(`Host has no valid submitted process plan: ${detail}`); };
+  const state = readHostState(homeRoot);
+  if (!state) return invalid('missing Host ownership record');
+  const allowed = new Set<string>(ownedProcessNamesForState(state));
+  const declared = readPrivateJSON(join(homeRoot, 'runtime', 'ecosystem.config.json'))?.apps as unknown;
+  if (!Array.isArray(declared) || declared.length === 0) return invalid('missing declarations');
+  const apps = declared as DeclaredOrgan[];
+  if (apps.some(app => !app || typeof app !== 'object' || !/^[a-z][a-z0-9-]{0,62}$/.test(app.name)
+    || !allowed.has(app.name) || typeof app.script !== 'string' || !app.script || app.script.includes('\0')
+    || typeof app.cwd !== 'string' || !isAbsolute(app.cwd) || app.cwd.includes('\0')
+    || !Array.isArray(app.args) || app.args.some(arg => typeof arg !== 'string' || arg.includes('\0'))
+    || !app.env || typeof app.env !== 'object' || Array.isArray(app.env))) return invalid('unowned or malformed declaration');
+  if (new Set(apps.map(app => app.name)).size !== apps.length) return invalid('duplicate process name');
+  const rows = apps.map(app => ({ name: app.name, pm2_env: { ...app.env,
+    pm_exec_path: resolve(app.cwd, app.script), pm_cwd: app.cwd, args: app.args } }));
+  const ownership = safeProcesses(rows, homeRoot, apps.map(app => app.name), state.continuationServices ?? []) as Array<{ owned: boolean }>;
+  if (ownership.length !== apps.length || ownership.some(row => !row.owned)) return invalid('declared runtime is outside Host ownership');
+  return { homeRoot, expected: apps.map(app => app.name), apps };
 }
 
 export interface LocalProbeRoster {
   expected: string[];
+  apps: DeclaredOrgan[];
   engines: string[];
   seeds: Array<{ name: string; stateDir: string; agent?: string; hasLobe: boolean }>;
   feeds: Array<{ label: string; path: string; agent?: string }>;
@@ -520,14 +589,7 @@ export interface LocalProbeRoster {
 /** The exact plan submitted by Host owns this roster. The general generated
  * ecosystem also describes optional services that Host does not start. */
 export function localProbeRoster(root: string = ROOT): LocalProbeRoster {
-  const path = resolve(root, '..', 'runtime', 'ecosystem.config.json');
-  const declared = (JSON.parse(readFileSync(path, 'utf8')) as { apps?: DeclaredOrgan[] }).apps;
-  if (!Array.isArray(declared) || declared.length === 0
-    || declared.some(app => typeof app?.name !== 'string' || !app.name.startsWith('home23-'))
-    || new Set(declared.map(app => app.name)).size !== declared.length) {
-    throw new Error('Host has no valid submitted process plan');
-  }
-  const apps = declared;
+  const { expected, apps } = readDeclaredProcessRoster(root);
   const seeds: LocalProbeRoster['seeds'] = [];
   const feeds: LocalProbeRoster['feeds'] = [];
   for (const app of apps) {
@@ -550,7 +612,7 @@ export function localProbeRoster(root: string = ROOT): LocalProbeRoster {
     }
   }
   return {
-    expected: apps.map(app => app.name),
+    expected, apps,
     engines: apps.filter(app => app.env?.['HOME23_AGENT'] && app.name === `home23-${app.env['HOME23_AGENT']}`).map(app => app.name),
     seeds, feeds,
   };
@@ -562,7 +624,7 @@ export function probeLocalHome(root: string = ROOT, readApps: () => Pm2App[] | n
   catch (error) { return [{ organ: 'inventory', ok: false, why: `installed process inventory unreadable: ${(error as Error).message.slice(0, 80)}` }]; }
   const apps = readApps();
   return [
-    ...judgePm2(apps, roster.expected),
+    ...judgePm2(apps, roster.expected, roster.apps),
     ...judgeEngines(apps, roster.engines),
     ...roster.seeds.map(seed => probeSeedChain(seed.name, seed.stateDir, root)),
     ...roster.seeds.filter(seed => seed.hasLobe).map(seed => probeSeedThought(seed.agent ?? seed.name, root, seed.stateDir)),

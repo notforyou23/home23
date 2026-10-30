@@ -46,6 +46,7 @@ import { DeliveryManager } from './scheduler/delivery.js';
 import { SiblingProtocol } from './sibling/protocol.js';
 import { BridgeChat } from './sibling/bridge-chat.js';
 import { AgentLoop } from './agent/loop.js';
+import { resolveDiagnosticInspection, type DiagnosticInspection } from './agent/diagnostic-inspection.js';
 import { DEFAULT_BOOTSTRAP_READS } from './agent/session-bootstrap.js';
 import { startResidentCoordinationHarness } from './coordination-adapter/index.js';
 import { anthropicOAuthStealthHeaders } from './agent/anthropic-headers.js';
@@ -2054,10 +2055,22 @@ async function main(): Promise<void> {
       res.status(400).json({ error: 'problem with id+claim required' });
       return;
     }
+    let inspection: DiagnosticInspection | null;
+    try {
+      inspection = resolveDiagnosticInspection(problem, { registry, instanceDir: INSTANCE_DIR,
+        workspacePath: WORKSPACE_PATH, sourceRoot: PROJECT_ROOT });
+    } catch {
+      res.status(400).json({ error: 'invalid bounded diagnostic inspection' });
+      return;
+    }
+    if (inspection && !bridgeToken) {
+      res.status(503).json({ error: 'inspection terminal authentication unavailable' });
+      return;
+    }
 
     // Dedicated chatId namespace so diagnostic runs don't collide with
     // user chat or with each other.
-    const chatId = `diagnose:${problem.id}`;
+    const chatId = `${inspection ? 'inspection' : 'diagnose'}:${problem.id}`;
 
     // If the agent is already running something for this problem, short-circuit.
     if (agent.isRunning(chatId)) {
@@ -2085,7 +2098,7 @@ async function main(): Promise<void> {
         ].join('\n')
       : '';
 
-    const mission = [
+    const mission = inspection?.mission ?? [
       `SYSTEM DIAGNOSTIC REQUEST — Live Problem: ${problem.id}`,
       '',
       'The rigid remediation plan for this problem did not resolve it. You are being',
@@ -2126,13 +2139,25 @@ async function main(): Promise<void> {
     ].join('\n');
 
     try {
-      const { turnId, response } = await agent.runWithTurn(chatId, mission);
+      const { turnId, response } = await agent.runWithTurn(chatId, mission,
+        inspection ? { ...inspection.turnOptions, registry: inspection.registry } : undefined);
       const postFixRecipe = async (payload: Record<string, unknown>) => {
-        await fetch(`${ENGINE_BASE}/api/live-problems/${encodeURIComponent(problem.id)}/fix-recipe`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
+        const body = JSON.stringify(payload);
+        for (let attempt = 0; ; attempt++) {
+          const result = await fetch(`${ENGINE_BASE}/api/live-problems/${encodeURIComponent(problem.id)}/fix-recipe`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(inspection ? { Authorization: `Bearer ${bridgeToken}` } : {}) },
+            body,
+          });
+          // A fast terminal turn can beat the engine's dispatch-turn record.
+          // Retry that race with the identical receipt, never rerun the agent.
+          if (inspection && result.status === 409 && attempt < 3) {
+            await new Promise(resolve => setTimeout(resolve, 100 * 3 ** attempt));
+            continue;
+          }
+          if (inspection && !result.ok) throw new Error(`inspection terminal receipt refused: HTTP ${result.status}`);
+          return;
+        }
       };
       // Detach. The engine tracks budget separately via wall clock.
       // When the agent finishes, capture a fix-recipe back to the engine so
@@ -2148,8 +2173,17 @@ async function main(): Promise<void> {
             turnId,
             toolCallCount: resp.toolCallCount,
             durationMs: resp.durationMs,
-            dispatchOutcome: report.dispatchOutcome,
-            verifierStatus: report.verifierStatus,
+            dispatchOutcome: inspection ? 'unknown' : report.dispatchOutcome,
+            verifierStatus: inspection ? 'unknown' : report.verifierStatus,
+            ...(inspection ? {
+              reportedDispatchOutcome: report.dispatchOutcome,
+              reportedVerifierStatus: report.verifierStatus,
+              inspectionExecutionId: typeof problem.inspectionExecution?.executionId === 'string' ? problem.inspectionExecution.executionId : undefined,
+              executionStatus: inspection.executionStatus(resp),
+              inspectionCompletionSource: 'agent-loop-terminal',
+              inspectionCompletedAt: new Date().toISOString(),
+              ...(inspection.failureReason() ? { executionError: inspection.failureReason() } : {}),
+            } : {}),
           });
           console.log(`[diagnose] ${problem.id} turn ${turnId} → fix-recipe captured (${resp.toolCallCount} tools, ${minutes}m)`);
         } catch (err: any) {
@@ -2164,6 +2198,13 @@ async function main(): Promise<void> {
           durationMs: 0,
           dispatchOutcome: 'failed',
           verifierStatus: 'unknown',
+          ...(inspection ? {
+            inspectionExecutionId: typeof problem.inspectionExecution?.executionId === 'string' ? problem.inspectionExecution.executionId : undefined,
+            executionStatus: 'failed',
+            inspectionCompletionSource: 'agent-loop-terminal',
+            inspectionCompletedAt: new Date().toISOString(),
+            executionError: String(err?.code || 'agent_runtime_failed').slice(0, 120),
+          } : {}),
         }).catch((postErr: any) => {
           console.warn(`[diagnose] ${problem.id} failure post failed:`, postErr?.message || postErr);
         });

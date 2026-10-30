@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { AgentLoop } from '../../src/agent/loop.js';
 import { ConversationHistory } from '../../src/agent/history.js';
 import { deferred } from '../helpers/manual-clock.js';
+import { ToolRegistry, createSeededToolRegistry } from '../../src/agent/tools/index.js';
 
 const TOOL_NAME = 'typed_failure_tool';
 const PROVIDERS = [
@@ -16,6 +17,51 @@ const PROVIDERS = [
   'anthropic',
   'minimax',
 ] as const;
+
+for (const boundary of ['seeded', 'generic-inspection', 'generic'] as const) {
+  test(`xAI native server tools respect the ${boundary} registry boundary`, async t => {
+    const root = join(tmpdir(), `xai-inspection-${process.pid}-${Math.random()}`);
+    mkdirSync(join(root, 'workspace'), { recursive: true });
+    const previousFetch = globalThis.fetch, previousKey = process.env.XAI_API_KEY, previousRoot = process.env.HOME23_ROOT;
+    process.env.XAI_API_KEY = 'fixture-key'; process.env.HOME23_ROOT = root;
+    t.after(() => { globalThis.fetch = previousFetch; if (previousKey === undefined) delete process.env.XAI_API_KEY; else process.env.XAI_API_KEY = previousKey;
+      if (previousRoot === undefined) delete process.env.HOME23_ROOT; else process.env.HOME23_ROOT = previousRoot; rmSync(root, { recursive: true, force: true }); });
+    const registry = boundary === 'seeded' ? createSeededToolRegistry([]) : new ToolRegistry();
+    const history = new ConversationHistory(join(root, 'conversations'), 100_000, 'fixture');
+    const agent = new AgentLoop({ apiKey: 'fixture-key', model: 'grok-fixture', provider: 'xai', registry, history,
+      contextManager: { getSystemPrompt: () => 'Read-only fixture.', getPromptSourceInfo: () => ({ loadedFiles: [] }) } as never,
+      toolContext: { brainOperations: { withActivityHandler() { return this; } } } as never, workspacePath: join(root, 'workspace') });
+    let tools: Array<{ type: string }> = [];
+    globalThis.fetch = (async (url, init) => {
+      if (/localhost|127\.0\.0\.1/.test(String(url))) return new Response('{}', { status: 503 });
+      tools = JSON.parse(String(init?.body)).tools ?? [];
+      return sse([{ type: 'response.output_text.delta', delta: 'Observed.' }, { type: 'response.completed', response: { status: 'completed' } }]);
+    }) as typeof fetch;
+    await (await agent.runWithTurn(boundary === 'generic-inspection' ? 'inspection:fixture' : 'fixture', 'Inspect without external tools.')).response;
+    const native = tools.filter(tool => ['web_search', 'x_search', 'code_interpreter'].includes(tool.type));
+    assert.equal(native.length, boundary === 'generic' ? 3 : 0);
+  });
+}
+
+test('xAI cannot promote an unsolicited native server action into a successful restricted turn', async t => {
+  const root = join(tmpdir(), `xai-inspection-refusal-${process.pid}-${Math.random()}`); mkdirSync(join(root, 'workspace'), { recursive: true });
+  const previousFetch = globalThis.fetch, previousKey = process.env.XAI_API_KEY, previousRoot = process.env.HOME23_ROOT;
+  process.env.XAI_API_KEY = 'fixture-key'; process.env.HOME23_ROOT = root;
+  t.after(() => { globalThis.fetch = previousFetch; if (previousKey === undefined) delete process.env.XAI_API_KEY; else process.env.XAI_API_KEY = previousKey;
+    if (previousRoot === undefined) delete process.env.HOME23_ROOT; else process.env.HOME23_ROOT = previousRoot; rmSync(root, { recursive: true, force: true }); });
+  const agent = new AgentLoop({ apiKey: 'fixture-key', model: 'grok-fixture', provider: 'xai', registry: createSeededToolRegistry([]),
+    history: new ConversationHistory(join(root, 'conversations'), 100_000, 'fixture'),
+    contextManager: { getSystemPrompt: () => 'Read-only fixture.', getPromptSourceInfo: () => ({ loadedFiles: [] }) } as never,
+    toolContext: { brainOperations: { withActivityHandler() { return this; } } } as never, workspacePath: join(root, 'workspace') });
+  const events: any[] = [];
+  globalThis.fetch = (async url => /localhost|127\.0\.0\.1/.test(String(url)) ? new Response('{}', { status: 503 }) : sse([
+    { type: 'response.output_item.done', item: { type: 'web_search_call', id: 'forbidden-native', status: 'completed', query: 'must not be authorized' } },
+    { type: 'response.completed', response: { status: 'completed' } },
+  ])) as typeof fetch;
+  const started = await agent.runWithTurn('inspection:fixture', 'Inspect local evidence.', { onEvent: event => events.push(event) });
+  await assert.rejects(started.response, /native provider tool refused/i);
+  assert.ok(events.some(event => event.type === 'tool_result' && event.success === false && String(event.exactResult).includes('inspection_authority_refused')));
+});
 
 type CodexTerminalProbe = {
   toolExecutions: number;
@@ -123,6 +169,7 @@ async function runProvider(
     },
   };
   const registry = {
+    allowsNativeServerTools: () => true,
     getAnthropicTools: () => [{
       name: TOOL_NAME,
       description: tool.description,
@@ -502,6 +549,7 @@ async function runGrokZdrScenario(rejectPreviousResponseId: boolean): Promise<{
     execute: async () => ({ content: 'local result for ZDR' }),
   };
   const registry = {
+    allowsNativeServerTools: () => true,
     getAnthropicTools: () => [{
       name: tool.name,
       description: tool.description,
@@ -743,6 +791,7 @@ async function runGrokTerminalCase(terminalCase: GrokTerminalCase): Promise<{
     },
   };
   const registry = {
+    allowsNativeServerTools: () => true,
     getAnthropicTools: () => [],
     getOpenAITools: () => [{
       type: 'function',

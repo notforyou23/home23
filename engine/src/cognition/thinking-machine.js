@@ -25,6 +25,7 @@ const path = require('path');
 const { DeepDive } = require('./deep-dive');
 const { PGSAdapter } = require('./pgs-adapter');
 const { Critique } = require('./critique');
+const { MotorCortex, routingRecord } = require('./motor-cortex');
 const { assessConvergence } = require('./convergence');
 const { outreachEvidenceRefs, normalizeOwnerOutreach } = require('./owner-outreach');
 
@@ -474,12 +475,14 @@ class ThinkingMachine {
         // decision so kept thoughts cannot masquerade as action.
         const agendaIds = [];
         const motorActions = [];
-        const motorPlan = this.motorCortex?.compileMotorIntents
-          ? this.motorCortex.compileMotorIntents({ thought, finalVerdict, candidate, referencedNodes: dive.referencedNodes })
-          : { accepted: Array.isArray(finalVerdict.agendaCandidates) ? finalVerdict.agendaCandidates : [], decisions: [] };
+        const compiler = this.motorCortex?.compileMotorIntents ? this.motorCortex : new MotorCortex({ logger: this.logger });
+        const motorPlan = compiler.compileMotorIntents({ thought, finalVerdict, candidate,
+          referencedNodes: dive.referencedNodes, evidenceRefs });
 
         for (const decision of motorPlan.decisions || []) {
           const audit = {
+            ...(decision.routingVersion === 2 ? { routingVersion: 2, routingDecisionId: decision.routingDecisionId,
+              reasonCode: decision.reasonCode } : {}),
             agendaId: null,
             status: decision.status,
             action: null,
@@ -502,6 +505,7 @@ class ThinkingMachine {
               sourceSignal: candidate.signal,
               referencedNodes: dive.referencedNodes,
               temporalContext,
+              ...(ac.boundedIntent ? { boundedIntent: ac.boundedIntent, intentEvidenceRefs: evidenceRefs } : {}),
             });
             if (rec) {
               agendaIds.push(rec.id);
@@ -511,6 +515,7 @@ class ThinkingMachine {
                 kind: rec.kind,
                 topicTags: rec.topicTags,
                 source: ac.source || null,
+                ...(rec.boundedIntent ? { boundedIntent: rec.boundedIntent } : {}),
               });
               if (this.motorCortex?.actOnAgendaItem) {
                 const motorAction = await this.motorCortex.actOnAgendaItem(rec, {
@@ -520,6 +525,8 @@ class ThinkingMachine {
                   actor: 'motor-cortex',
                 });
                 motorActions.push({
+                  ...(motorAction.routingVersion === 2 ? { routingVersion: 2, routingDecisionId: motorAction.routingDecisionId,
+                    reasonCode: motorAction.reasonCode, turnId: motorAction.turnId || null } : {}),
                   agendaId: rec.id,
                   status: motorAction.status,
                   action: motorAction.action?.action || null,
@@ -529,6 +536,8 @@ class ThinkingMachine {
                   detail: motorAction.action?.detail || motorAction.detail || null,
                 });
                 this._emit('MotorActionRouted', cycleSessionId, {
+                  ...(motorAction.routingVersion === 2 ? { routingVersion: 2, routingDecisionId: motorAction.routingDecisionId,
+                    reasonCode: motorAction.reasonCode, turnId: motorAction.turnId || null } : {}),
                   agendaId: rec.id,
                   status: motorAction.status,
                   action: motorAction.action?.action || null,
@@ -539,7 +548,7 @@ class ThinkingMachine {
                 });
               }
             } else {
-              const audit = {
+              const audit = routingRecord('policy_rejected', {
                 agendaId: null,
                 status: 'rejected',
                 action: null,
@@ -547,14 +556,14 @@ class ThinkingMachine {
                 source: ac.source || null,
                 content: ac.content,
                 detail: 'agenda store policy rejected compiled motor intent',
-              };
+              });
               motorActions.push(audit);
               this._emit('MotorActionRouted', cycleSessionId, audit);
             }
           }
         } else if (!this.agendaStore && Array.isArray(motorPlan.accepted) && motorPlan.accepted.length > 0) {
           for (const ac of motorPlan.accepted) {
-            const audit = {
+            const audit = routingRecord('executor_unavailable', {
               agendaId: null,
               status: 'rejected',
               action: null,
@@ -562,7 +571,7 @@ class ThinkingMachine {
               source: ac.source || null,
               content: ac.content,
               detail: 'agenda store unavailable',
-            };
+            });
             motorActions.push(audit);
             this._emit('MotorActionRouted', cycleSessionId, audit);
           }

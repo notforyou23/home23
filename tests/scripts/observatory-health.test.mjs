@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, resolve } from 'node:path';
+import { productRoleEnvironment } from '../../cli/lib/product-environment.js';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -81,19 +82,33 @@ test('deadman rejects an error, wrong success body, redirect, and closed listene
 });
 
 test('Host observatory runs its actual sentinel without probing another home or SSH', { timeout: 12_000 }, async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'observatory-host-'));
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'observatory-host-')));
   const root = join(directory, 'app');
   const commands = join(directory, 'commands.log');
   const stateDir = join(root, 'instances', 'milo', 'substrate', 'seed-01');
   mkdirSync(stateDir, { recursive: true });
   mkdirSync(join(directory, 'runtime'));
-  writeFileSync(join(directory, 'pm2'), '#!/bin/sh\nprintf "%s\\n" pm2 >> "$PROBE_COMMAND_LOG"\nprintf "%s\\n" "[]"\n', { mode: 0o700 });
-  writeFileSync(join(directory, 'ssh'), '#!/bin/sh\nprintf "%s\\n" ssh >> "$PROBE_COMMAND_LOG"\nexit 1\n', { mode: 0o700 });
-  writeFileSync(join(directory, 'runtime', 'ecosystem.config.json'), JSON.stringify({ apps: [
-    { name: 'home23-milo', env: { HOME23_AGENT: 'milo' } },
-    { name: 'home23-milo-seed', env: { HOME23_AGENT: 'milo', SEED_STATE_DIR: stateDir } },
-    { name: 'home23-milo-shipper', env: { SHIPPER_STREAM_PATH: join(stateDir, '..', 'conversation-stream.jsonl') } },
-  ] }));
+  mkdirSync(join(root, 'cli/lib'), { recursive: true });
+  writeFileSync(join(root, 'package.json'), '{"type":"module"}');
+  writeFileSync(join(root, 'instances/milo/config.yaml'), 'substrate:\n  enabled: true\n');
+  writeFileSync(join(directory, '.home23-host.json'), JSON.stringify({ schema: 'home23.host.v2', homeRoot: directory, profile: { name: 'milo' }, encoderRequired: false,
+    ports: { coordination: 24010, engine: 24011, dashboard: 24012, mcp: 24013, bridge: 24014, evobrew: 24015, observatory: 24016 }, continuationServices: [] }), { mode: 0o600 });
+  const definition = (name, env, script = 'engine/src/index.js') => ({ name, script: relative(root, join(directory, 'bin/node')), cwd: root, args: [join(root, script)], min_uptime: 100, env: productRoleEnvironment(directory, env) });
+  const apps = [
+    definition('home23-milo', { HOME23_AGENT: 'milo' }),
+    definition('home23-milo-seed', { HOME23_AGENT: 'milo', SEED_STATE_DIR: stateDir }, 'substrate/bin/seed-runner.ts'),
+    definition('home23-milo-shipper', { SHIPPER_STREAM_PATH: join(stateDir, '..', 'conversation-stream.jsonl') }, 'substrate/bin/conversation-shipper.ts'),
+  ];
+  writeFileSync(join(directory, 'runtime', 'ecosystem.config.json'), JSON.stringify({ apps }), { mode: 0o600 });
+  const observed = apps.map(app => ({ name: app.name, pid: 100, pm2_env: { ...app.env, status: 'online', min_uptime: app.min_uptime, pm_exec_path: resolve(app.cwd, app.script), pm_cwd: app.cwd, args: app.args } }));
+  writeFileSync(join(root, 'cli/lib/product-supervisor.js'), `import { appendFileSync } from 'node:fs';
+    export async function productSupervisorCommand(home, args) {
+      if (home !== ${JSON.stringify(directory)} || JSON.stringify(args) !== '["jlist"]') throw new Error('Unexpected supervisor control request');
+      appendFileSync(${JSON.stringify(commands)}, 'jlist\\n');
+      return { stdout: ${JSON.stringify(JSON.stringify(observed))} };
+    }`);
+  // Any accidental ambient PM2 or SSH path is recorded, and must fail the test.
+  for (const command of ['pm2', 'ssh']) writeFileSync(join(directory, command), `#!/bin/sh\nprintf '%s\\n' ${command} >> '${commands}'\nexit 88\n`, { mode: 0o700 });
   const child = spawn(process.execPath, ['--import', 'tsx', 'substrate/bin/seed-observatory.ts'], {
     cwd: new URL('../../', import.meta.url),
     env: { PATH: `${directory}:/usr/bin:/bin`, HOME23_PRODUCT_HOST: 'true', HOME23_ROOT: root,
@@ -114,11 +129,12 @@ test('Host observatory runs its actual sentinel without probing another home or 
     // Wait for the production five-second sentinel tick, not a test-only path.
     const deadline = Date.now() + 7_000;
     while (!existsSync(commands) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
-    assert.equal(readFileSync(commands, 'utf8'), 'pm2\n');
+    assert.equal(readFileSync(commands, 'utf8'), 'jlist\n');
     const html = await (await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(2000) })).text();
     assert.match(html, /milo-shipper/);
     assert.doesNotMatch(html, /jerry convo|forrest convo|bobby mirror/);
-    assert.doesNotMatch(readFileSync(commands, 'utf8'), /ssh/);
+    assert.doesNotMatch(readFileSync(commands, 'utf8'), /ssh|pm2/);
+    assert.doesNotMatch(html, /RUNTIME BINDING DIFFERS|pm2 unreadable/);
   } finally {
     clearTimeout(timer);
     child.kill('SIGKILL');

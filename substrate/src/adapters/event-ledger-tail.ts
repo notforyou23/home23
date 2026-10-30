@@ -119,18 +119,27 @@ function executionProjection(eventType: string, data: Record<string, unknown>, e
   }
   if (eventType === 'MotorActionRouted') {
     const status = boundedText(data['status'], 120) || 'unknown';
+    const prospective = data['routingVersion'] === 2;
+    const reasons = new Set(['no_bounded_intent', 'policy_rejected', 'executor_unavailable', 'disabled', 'queued', 'dispatched', 'execution_failed', 'simulated', 'execution_completed']);
+    const reasonCode = typeof data['reasonCode'] === 'string' && reasons.has(data['reasonCode']) ? data['reasonCode'] : 'unknown';
     const scope = status === 'acted' ? 'action routed; consult execution receipt for result'
       : status === 'dispatched' ? 'dispatch accepted; execution result pending'
       : status === 'queued' ? 'queued; no dispatch confirmed'
       : status === 'simulated' ? 'simulation only; no action executed' : status;
     return {
       category: ['failed', 'rejected'].includes(status) ? 'correction' : status === 'simulated' ? 'interpretation' : 'observation',
-      sourceRef: `MotorActionRouted:${eventId}`,
+      // Plasticity keys on the prefix before ':'. A policy refusal must not
+      // teach the routing affinity of later quiet observations or dispatches.
+      // Legacy occurrences retain their original interpretation and identity.
+      sourceRef: prospective ? `MotorRouting.${reasonCode}:${eventId}` : `MotorActionRouted:${eventId}`,
       payload: {
         event_type: eventType, status, agendaId: boundedText(data['agendaId'], 300),
         action: boundedText(data['action'], 160), target: boundedText(data['target'], 500),
+        ...(prospective ? { routingVersion: 2, reasonCode,
+          routingDecisionId: boundedText(data['routingDecisionId'], 300), turnId: boundedText(data['turnId'], 300),
+          executionAttempted: false, evidenceStage: 'routing-decision' } : {}),
         verificationStatus: 'unknown', taskOutcomeVerified: false,
-        head: `Motor routing: ${scope}. ${boundedText(data['detail']) || boundedText(data['content']) || ''}`,
+        head: `Motor routing: ${scope}. ${prospective ? 'Routing-stage evidence; consult an execution receipt for attempts and outcomes. ' : ''}${boundedText(data['detail']) || boundedText(data['content']) || ''}`,
         receiptEventId: eventId,
       },
     };
@@ -610,6 +619,12 @@ export class EventLedgerTailAdapter implements SourceAdapter {
       : `harness_${createHash('sha256').update(line, 'utf-8').digest('hex').slice(0, 16)}`;
 
     const data = entry.payload && typeof entry.payload === 'object' && !Array.isArray(entry.payload) ? entry.payload : {};
+    // New, explicit silence is telemetry, not a failed task or a new experience.
+    // Keep the raw harness row and advance its adapter cursor, just as heartbeat
+    // does. Unknown, legacy and contradictory cases still enter the diet.
+    if (eventType === 'MotorActionRouted' && data['routingVersion'] === 2
+      && data['status'] === 'no_action' && data['reasonCode'] === 'no_bounded_intent'
+      && !data['agendaId'] && !data['turnId'] && !data['executionId'] && data['executionAttempted'] !== true) return null;
     const execution = executionProjection(eventType, data, eventId);
     if (execution) {
       return { eventId, ...execution, payload: { ...execution.payload,

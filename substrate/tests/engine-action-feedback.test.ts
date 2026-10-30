@@ -118,11 +118,21 @@ test('production thinking factory and agenda router carry queued vs dispatched i
   machine.pgsAdapter = { getStats: () => ({}), connect: async () => ({ available: false, perspectives: [], candidateEdges: [], connectionNotes: [], usage: {} }) };
   machine.critique = { evaluate: async () => ({
     verdict: 'keep', confidence: 0.9, gaps: [], rationale: 'bounded inquiry',
-    agendaCandidates: [{ content: dispatch ? 'Check localhost:50523 status endpoint for a missing HTTP response.' : 'Investigate why RECENT.md has not regenerated in 9 days.', kind: 'question', topicTags: ['ops'] }],
+    agendaCandidates: [{
+      content: dispatch ? 'Check localhost:50523 status endpoint for a missing HTTP response.' : 'Investigate why RECENT.md has not regenerated in 9 days.',
+      kind: 'question', topicTags: ['ops'],
+      boundedIntent: { schema: 'home23.bounded-agenda-intent.v1', operation: 'inspect',
+        targetRef: dispatch ? 'observation:missing-response' : 'observation:missing-update',
+        question: dispatch ? 'What current evidence explains the missing status response?' : 'What evidence explains the missing RECENT.md update?',
+        expectedEvidence: 'Current bounded status or file metadata relevant to the supplied observation.',
+        stopCondition: 'Report the observed evidence or its unavailability; make no changes.',
+        evidenceRefs: [dispatch ? 'observation:missing-response' : 'observation:missing-update'],
+      },
+    }],
   }) };
-  await machine._runCycle({ signal: 'ops-anomaly', score: 0.9, rationale: 'missing update' });
+  await machine._runCycle({ signal: 'ops-anomaly', score: 0.9, rationale: 'missing update', observation: { sourceRef: 'observation:missing-update' } });
   dispatch = true;
-  await machine._runCycle({ signal: 'ops-anomaly', score: 0.9, rationale: 'different missing update' });
+  await machine._runCycle({ signal: 'ops-anomaly', score: 0.9, rationale: 'different missing update', observation: { sourceRef: 'observation:missing-response' } });
   const routed = f.adapter.pullSync().filter(event => event.payload['event_type'] === 'MotorActionRouted');
   assert.deepEqual(routed.map(event => [event.category, event.payload['status'], event.payload['taskOutcomeVerified']]), [
     ['observation', 'queued', false], ['observation', 'dispatched', false],
