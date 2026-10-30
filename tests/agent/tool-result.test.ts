@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 import {
   executeAndFormatTool,
   operationToolResult,
@@ -304,7 +305,26 @@ test('a query that completes WITH an answer is still a success', () => {
 
 test('provider branches cannot bypass centralized tool result execution', () => {
   const source = readFileSync(new URL('../../src/agent/loop.ts', import.meta.url), 'utf8');
-  assert.equal((source.match(/registry\.execute\(/g) || []).length, 0);
+  const registryExecutions = (text: string) => {
+    const file = ts.createSourceFile('loop.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    let count = 0;
+    const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node)) {
+        const call = node.expression;
+        const receiver = ts.isPropertyAccessExpression(call) && call.name.text === 'execute' ? call.expression
+          : ts.isElementAccessExpression(call) && ts.isStringLiteral(call.argumentExpression)
+            && call.argumentExpression.text === 'execute' ? call.expression : null;
+        if (receiver && (ts.isIdentifier(receiver) && receiver.text === 'registry'
+          || ts.isPropertyAccessExpression(receiver) && receiver.name.text === 'registry')) count++;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    return count;
+  };
+  assert.equal(registryExecutions('// registry.execute()\nconst label = "registry.execute()";'), 0);
+  assert.equal(registryExecutions('registry.execute(input); this.registry.execute(input); registry["execute"](input);'), 3);
+  assert.equal(registryExecutions(source), 0);
   assert.equal((source.match(/\.execute\(input, runContext\)/g) || []).length, 0);
   assert.ok((source.match(/executeAndFormatTool\(/g) || []).length >= 4);
   assert.doesNotMatch(source, /tool_result[^\n]+success:\s*true/);
