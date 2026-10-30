@@ -713,7 +713,7 @@ const CLIENT_JS = String.raw`
         if (card) {
           setHTML(card, '.being', ni.beingHTML);
           setHTML(card, '.prose', ni.proseHTML);
-          setHTML(card, '.prov', ni.provHTML);
+          setHTML(card, '.provenancemount', ni.provHTML);
           setHTML(card, '.chipmount', ni.chipHTML);
           setHTML(card, '.pulsemount', ni.pulseHTML);
           setHTML(card, '.crossingmount', ni.crossingHTML);
@@ -828,7 +828,7 @@ function renderCard(d: IndividualData): string {
     <figure class="bodyfig"><div data-body="${esc(d.name)}"></div>
     <figcaption>checkpoint cell projection — size and animation derive from stored numeric state; arriving dots show recent ledger transitions · click a cell to open it</figcaption></figure>
     <div class="prose">${proseHTML(d)}</div>
-    <div class="prov">${esc(d.prov)}</div>
+    <div class="prov provenancemount">${esc(d.prov)}</div>
     <div class="journalmount">${journalHTML(d)}</div>
   </section>`;
 }

@@ -117,6 +117,89 @@ test('actual HTTP projection reads a bounded recent window from a large ledger a
   assert.equal(changed.freshness.checkpointAvailable, false); assert.equal(changed.learning.available, false); assert.deepEqual(changed.cells, []); assert.match(changed.freshnessHTML, /state hash or index binding mismatch/);
 });
 
+test('the actual browser poll updates only the provenance footer and preserves nested deadlines and open evidence', { timeout: 8000 }, async t => {
+  const { runInNewContext } = await import('node:vm');
+  const f = fixture(t); writeSeed(f);
+  const base = await server(t, f, [{ name: 'milo-seed', stateDir: f.stateDir }]);
+  const initial = await (await fetch(base + '/api/terrarium')).json();
+  const html = await (await fetch(base + '/')).text();
+  const cardHTML = html.match(/<section class="card" data-card="milo-seed">[\s\S]*?<\/section>/)?.[0];
+  const client = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(cardHTML); assert.ok(client);
+
+  // Parse the actual server card into ordered descendants. querySelector uses
+  // DOM pre-order/first-match semantics, rather than independent selector maps.
+  const decode = text => text.replace(/&(amp|lt|gt|quot|#39);/g, (_whole, key) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[key]);
+  class Element {
+    constructor(tag = 'div', text = '') { this.tag = tag; this.text = text; this.children = []; this.attrs = {}; }
+    appendChild(child) { this.children.push(child); }
+    setAttribute(name, value) { this.attrs[name] = String(value); }
+    getAttribute(name) { return this.attrs[name] ?? null; }
+    get dataset() { return { detailKey: this.attrs['data-detail-key'] }; }
+    get classList() { return { contains: name => (this.attrs.class ?? '').split(/\s+/).includes(name), add() {}, remove() {} }; }
+    set open(value) { if (value) this.attrs.open = ''; else delete this.attrs.open; }
+    get open() { return Object.hasOwn(this.attrs, 'open'); }
+    set textContent(value) { this.text = value; this.children = []; }
+    get textContent() { return this.text + this.children.map(child => child.textContent).join(''); }
+    set innerHTML(value) { this.text = ''; this.children = parseFragment(value).children; }
+    addEventListener() {}
+    matches(selector) {
+      if (selector.startsWith('.')) return this.classList.contains(selector.slice(1));
+      if (selector.startsWith('#')) return this.attrs.id === selector.slice(1);
+      const attribute = selector.match(/^(\w+)?\[([\w-]+)(?:="([^"]*)")?\]$/);
+      if (attribute) return (!attribute[1] || this.tag === attribute[1]) && Object.hasOwn(this.attrs, attribute[2])
+        && (attribute[3] === undefined || this.attrs[attribute[2]] === attribute[3]);
+      return this.tag === selector;
+    }
+    querySelectorAll(selector) {
+      const found = [];
+      const visit = node => { for (const child of node.children) { if (child.matches(selector)) found.push(child); visit(child); } };
+      visit(this); return found;
+    }
+    querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null; }
+  }
+  function parseFragment(markup) {
+    const root = new Element(), stack = [root];
+    for (const token of markup.match(/<[^>]*>|[^<]+/g) ?? []) {
+      if (token.startsWith('</')) { stack.pop(); continue; }
+      if (!token.startsWith('<')) { stack.at(-1).appendChild(new Element('#text', decode(token))); continue; }
+      const tag = token.match(/^<([\w-]+)/)?.[1]; if (!tag) continue;
+      const node = new Element(tag);
+      for (const attribute of token.slice(tag.length + 1, -1).matchAll(/([\w-]+)(?:="([^"]*)")?/g)) node.setAttribute(attribute[1], decode(attribute[2] ?? ''));
+      stack.at(-1).appendChild(node);
+      if (!['br', 'hr', 'img', 'input', 'meta', 'link'].includes(tag) && !token.endsWith('/>')) stack.push(node);
+    }
+    return root;
+  }
+  const document = parseFragment(cardHTML + '<div id="terrarium-data"></div><div id="drawer"></div><div id="connection-state"></div><div id="vitals-mount"></div><div id="board-mount"></div>');
+  document.getElementById = id => document.querySelector('#' + id);
+  document.createElementNS = (_namespace, tag) => new Element(tag);
+  document.createElement = tag => new Element(tag);
+  document.getElementById('terrarium-data').textContent = JSON.stringify(initial);
+  const card = document.querySelector('[data-card="milo-seed"]');
+  const prose = card.querySelector('.prose'), due = prose.querySelector('.prov');
+  const footer = card.children.find(child => child.classList.contains('prov'));
+  assert.equal(due.tag, 'span'); assert.equal(footer.tag, 'div');
+  assert.equal(card.querySelector('.prov'), due, 'a broad .prov selector must find the earlier nested deadline');
+  const dueText = due.textContent, openEvidence = prose.querySelector('details');
+  assert.match(dueText, /due in 10.0h/); assert.ok(openEvidence);
+  const openKey = openEvidence.dataset.detailKey; openEvidence.open = true;
+  const updatedCoverage = 'ledger window updated after the browser poll';
+  const later = { ...initial, at: 'next-poll', individuals: initial.individuals.map(individual => ({ ...individual,
+    provHTML: updatedCoverage, chipHTML: 'updated checkpoint chip', freshnessHTML: 'updated freshness evidence' })) };
+  let poll;
+  runInNewContext(client, { document, performance: { now: () => 0 }, requestAnimationFrame() {},
+    setInterval(fn, interval) { assert.equal(interval, 5000); poll = fn; },
+    fetch: async () => ({ ok: true, json: async () => later }), console });
+  poll(); await new Promise(resolveDone => setImmediate(resolveDone));
+  assert.equal(card.querySelector('.prose').querySelector('.prov').textContent, dueText, 'polling must not replace a commitment deadline with ledger coverage');
+  assert.equal(footer.textContent, updatedCoverage, 'the card footer must receive the new ledger coverage');
+  assert.equal(card.querySelector('.prose').querySelector(`details[data-detail-key="${openKey}"]`).open, true, 'open evidence survives prose refresh');
+  assert.equal(card.querySelector('.chipmount').textContent, 'updated checkpoint chip');
+  assert.equal(card.querySelector('.freshnessmount').textContent, 'updated freshness evidence');
+  assert.match(document.getElementById('connection-state').textContent, /Projection updated next-poll/);
+});
+
 test('the actual browser poll refreshes checkpoint graph labels and associations even when cell IDs stay the same', async () => {
   const { runInNewContext } = await import('node:vm');
   const source = readFileSync(new URL('../../substrate/bin/seed-observatory.ts', import.meta.url), 'utf8');
