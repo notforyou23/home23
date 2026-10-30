@@ -4,6 +4,10 @@ const { createMemoryAuthorityResolver } = require('../../../shared/memory-author
 
 function outreachEvidenceRefs(memory, candidate, dive, conversationRefs = []) {
   const refs = new Set();
+  if (candidate.observation?.sourceRef) refs.add(candidate.observation.sourceRef);
+  // The snapshot orders complete shown owner turns newest first. Preserve
+  // those identities before graph history consumes the bounded evidence pool.
+  if (dive.conversationContext) for (const ref of conversationRefs) refs.add(ref);
   const nodes = memory.nodes;
   if (nodes?.values && nodes?.get) {
     const resolver = createMemoryAuthorityResolver({ intent: 'general', authorityCandidates: nodes.values() });
@@ -14,9 +18,6 @@ function outreachEvidenceRefs(memory, candidate, dive, conversationRefs = []) {
       if (node && !node.supersessionEvidence && !node.closureEvidence) refs.add(`memory:${id}`);
     }
   }
-  if (candidate.conversation?.source === 'seed_contact' && candidate.conversation.eventId) refs.add(candidate.conversation.eventId);
-  if (candidate.observation?.sourceRef) refs.add(candidate.observation.sourceRef);
-  if (dive.conversationContext) for (const ref of conversationRefs) refs.add(ref);
   return [...refs].filter(ref => typeof ref === 'string' && ref.length <= 500).slice(0, 40);
 }
 

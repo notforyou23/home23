@@ -44,7 +44,7 @@ async function fixture(t) {
   orchestrator.logsDir = brainDir;
   orchestrator.conversationSalience = {
     getRecentContext: () => '[Owner Jason]: That guitar melody leaves room for another voice.',
-    getRecentEntries: () => [{ source: 'seed_contact', eventId: 'message:real-contact' }],
+    getRecentSnapshot: () => ({ context: orchestrator.conversationSalience.getRecentContext(), evidenceRefs: ['message:real-contact'] }),
   };
   const graph = { nodes: new Map([['guitar', { id: 'guitar', concept: 'A guitar lesson treats silence as an invitation.', tag: 'historical' }]]), edges: new Map(), clusters: new Map() };
   const messages = []; const events = []; const prompts = []; let actions = 0;

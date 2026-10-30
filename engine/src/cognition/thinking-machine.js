@@ -63,6 +63,7 @@ class ThinkingMachine {
     this.getTemporalContext = opts.getTemporalContext || (() => null);
     this.getConversationContext = opts.getConversationContext || opts.config?.getConversationContext || (() => null);
     this.getConversationEvidenceRefs = opts.getConversationEvidenceRefs || (() => []);
+    this.getConversationSnapshot = opts.getConversationSnapshot || null;
     this.sendOwnerOutreach = opts.sendOwnerOutreach || null;
     this.ownerOutreachPolicy = opts.ownerOutreachPolicy || null;
     this.retryFeedback = opts.retryFeedback || null;
@@ -234,9 +235,19 @@ class ThinkingMachine {
       // Freeze the same conversation for deep-dive and its critique/revisions.
       let conversationContext = null;
       let conversationEvidenceRefs = [];
-      try { conversationContext = this.getConversationContext(); }
+      try {
+        if (this.getConversationSnapshot) {
+          const snapshot = this.getConversationSnapshot(candidate);
+          conversationContext = snapshot?.context || null;
+          conversationEvidenceRefs = Array.isArray(snapshot?.evidenceRefs) ? [...snapshot.evidenceRefs] : [];
+        } else {
+          conversationContext = this.getConversationContext();
+          // Compatibility for standalone callers; the normal factory always
+          // supplies the atomic snapshot and never makes these separate reads.
+          conversationEvidenceRefs = this.getConversationEvidenceRefs();
+        }
+      }
       catch (error) { this.logger.warn?.('[thinking-machine] conversation context unavailable', { error: error.message }); }
-      try { conversationEvidenceRefs = this.getConversationEvidenceRefs(); } catch { /* no invented evidence */ }
       const cycleContext = { conversationContext };
       let residentInitiativeContext = null;
       try { residentInitiativeContext = this.getResidentInitiativeContext?.() || null; }

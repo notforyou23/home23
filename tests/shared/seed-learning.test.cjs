@@ -8,6 +8,17 @@ const decision = { schema: 'home23.learning-decision.v1', decisionId: 'outreach:
 const feedback = { schema: 'home23.learning-feedback.v1', decisionId: decision.decisionId, scope: decision.scope,
   direction: 'attenuate', tags: ['unsolicited', 'routine'], excludes: ['critical'], evidenceRefs: ['message:owner1'], basis: 'owner-feedback' };
 
+test('the read-only snapshot exposes bounded committed source progress without changing state', () => {
+  const { learningSnapshot } = require('../../shared/seed-learning.cjs');
+  const first = emptyLearningState(), second = emptyLearningState();
+  first.watermarks = { harness: 10, relationship: 7 }; second.watermarks = { harness: 23 };
+  const state = { a: { experience: first }, b: { experience: second } }, original = JSON.stringify(state);
+  assert.deepEqual(learningSnapshot(state).watermarks, { harness: 23, relationship: 7 });
+  assert.equal(JSON.stringify(state), original);
+  const cells = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`cell${i}`, { experience: { ...emptyLearningState(), watermarks: { [`stream${i}`]: i } } }]));
+  assert.equal(Object.keys(learningSnapshot(cells).watermarks).length, 32);
+});
+
 test('a scoped owner lesson changes a later actual admission input without changing episodes', () => {
   const state = { version: 1, decisions: [normalizeLearningDecision(decision)], lessons: [], seenFeedbackIds: [] };
   const changed = applyLearningFeedback(state, feedback, { feedbackId: 'f1', observedAt: '2026-10-29T00:00:00Z', ownerAuthenticated: true });

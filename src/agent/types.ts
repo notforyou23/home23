@@ -38,6 +38,8 @@ export interface ToolDefinition {
   description: string;
   input_schema: Record<string, unknown>;
   execute: (input: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
+  /** Audited runtime descriptor; never inferred from a model-supplied name. */
+  readProcedure?: import('./read-procedure-learning.js').ReadProcedureDescriptor;
 }
 
 export interface ToolResult {
@@ -53,6 +55,8 @@ export interface ToolResult {
   is_error?: boolean;
   resultHandle?: string;
   metadata?: Record<string, unknown>;
+  readProcedureOutcome?: { status: 'success' | 'failed' | 'ineligible'; code: string };
+  readProcedure?: import('./read-procedure-learning.js').ReadProcedureTrace;
 }
 
 // ─── Tool Context ───────────────────────────────────────────
@@ -209,6 +213,8 @@ export interface ToolContext {
   memoryObjectStore?: MemoryObjectStore;
   /** Runtime-owned Seed path for bounded decision/lesson recall. Never a model argument. */
   seedStateDir?: string;
+  /** Runtime-only recovery authority, never a tool argument. */
+  readProcedureControl?: { criticalRecovery?: boolean; plannedMethod?: boolean };
   /** Bounded readback bound to this resident's runtime ledger, never a model-supplied path. */
   readLearningDecisionEvidence?: import('./learning-decision-evidence.js').ReadLearningDecisionEvidence;
   /** Loop-owned curated working-relationship ledger (Step 30, Piece 2). */
@@ -379,6 +385,7 @@ export type AgentEvent =
       parentActivityId?: string; sourceEventType?: string; providerEvent?: unknown }
   | { type: 'tool_result'; tool: string; result: string; success: boolean;
       toolCallId: string; exactResult?: string; resultHandle?: string;
+      readProcedure?: import('./read-procedure-learning.js').ReadProcedureTrace;
       toolMetadata?: BrainToolEventMetadata; sourceEventType?: string; providerEvent?: unknown }
   | { type: 'response_chunk'; chunk: string; sourceEventType?: string;
       providerEvent?: unknown }

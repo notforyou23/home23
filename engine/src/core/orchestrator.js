@@ -428,8 +428,8 @@ class Orchestrator {
       ...options,
       getTemporalContext: () => this.buildCurrentTemporalContext(),
       getConversationContext: () => this.conversationSalience?.getRecentContext() || null,
-      getConversationEvidenceRefs: () => (this.conversationSalience?.getRecentEntries() || [])
-        .filter(entry => entry.source === 'seed_contact' && entry.eventId).map(entry => entry.eventId),
+      getConversationSnapshot: candidate => this.conversationSalience?.getRecentSnapshot?.(new Date(), candidate?.conversation)
+        || { context: this.conversationSalience?.getRecentContext() || null, evidenceRefs: [] },
       ownerOutreachPolicy: this.getOwnerOutreachPolicy(),
       sendOwnerOutreach: (request, attentionIntent) => this.sendOwnerOutreach(request, attentionIntent),
       retryFeedback: () => this.retryCognitionFeedback(),

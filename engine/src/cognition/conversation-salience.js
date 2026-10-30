@@ -80,6 +80,7 @@ class ConversationSalience {
     this.recentEntries = [];
     this.lastMtimeMs = 0;
     this.lastLoadAt = 0;
+    this._canonicalRead = null;
 
     // Cached cluster-score map. Invalidated when entries change.
     this._cachedScores = null;
@@ -182,33 +183,94 @@ class ConversationSalience {
 
   /** Actual conversational material, with the sidecar's authorship labels intact. */
   getRecentEntries(now = new Date()) {
-    const canonical = readRecentConversationEntries(this.conversationStreamPath, {
-      now, maxAgeMs: this.config.maxAgeMs,
-      // Inspect a bounded contact tail before selecting context. The resident's
-      // own repeated reports must not push the owner's correction out of view.
-      maxEntries: Math.max(this.config.maxEntries, 200), maxReadBytes: this.config.canonicalMaxReadBytes,
-    });
+    return this._recentView(now).entries;
+  }
+
+  _recentView(now) {
+    const nowMs = now.getTime();
+    let stat = null;
+    try { if (this.conversationStreamPath) stat = fs.statSync(this.conversationStreamPath); } catch { /* unavailable canonical source */ }
+    const signature = stat ? `${stat.ino}:${stat.size}:${stat.mtimeMs}` : null;
+    const cached = this._canonicalRead;
+    if (!cached || cached.signature !== signature || nowMs < cached.nowMs
+      || nowMs - cached.nowMs >= this.config.reloadIntervalMs) {
+      this._canonicalRead = { signature, nowMs, stat,
+        entries: readRecentConversationEntries(this.conversationStreamPath, {
+          now, maxAgeMs: this.config.maxAgeMs,
+          // Inspect a bounded tail before selecting context. Repeated resident
+          // reports must not push the owner's correction out of view.
+          maxEntries: Math.max(this.config.maxEntries, 200), maxReadBytes: this.config.canonicalMaxReadBytes,
+        }),
+      };
+    }
+    const canonical = this._canonicalRead.entries.filter(entry => {
+      const age = nowMs - Date.parse(entry.ts);
+      return Number.isFinite(age) && age >= 0 && age <= this.config.maxAgeMs;
+    }).map(entry => ({ ...entry }));
     if (canonical.length) {
       const owners = canonical.filter(isOwnerContact).slice(-this.config.maxEntries);
       const ownerIds = new Set(owners.map(entry => entry.eventId));
       const others = canonical.filter(entry => !ownerIds.has(entry.eventId) && !isOwnerContact(entry))
         .slice(-Math.max(0, this.config.maxEntries - owners.length));
       // slice(-0) would include the entire tail when owners fill the budget.
-      return [...owners, ...(owners.length < this.config.maxEntries ? others : [])]
-        .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+      return { source: 'seed_contact', canonical, stat, entries:
+        [...owners, ...(owners.length < this.config.maxEntries ? others : [])]
+          .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts)) };
     }
     this._maybeReload();
-    const nowMs = now.getTime();
-    return this.recentEntries.filter(entry => {
+    const entries = this.recentEntries.filter(entry => {
       const age = nowMs - Date.parse(entry.ts);
       return Number.isFinite(age) && age >= 0 && age <= this.config.maxAgeMs;
     }).slice(-6).map(entry => ({ ...entry, source: 'compiled_history',
       summary: `[Compiled session excerpt; ${entry.ts} is compilation time, not proof of current contact]\n${String(entry.summary).slice(0, 4000)}`,
     }));
+    return { source: entries.length ? 'compiled_history' : 'none', canonical, stat, entries };
   }
 
   getRecentContext(now = new Date()) {
-    return this._boundedContext(this.getRecentEntries(now));
+    return this.getRecentSnapshot(now).context;
+  }
+
+  /** Capture shown words and their accepted identities together. A selected
+   * conversation replaces the general context in DeepDive, so it can only
+   * grant evidence for complete attributed turns present in that excerpt. */
+  getRecentSnapshot(now = new Date(), conversation = null) {
+    const entries = this.getRecentEntries(now);
+    const bounded = this._boundedSelection(entries);
+    let shown = bounded.entries;
+    let context = bounded.context;
+    if (conversation) {
+      const summary = typeof conversation.summary === 'string' ? conversation.summary : '';
+      context = `[Conversation ${conversation.ts}; ${conversation.chatId}]\n${summary}`;
+      const identity = entries.find(entry => entry.source === 'seed_contact'
+        && entry.eventId === conversation.eventId && entry.ts === conversation.ts
+        && entry.chatId === conversation.chatId);
+      shown = [];
+      if (conversation.source === 'seed_contact' && identity && summary.length <= 12000) {
+        if (summary === identity.summary) shown = [identity];
+        else {
+          // Reconstruct a trusted bounded session, including a queued snapshot
+          // from before a later append. Substring matches would also admit
+          // quoted turns or distinct contacts with indistinguishable labels.
+          const session = entries.filter(entry => entry.chatId === conversation.chatId);
+          let accepted = null;
+          for (let end = 1; end <= session.length; end++) {
+            const selection = this._boundedSelection(session.slice(0, end), false);
+            if (selection.context !== summary || !selection.entries.includes(identity)) continue;
+            if (accepted && JSON.stringify(accepted.map(entry => entry.eventId))
+              !== JSON.stringify(selection.entries.map(entry => entry.eventId))) { accepted = []; break; }
+            accepted = selection.entries;
+          }
+          shown = accepted || [];
+        }
+      }
+    }
+    const evidenceEntries = shown.filter(entry => entry.source === 'seed_contact' && typeof entry.eventId === 'string'
+      && entry.eventId.length <= 500).sort((a, b) => Number(isOwnerContact(b)) - Number(isOwnerContact(a))
+        || Date.parse(b.ts) - Date.parse(a.ts));
+    return Object.freeze({ context, source: entries[0]?.source || 'none',
+      evidenceRefs: Object.freeze([...new Set(evidenceEntries.map(entry => entry.eventId))]),
+      shownRecent: shown.length, shownOwners: shown.filter(isOwnerContact).length });
   }
 
   /** Owner contact starts an inquiry. Our own replies remain context, without
@@ -232,8 +294,12 @@ class ConversationSalience {
   }
 
   _boundedContext(entries, includeChannels = true) {
+    return this._boundedSelection(entries, includeChannels).context;
+  }
+
+  _boundedSelection(entries, includeChannels = true) {
     const latestOwner = entries.findLast(isOwnerContact);
-    if (latestOwner && String(latestOwner.summary).length > 12000) return omittedContact(latestOwner);
+    if (latestOwner && String(latestOwner.summary).length > 12000) return { context: omittedContact(latestOwner), entries: [] };
     const ordered = entries.map((entry, index) => ({ entry, index })).reverse();
     // Give contact the context budget first; keep chronology in the final view.
     ordered.sort((a, b) => Number(isOwnerContact(b.entry)) - Number(isOwnerContact(a.entry)));
@@ -253,10 +319,12 @@ class ConversationSalience {
         continue;
       }
       if (chars + text.length + 2 > 12000) continue; // keep complete, attributed turns
-      selected.push({ index, text });
+      selected.push({ index, text, entry });
       chars += text.length + 2;
     }
-    return selected.sort((a, b) => a.index - b.index).map(row => row.text).join('\n\n') || null;
+    selected.sort((a, b) => a.index - b.index);
+    return { context: selected.map(row => row.text).join('\n\n') || null,
+      entries: selected.map(row => row.entry).filter(Boolean) };
   }
 
   /** Select the matching memories, not whichever nodes were inserted first. */
@@ -299,18 +367,29 @@ class ConversationSalience {
    * Debug/observability: count recent entries and their ages.
    */
   stats(now = new Date()) {
+    const view = this._recentView(now);
+    const bounded = this._boundedSelection(view.entries);
     this._maybeReload();
     const nowMs = now.getTime();
     let active = 0;
     for (const e of this.recentEntries) {
       const ageMs = nowMs - new Date(e.ts).getTime();
-      if (ageMs <= this.config.maxAgeMs) active++;
+      if (ageMs >= 0 && ageMs <= this.config.maxAgeMs) active++;
     }
     return {
-      totalCached: this.recentEntries.length,
-      active,
-      lastMtimeMs: this.lastMtimeMs,
+      source: view.source,
+      totalCached: view.source === 'seed_contact' ? view.canonical.length : this.recentEntries.length,
+      active: view.entries.length,
+      lastMtimeMs: view.source === 'seed_contact' ? view.stat?.mtimeMs || 0 : this.lastMtimeMs,
       sidecarExists: fs.existsSync(this.sidecarPath),
+      canonical: { configured: Boolean(this.conversationStreamPath), exists: Boolean(view.stat),
+        coverage: 'bounded_tail', maxReadBytes: this.config.canonicalMaxReadBytes,
+        acceptedRecent: view.canonical.length, selectedRecent: view.source === 'seed_contact' ? view.entries.length : 0,
+        shownRecent: bounded.entries.filter(entry => entry.source === 'seed_contact').length,
+        shownOwners: bounded.entries.filter(entry => entry.source === 'seed_contact' && isOwnerContact(entry)).length,
+        lastMtimeMs: view.stat?.mtimeMs || 0 },
+      legacy: { totalCached: this.recentEntries.length, active, lastMtimeMs: this.lastMtimeMs,
+        sidecarExists: fs.existsSync(this.sidecarPath), used: view.source === 'compiled_history' },
     };
   }
 

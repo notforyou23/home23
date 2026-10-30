@@ -11,6 +11,7 @@ import type {
 import { applyForegroundToolPolicy, foregroundDetachRefusal } from './foreground-tool-policy.js';
 import { taskContextTool } from './tools/task-context.js';
 import { buildDelegationHandoff } from './delegation-handoff.js';
+import { executeReadProcedure } from './read-procedure-learning.js';
 
 const require = createRequire(import.meta.url);
 // One admission-deadline definition for the home and the resident.
@@ -593,6 +594,9 @@ export async function executePlannedTool(input: {
   }
   const exactContext: ToolContext = {
     ...input.context,
+    // This Work owns an exact method, rather than a flexible next-method
+    // choice. Preserve owed Work and still learn its actual read outcome.
+    readProcedureControl: { ...input.context.readProcedureControl, plannedMethod: true },
     chatId: attemptChatId,
     delegationSnapshot,
     coordinationWorkDestination: destination,
@@ -621,9 +625,12 @@ export async function executePlannedTool(input: {
     toolCallId: input.toolCallId, sourceEventType: 'runtime.promoted_tool_call' });
   await input.beforeExecute?.();
   abortController.signal.throwIfAborted();
-  const result = await input.registry.execute(input.name, executionArgs, exactContext);
+  const result = await executeReadProcedure({ registry: input.registry, name: input.name, input: executionArgs,
+    toolCallId: input.toolCallId, context: exactContext,
+    execute: () => input.registry.execute(input.name, executionArgs, exactContext) });
   onEvent({ type: 'tool_result', tool: input.name, toolCallId: input.toolCallId,
-    result: result.content, exactResult: result.content, success: result.is_error !== true,
+    result: result.content, exactResult: result.content, success: result.is_error !== true && result.readProcedure?.admission !== 'deferred',
+    ...(result.readProcedure ? { readProcedure: result.readProcedure } : {}),
     resultHandle: result.resultHandle, sourceEventType: 'runtime.promoted_tool_result' });
   if (result.is_error === true) throw new Error(result.content || `${input.name} failed`);
   if (!input.context.runAgentLoop) {
@@ -733,11 +740,11 @@ export async function executeAndFormatTool(input: {
     context = { ...context, brainOperations,
       turnRuntime: context.turnRuntime ? { ...context.turnRuntime, brainOperations } : context.turnRuntime };
   }
-  const result = await input.registry.execute(input.name, decision.input, {
-    ...context,
-    parentToolCallId: input.toolCallId,
-  });
-  const success = result.is_error !== true;
+  const executionContext = { ...context, parentToolCallId: input.toolCallId };
+  const result = await executeReadProcedure({ registry: input.registry, name: input.name, input: decision.input,
+    toolCallId: input.toolCallId, context: executionContext,
+    execute: () => input.registry.execute(input.name, decision.input, executionContext) });
+  const success = result.is_error !== true && result.readProcedure?.admission !== 'deferred';
   const evidence = result.contextEvidenceId && input.registry.get('task_context')
     ? `\n[Retained task evidence: ${result.contextEvidenceId}; use task_context read to recover details.]` : '';
   // Context pages carry cursors/offsets; clipping their JSON would silently
@@ -754,6 +761,7 @@ export async function executeAndFormatTool(input: {
     result: eventContent,
     exactResult: result.content,
     success,
+    ...(result.readProcedure ? { readProcedure: result.readProcedure } : {}),
     sourceEventType: 'runtime.tool_result',
     ...eventMetadata,
   });

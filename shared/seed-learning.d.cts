@@ -14,7 +14,7 @@ export interface LearningLesson {
   retentionCredits?: number; replacesLessonId?: string;
 }
 export interface LearningState { version: 1; decisions: LearningDecision[]; lessons: LearningLesson[]; seenFeedbackIds: string[]; watermarks: Record<string, number>; lastConsolidatedAt?: string; pendingFeedback: Array<{ feedback: LearningFeedback; authority: { feedbackId: string; observedAt: string; ownerAuthenticated?: boolean; stream?: string; sequence?: number } }> }
-export interface LearningSnapshot { version: 1; available?: boolean; decisions: LearningDecision[]; lessons: LearningLesson[]; seq?: number | null; }
+export interface LearningSnapshot { version: 1; available?: boolean; decisions: LearningDecision[]; lessons: LearningLesson[]; watermarks?: Record<string, number>; seq?: number | null; }
 export function normalizeLearningDecision(raw: unknown): LearningDecision | null;
 export function normalizeLearningFeedback(raw: unknown): LearningFeedback | null;
 export function emptyLearningState(): LearningState;

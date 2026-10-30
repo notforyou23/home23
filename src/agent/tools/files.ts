@@ -27,6 +27,25 @@ function authorityFor(ctx: ToolContext) {
   });
 }
 
+function validReadArguments(input: Record<string, unknown>): boolean {
+  if (typeof input.path !== 'string' || !input.path || input.path.includes('\0')) return false;
+  for (const [key, minimum] of [['offset', 0], ['limit', 1], ['offset_chars', 0], ['limit_chars', 1]] as const) {
+    const value = input[key];
+    if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum)) return false;
+  }
+  return !((input.offset_chars !== undefined || input.limit_chars !== undefined) && (input.offset !== undefined || input.limit !== undefined));
+}
+
+/** Existing read authority runs before any new metadata probes. Private paths
+ * remain readable under existing grants but never become learning identities. */
+function learningReadPath(path: string, ctx: ToolContext): string | null {
+  if (refuseReadOutsideRoots(path, authorityFor(ctx))) return null;
+  const privatePath = (value: string) => value.split(/[\\/]/).some(part => /^(?:\.|\.env(?:\..*)?|\.ssh|\.gnupg|id_(?:rsa|ed25519|ecdsa|dsa)(?:\.pub)?|.*(?:secret|credential|token|password|private[-_]?key|oauth).*|.*\.(?:pem|key|p12|pfx)|config\.(?:ya?ml|json)|settings\.(?:ya?ml|json))$/i.test(part));
+  if (path.startsWith('~') || privatePath(path)) return null;
+  const canonical = canonicalizeFilePath(path, true);
+  return privatePath(canonical) || refuseReadOutsideRoots(canonical, authorityFor(ctx)) ? null : canonical;
+}
+
 
 export const WORKSPACE_ESCAPE_REFUSED = 'workspace_escape_refused';
 
@@ -143,6 +162,11 @@ export function refuseWorkspaceEscape(
 
 export const readFileTool: ToolDefinition = {
   name: 'read_file',
+  readProcedure: { kind: 'read_file', authorize(input, ctx) {
+    if (!validReadArguments(input)) return null;
+    const path = learningReadPath(resolvePath(input.path as string, ctx.workspacePath), ctx);
+    return path ? { path } : null;
+  } },
   description: 'Read file contents. Optional offset/limit select lines. If the displayed result continues, use its exact offset_chars/limit_chars call to read the rest, including long lines. Use task_context to recover the full requested text when available. Path can be absolute or relative to your workspace.',
   input_schema: {
     type: 'object',
@@ -156,10 +180,13 @@ export const readFileTool: ToolDefinition = {
     required: ['path'],
   },
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+    if (!validReadArguments(input)) return { content: 'read_file requires a path and valid, unmixed integer offsets and limits',
+      is_error: true, readProcedureOutcome: { status: 'ineligible', code: 'read_arguments_invalid' } };
     const path = resolvePath(input.path as string, ctx.workspacePath);
     const outside = refuseReadOutsideRoots(path, authorityFor(ctx));
     if (outside) return outside;
-    if (!existsSync(path)) return { content: `File not found: ${path}`, is_error: true };
+    if (!existsSync(path)) return { content: `File not found: ${path}`, is_error: true,
+      readProcedureOutcome: { status: 'failed', code: 'ENOENT' } };
     try {
       const content = readFileSync(path, 'utf-8');
       const index = (value: unknown, fallback: number, minimum = 0): number => {
@@ -185,9 +212,10 @@ export const readFileTool: ToolDefinition = {
       }
       // The registry archives this exact result before the model formatter
       // chooses a visible page. Never discard unread text in the file tool.
-      return { content: result, fileRead: { path, offsetChars, totalChars: content.length } };
+      return { content: result, fileRead: { path, offsetChars, totalChars: content.length }, readProcedureOutcome: { status: 'success', code: 'read_completed' } };
     } catch (err) {
-      return { content: `Error reading ${path}: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
+      return { content: `Error reading ${path}: ${err instanceof Error ? err.message : String(err)}`, is_error: true,
+        readProcedureOutcome: { status: 'failed', code: (err as NodeJS.ErrnoException).code ?? 'read_io_error' } };
     }
   },
 };
@@ -353,6 +381,12 @@ function listingResult(files: string[]): ToolResult {
 
 export const listFilesTool: ToolDefinition = {
   name: 'list_files',
+  readProcedure: { kind: 'list_files', authorize(input, ctx) {
+    if (typeof input.pattern !== 'string' || !input.pattern || input.pattern.includes('\0')
+      || (input.cwd !== undefined && (typeof input.cwd !== 'string' || !input.cwd || input.cwd.includes('\0')))) return null;
+    const path = learningReadPath((input.cwd as string) || ctx.workspacePath, ctx);
+    return path ? { path, selector: input.pattern } : null;
+  } },
   description: 'List files matching a glob pattern inside granted filesystem roots (default: Home23 install + instance). Returns file paths. Defaults to your workspace.',
   input_schema: {
     type: 'object',
@@ -363,30 +397,49 @@ export const listFilesTool: ToolDefinition = {
     required: ['pattern'],
   },
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+    if (typeof input.pattern !== 'string' || !input.pattern || input.pattern.includes('\0')
+      || (input.cwd !== undefined && (typeof input.cwd !== 'string' || !input.cwd || input.cwd.includes('\0')))) {
+      return { content: 'list_files requires a pattern and an optional directory', is_error: true,
+        readProcedureOutcome: { status: 'ineligible', code: 'read_arguments_invalid' } };
+    }
     const pattern = input.pattern as string;
     const cwd = (input.cwd as string) || ctx.workspacePath;
     const outside = refuseReadOutsideRoots(cwd, authorityFor(ctx));
     if (outside) return outside;
+    try {
+      if (!statSync(cwd).isDirectory()) return { content: 'list_files base is not a directory', is_error: true,
+        readProcedureOutcome: { status: 'failed', code: 'ENOTDIR' } };
+    } catch (err) { return { content: `list_files failed: ${err instanceof Error ? err.message : String(err)}`, is_error: true,
+      readProcedureOutcome: { status: 'failed', code: (err as NodeJS.ErrnoException).code ?? 'read_io_error' } }; }
     const rg = resolveRipgrep();
     if (!rg) {
       try {
-        return listingResult(await listFilesWithGlob(pattern, cwd, LIST_LIMIT));
+        return { ...listingResult(await listFilesWithGlob(pattern, cwd, LIST_LIMIT)), readProcedureOutcome: { status: 'success', code: 'list_completed' } };
       } catch (err) {
-        return { content: `list_files failed: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
+        return { content: `list_files failed: ${err instanceof Error ? err.message : String(err)}`, is_error: true,
+          readProcedureOutcome: { status: 'failed', code: (err as NodeJS.ErrnoException).code ?? 'read_io_error' } };
       }
     }
     // rg --files supports ** recursive globs (find -path does not). rg matches
     // a glob containing '/' against paths relative to its working directory,
     // not a root argument, so run it inside cwd and make the results absolute.
-    const cmd = `${shellQuote(rg)} --files --glob ${shellQuote(pattern)} 2>/dev/null | head -${LIST_LIMIT}`;
+    const cmd = `set -o pipefail; ${shellQuote(rg)} --files --glob ${shellQuote(pattern)} 2>/dev/null | head -${LIST_LIMIT}`;
     return new Promise((resolvePromise) => {
       exec(cmd, {
         cwd,
         timeout: 15_000,
         maxBuffer: 1024 * 512,
         env: unprivilegedChildEnv(),
-      }, (_error, stdout) => {
-        resolvePromise(listingResult(stdout.trim().split('\n').filter(Boolean).map((file) => join(cwd, file))));
+        shell: '/bin/bash',
+      }, (error, stdout) => {
+        // rg exit 1 is an empty match; SIGPIPE is expected after head caps a
+        // long listing. Invalid globs / ambiguous rg errors do not teach IO.
+        const code = error && 'code' in error ? error.code : null;
+        const failed = error && code !== 1 && code !== 141;
+        resolvePromise(failed ? { content: 'list_files process failed', is_error: true,
+          readProcedureOutcome: { status: code === 2 ? 'ineligible' : 'failed', code: 'list_process_failed' } }
+          : { ...listingResult(stdout.trim().split('\n').filter(Boolean).map((file) => join(cwd, file))),
+            readProcedureOutcome: { status: 'success', code: 'list_completed' } });
       });
     });
   },

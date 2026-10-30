@@ -95,6 +95,23 @@ experience.
 - Foreground optional operational-context selection consumes the same read-only
   learned state. Relevant explicit requests remain eligible. Positive learning
   can change optional context ranking without outranking owed work.
+- Ordinary `read_file` and `list_files` execution uses an audited runtime
+  descriptor, after existing filesystem authority checks. A prospective decision
+  and the actual structured read outcome use the existing action-feedback
+  projection. Each lesson applies only to that method, canonical resource and
+  observed filesystem state. Overall Work completion cannot turn an individual
+  failed read into a successful procedure lesson. The next matching method can
+  be deferred by its committed Seed contribution, without cancelling the owed
+  task. Deferral records its lesson identities and a read-only counterfactual
+  with those contributions omitted; it is not another execution or failure.
+  Explicit authenticated owner retries, concrete planned methods, runtime
+  critical recovery and changed source state permit another attempt. Malformed
+  calls, authority refusals,
+  private credential paths and restricted inspection wrappers do not teach this
+  policy. Arbitrary shell execution and unaudited tools remain outside it.
+  The policy bounds active and unconsumed target reservations to protect the
+  shared lesson capacity. Committed source progress permits reservation reuse;
+  incomplete coverage leaves new reads available without new teaching credit.
 - Seed workspace salience consumes prediction contributions. Failed prediction
   families retain their existing supported-revision requirements.
 

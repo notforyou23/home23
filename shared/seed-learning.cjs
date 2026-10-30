@@ -181,13 +181,15 @@ function consolidateLearning(rawState, asOf) {
 }
 
 function learningSnapshot(development) {
-  const decisions = [], lessons = [];
+  const decisions = [], lessons = [], watermarks = {};
   for (const [cellId, plastic] of Object.entries(development || {})) {
     const state = normalizeLearningState(plastic?.experience);
     decisions.push(...state.decisions.map(item => ({ ...item, cellId: item.cellId || cellId })));
     lessons.push(...state.lessons.map(item => ({ ...item, cellId })));
+    for (const [stream, sequence] of Object.entries(state.watermarks)) watermarks[stream] = Math.max(watermarks[stream] || 0, sequence);
   }
-  return { version: 1, available: true, decisions, lessons };
+  return { version: 1, available: true, decisions, lessons,
+    watermarks: Object.fromEntries(Object.entries(watermarks).sort(([a], [b]) => a.localeCompare(b)).slice(0, 32)) };
 }
 
 function evaluateLearnedDecision(snapshot, candidate) {
@@ -229,7 +231,7 @@ function checkpointStateHash(checkpoint) {
 /** Read a bounded committed tail; never instantiate a Seed or write live state.
  * Missing coverage or a broken anchor disables learned suppression honestly. */
 function readSeedLearning(stateDir) {
-  const unavailable = { version: 1, available: false, decisions: [], lessons: [], seq: null };
+  const unavailable = { version: 1, available: false, decisions: [], lessons: [], watermarks: {}, seq: null };
   let fd;
   try {
     const directory = path.join(stateDir, 'checkpoints');
