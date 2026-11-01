@@ -321,7 +321,8 @@ export class CronScheduler {
   private ownershipLeaseMs: number;
   private tickInProgress = false;
 
-  constructor(config: SchedulerConfig, handler: JobHandler, runtimeDir: string) {
+  constructor(config: SchedulerConfig, handler: JobHandler, runtimeDir: string,
+    private readonly admitting: () => boolean = () => true) {
     this.config = config;
     this.handler = handler;
     this.runtimeDir = runtimeDir;
@@ -591,7 +592,10 @@ export class CronScheduler {
 
   // ─── Tick Loop ─────────────────────────────────────────
 
+  getActiveJobCount(): number { return this.activeJobs.size; }
+
   private async tick(): Promise<void> {
+    if (!this.admitting()) return;
     if (this.tickInProgress) {
       return;
     }
@@ -696,6 +700,7 @@ export class CronScheduler {
   }
 
   private async executeJob(job: CronJob, decision?: JobDecision, caller?: JobExecutionContext['caller']): Promise<JobResult> {
+    if (!this.admitting()) return { status: 'error', error: 'Resident maintenance in progress; retry shortly', durationMs: 0 };
     if (this.activeJobs.has(job.id)) return { status: 'error', error: 'This scheduled job already has an active run.', durationMs: 0 };
     caller?.abortSignal?.throwIfAborted();
     this.activeJobs.add(job.id);

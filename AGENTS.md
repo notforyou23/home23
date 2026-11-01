@@ -101,6 +101,10 @@ The generated `instances/`, local `config/*.yaml`/`*.json`, and `ecosystem.confi
 - Include cleanup, consolidation and supporting changes needed for the requested outcome. Explain material scope changes; ask before pursuing unrelated product direction.
 - After code changes, run the smallest meaningful verification first, then broaden when release or onboarding behavior changed.
 
+## Resident maintenance
+
+For an owner-authorized product-home harness restart, use the independent queue in [Resident maintenance](docs/reference/RESIDENT-MAINTENANCE.md). Finish the requesting turn and read its terminal receipt. Do not revive the legacy supervisor or bypass the read-only PM2 shim.
+
 ## Verification
 
 Follow the shared agreement's verification scope. For release/onboarding work, prefer:

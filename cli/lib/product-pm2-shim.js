@@ -3,7 +3,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { productSupervisorCommand } from './product-supervisor.js';
 
 const READ_COMMANDS = new Set(['jlist', 'list', 'ls', 'status']);
-const USE_HOST = 'Use the Home23 Host to manage processes.';
+const USE_HOST = 'Use the Home23 Host to manage processes. Authorized resident harness restarts use scripts/product/maintenance.mjs request HOME RESIDENT REASON; see docs/reference/RESIDENT-MAINTENANCE.md.';
 const cell = value => String(value ?? '').replace(/[\t\r\n\x1b]/g, ' ');
 
 export async function runProductPm2Shim(args, {

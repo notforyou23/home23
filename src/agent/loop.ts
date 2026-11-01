@@ -17,6 +17,7 @@ import { anthropicOAuthStealthHeaders } from './anthropic-headers.js';
 import { resolveProviderKey, isAuthError, refreshManagedOAuth } from './provider-credentials.js';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { MaintenanceAdmission } from './maintenance-admission.js';
 import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 const modelDiscovery = createRequire(import.meta.url)('../../shared/model-discovery.cjs');
@@ -408,6 +409,7 @@ export class AgentLoop {
   private memory: MemoryManager;
   private compaction: CompactionManager | null;
   private cacheDiagnostics?: CacheDiagnosticsConfig;
+  readonly maintenanceAdmission = new MaintenanceAdmission();
   private activeRuns = new Map<string, Map<string, AbortController>>();
   private speakingRuns = new Map<string, Set<string>>();
   private activeTurnIds = new Map<string, Set<string>>();
@@ -888,6 +890,8 @@ export class AgentLoop {
     ac: AbortController,
     opts: { speaking?: boolean } = {},
   ): void {
+    // A previously admitted turn may register its run() continuation again.
+    if (!this.activeRuns.get(chatId)?.has(turnId)) this.maintenanceAdmission.assertAccepting();
     let runs = this.activeRuns.get(chatId);
     if (!runs) {
       runs = new Map();

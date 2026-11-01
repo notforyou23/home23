@@ -1,4 +1,5 @@
 import { createExecutionControlPort } from "./agent/execution-control.js";
+import { createMaintenanceRouter } from './routes/maintenance.js';
 import { Home23Adapter } from './channels/home23.js';
 import { createOwnerOutreachSender, createOwnerOutreachHandler } from './channels/owner-outreach.js';
 import { createResidentInitiativeHandler, createResidentInitiativeStatusHandler } from './channels/resident-initiative.js';
@@ -1144,7 +1145,7 @@ async function main(): Promise<void> {
       }
     };
 
-    scheduler = new CronScheduler(config.scheduler, cronHandler, RUNTIME_DIR);
+    scheduler = new CronScheduler(config.scheduler, cronHandler, RUNTIME_DIR, () => !agent.maintenanceAdmission.current());
     homeVibeConfig = reconcileHomeVibeJob(scheduler, homeVibeConfig, error => console.error(`[home-vibe] ${error}`));
 
     // Load external cron jobs from config dir if file exists
@@ -1743,6 +1744,14 @@ async function main(): Promise<void> {
   bridgeApp.post('/api/chat', createEvobrewChatHandler(bridgeConfig));
   bridgeApp.post('/api/stop', createStopHandler(bridgeConfig));
   bridgeApp.get('/health', createHealthHandler({ agentName: AGENT_NAME, agent }));
+  bridgeApp.use('/api/maintenance', createMaintenanceRouter({
+    token: bridgeToken || '', admission: agent.maintenanceAdmission,
+    active: () => ({
+      runs: agent.getActiveRuns().length + (scheduler?.getActiveJobCount() ?? 0),
+      work: workRegistry.list({ active: true, limit: 200 }).length,
+      coding: (codingBridge?.listJobs() ?? []).filter(job => ['starting', 'running', 'queued'].includes(job.status)).length,
+    }),
+  }));
 
   // The web editor's manual Generate uses the same scheduled resident job.
   // Its bearer token is an install-local capability, separate from chat auth.
