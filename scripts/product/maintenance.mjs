@@ -210,7 +210,7 @@ export async function main(args = process.argv.slice(2)) {
   const [action,home,...rest] = args, p = maintenancePaths(home);
   if (action==='install' && rest.length) return installMaintenance(home,rest);
   if (action==='request' && rest.length===2) return requestRestart(home,rest[0],rest[1]);
-  if (action==='status' && rest.length<=1) return locked(home, p=>requests(p).filter(r=>!rest[0]||r.id===rest[0]).sort((a,b)=>b.createdAt-a.createdAt).slice(0,20));
+  if (action==='status' && rest.length<=1) return fs.existsSync(p.queue) ? requests(p).filter(r=>!rest[0]||r.id===rest[0]).sort((a,b)=>b.createdAt-a.createdAt).slice(0,20) : [];
   if (action==='cancel' && /^[a-f0-9-]{36}$/.test(rest[0]||'')) return locked(home,p=>{
     const file=path.join(p.queue,rest[0]+'.json'), r=read(file); if(!terminal.has(r.state)){if(r.state==='running')throw new Error('Cannot cancel an executing restart');r.state='cancelled';write(file,r);}return r;
   });
