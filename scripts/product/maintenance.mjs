@@ -175,8 +175,8 @@ export async function processQueue(home, deps = {}) {
     }
   });
 }
-export async function installMaintenance(home, residents) {
-  const m = await modules(home), p = maintenancePaths(home);
+export async function installMaintenance(home, residents, deps = {}) {
+  const m = deps.modules || await modules(home), p = maintenancePaths(home);
   const rows = JSON.parse((await m.productSupervisorInventory(home)).stdout);
   m.assertIndependent(rows.filter(r=>r.pid).map(r=>r.pid));
   if ((await m.inspectProductSupervisor(home)).ownership !== 'launchd') throw new Error('Product supervisor is not launchd-owned');
@@ -191,7 +191,7 @@ export async function installMaintenance(home, residents) {
       if (!fs.existsSync(entry)) fs.writeFileSync(entry, code, { mode: 0o600, flag: 'wx' });
       if (digest(fs.readFileSync(entry)) !== hash) throw new Error('Installed controller hash differs');
       const service = { name: 'home23-maintenance', executable: path.join(home,'bin/node'), args: [entry,'serve',home], cwd: path.join(home,'app'),
-        env: m.productEnvironment(home), stateRoots: [p.dir], startOnHomeStart: true };
+        env: {}, stateRoots: [p.dir], startOnHomeStart: true };
       const stateFile = path.join(home,'.home23-host.json'), state = read(stateFile);
       if (state.continuationServices?.some(s=>s.name===service.name && JSON.stringify(s)!==JSON.stringify(service))) throw new Error('Another maintenance controller is already configured');
       state.continuationServices = [...(state.continuationServices||[]).filter(s=>s.name!==service.name),service];
@@ -199,7 +199,7 @@ export async function installMaintenance(home, residents) {
       write(p.policy, { enabled:true, allowHarnessRestart:true, residents });
       const config = path.join(p.dir,'ecosystem.config.json');
       write(config,{ apps:[{name:service.name, script:path.relative(service.cwd,service.executable), interpreter:'none', args:service.args, cwd:service.cwd,
-        env:service.env, autorestart:true, min_uptime:100, exp_backoff_restart_delay:2000, kill_timeout:60000, filter_env:['PM2_']}] });
+        env:m.productRoleEnvironment(home,m.productEnvironment(home)), autorestart:true, min_uptime:100, exp_backoff_restart_delay:2000, kill_timeout:60000, filter_env:['PM2_']}] });
       if (!rows.some(r=>r.name===service.name)) await m.productSupervisorCommand(home,['start',config,'--only',service.name,'--silent']);
       write(p.installed,{ schema:'home23.product-maintenance.v1', homeRoot:home, entry, sha256:hash, service:service.name });
       return { installed:true, entry, service:service.name };
