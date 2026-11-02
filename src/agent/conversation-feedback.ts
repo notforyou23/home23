@@ -1,9 +1,10 @@
 /** Authenticated conversational feedback, linked to an actually delivered reply. */
-import { previewLearningFeedback, emptyLearningState, learningLessonId, normalizeLearningDecision, readSeedLearning,
-  type LearningDecision, type LearningState } from '../../shared/seed-learning.cjs';
+import { previewLearningFeedback, emptyLearningState, learningLessonId, normalizeLearningDecision, normalizeLearningFeedback, readSeedLearning,
+  recordLearningDecision, type LearningDecision, type LearningState } from '../../shared/seed-learning.cjs';
 import { canonicalConversationDelivery, readBoundedLearningEvidenceRows, verifiedConversationSelections,
   type VerifiedConversationSelection } from './learning-decision-evidence.js';
 import { isExplicitStandingConversationInstruction, validateConversationFeedbackClaim, type ConversationFeedbackInterpretation } from './conversation-feedback-contract.js';
+import type { DeliveredConductDecision } from './delivered-conversation-observation.js';
 import type { RelationshipLedger, RelationshipLearningFeedback } from './relationship-ledger.js';
 
 type RecordValue = Record<string, unknown>;
@@ -44,7 +45,10 @@ export async function readCurrentConversationOwner(input: {
 }
 
 export interface DeliveredConversation {
-  selection: VerifiedConversationSelection;
+  selection: Pick<VerifiedConversationSelection, 'selectionId' | 'reply' | 'responseHash'> & {
+    decisions: Array<VerifiedConversationSelection['decisions'][number] | DeliveredConductDecision>;
+    annotationSource?: 'delivered-reply-observation';
+  };
   deliveryMessageRef: string;
   deliverySourceSequence: number;
   currentOwnerMessageRef: string;
@@ -152,9 +156,15 @@ export function applyConversationFeedback(input: {
       || new Set(supersedes).size !== supersedes.length) return refuse('invalid_feedback_conditions');
     const decision = prior.selection.decisions.find(item => item.decisionId === proposal.decisionId);
     if (!decision || axes.has(decision.behavior.axis)) return refuse('feedback_decision_not_delivered_or_duplicate');
-    const retained = [...snapshot.decisions, ...snapshot.lessons.flatMap(lesson => lesson.eligibility ? [lesson.eligibility] : [])]
+    let retained = [...snapshot.decisions, ...snapshot.lessons.flatMap(lesson => lesson.eligibility ? [lesson.eligibility] : [])]
       .map(normalizeLearningDecision).filter((item): item is LearningDecision => item !== null)
       .filter(item => item.decisionId === decision.decisionId);
+    if (!retained.length && prior.selection.annotationSource === 'delivered-reply-observation') {
+      // This is a validated runtime observation of exact delivered bytes, not a
+      // prospective choice. The existing Seed adapters may consume feedback
+      // before its decision; their pending-witness path resolves that ordering.
+      retained = [{ ...decision, cellId: snapshot.conductAnchorCellId ?? 'pending.conduct.anchor' }];
+    }
     if (!retained.length || retained.some(item => JSON.stringify(core(item)) !== JSON.stringify(core(decision)))) {
       return refuse('original_decision_not_retained');
     }
@@ -174,7 +184,7 @@ export function applyConversationFeedback(input: {
       && lesson.tags.includes(`situation:${decision.behavior.situation}`)))) return refuse('revision_target_not_applicable');
     const feedback: RelationshipLearningFeedback = {
       schema: 'home23.learning-feedback.v1', decisionId: decision.decisionId, scope: decision.scope,
-      ...(cells[0] ? { cellId: cells[0] } : {}),
+      ...(prior.selection.annotationSource !== 'delivered-reply-observation' && cells[0] ? { cellId: cells[0] } : {}),
       direction: interpretation.direction, tags: [...decision.tags], excludes: [], basis: 'owner-feedback',
       evidenceRefs: [input.owner.messageRef, prior.deliveryMessageRef, prior.currentOwnerMessageRef],
       supersedes: interpretation.supersedes, corroborates: [], ...(interpretation.standing ? { standing: true } : {}),
@@ -198,13 +208,43 @@ export function applyConversationFeedback(input: {
   // Exact source retry only flushes the original outbox. It must not be refused
   // because its already-applied episode now correctly rejects duplicate credit.
   input.relationshipLedger.reload();
-  if (input.relationshipLedger.listEntries({ includeRemoved: true }).some(entry => entry.actor === 'jtr'
-    && (entry.provenance.source_refs.includes(input.owner.messageRef) || entry.provenance.source_refs.includes(prior.currentOwnerMessageRef)))) return record();
+  const sourceEntries = input.relationshipLedger.listEntries({ includeRemoved: true }).filter(entry => entry.actor === 'jtr'
+    && (entry.provenance.source_refs.includes(input.owner.messageRef) || entry.provenance.source_refs.includes(prior.currentOwnerMessageRef)));
+  if (sourceEntries.length) {
+    const entry = sourceEntries.length === 1 ? sourceEntries[0] : undefined;
+    const canonicalRefs = [prior.currentOwnerMessageRef, prior.deliveryMessageRef];
+    const oldIngress = entry?.provenance.source_refs.filter(ref => !canonicalRefs.includes(ref)) ?? [];
+    const semantic = (feedback: RelationshipLearningFeedback, ephemeral: readonly string[]) => {
+      const normalized = normalizeLearningFeedback(feedback);
+      if (!normalized || !canonicalRefs.every(ref => normalized.evidenceRefs.includes(ref))) return null;
+      return { ...normalized, evidenceRefs: normalized.evidenceRefs.filter(ref => !ephemeral.includes(ref)).sort() };
+    };
+    const episode = { selectionId: prior.selection.selectionId, responseHash: prior.selection.responseHash,
+      deliveryMessageRef: prior.deliveryMessageRef, ownerMessageRef: prior.currentOwnerMessageRef };
+    const oldLearning = entry?.learning_batch?.map(item => semantic(item, oldIngress));
+    const newLearning = learning.map(item => semantic(item, [input.owner.messageRef]));
+    if (!entry || entry.statement !== input.owner.text || oldIngress.length > 1
+      || !entry.provenance.source_refs.includes(prior.currentOwnerMessageRef)
+      || JSON.stringify(entry.conduct_episode) !== JSON.stringify(episode)
+      || JSON.stringify(entry.learning_interpretations) !== JSON.stringify(interpretations)
+      || !oldLearning || oldLearning.some(item => item === null) || newLearning.some(item => item === null)
+      || JSON.stringify(oldLearning) !== JSON.stringify(newLearning)) return refuse('canonical_encounter_already_spent_differently');
+    // The canonical encounter was already authenticated and persisted. A new
+    // transport turn may flush that exact immutable source, never spend fresh
+    // authority or add the new turn reference to its learning evidence.
+    input.relationshipLedger.flushSeedTeaching();
+    const retained = input.relationshipLedger.listEntries({ includeRemoved: true }).find(item => item.id === entry.id)!;
+    const projections = retained.seed_projections ?? [];
+    return { status: 'source_recorded', entryId: retained.id, projectionIds: projections.map(item => item.event.event_id),
+      lessonIds: projections.map((item,index) => learningLessonId(item.event.event_id,retained.learning_batch![index]!.scope)),
+      projected: projections.filter(item => item.status === 'projected').length,
+      pending: projections.filter(item => item.status === 'pending').length, seedApplication: 'not_yet_confirmed' };
+  }
   // Preflight the entire batch against current bounded Seed capacity. Source
   // projection and subsequent Seed application are still separate receipts.
   const simulations = new Map<string, LearningState>();
   for (const [index, feedback] of learning.entries()) {
-    const cellId = feedback.cellId;
+    const cellId = feedback.cellId ?? (prior.selection.annotationSource === 'delivered-reply-observation' ? snapshot.conductAnchorCellId ?? 'pending.conduct.anchor' : undefined);
     if (!cellId || (snapshot.conductAnchorCellId && cellId !== snapshot.conductAnchorCellId)) return refuse('conduct_anchor_unavailable');
     let simulation = simulations.get(cellId);
     if (!simulation) {
@@ -213,7 +253,16 @@ export function applyConversationFeedback(input: {
         ...(snapshot.conductAnchorCellId === cellId ? { conductAnchor: true,
           ...(snapshot.conductCredits ? { conductCredits: snapshot.conductCredits } : {}) } : {}) };
     }
-    const trial = previewLearningFeedback(simulation, feedback, {
+    if (prior.selection.annotationSource === 'delivered-reply-observation') {
+      const observed = prior.selection.decisions.find(item => item.decisionId === feedback.decisionId);
+      if (!observed) return refuse('observed_decision_unavailable');
+      if (!simulation.decisions.some(item => item.decisionId === observed.decisionId)) {
+        const admission = recordLearningDecision(simulation, { ...observed, cellId });
+        if (!admission.applied && admission.reason !== 'duplicate_decision') return refuse(`seed_preflight:${admission.reason}`);
+        simulation = admission.state;
+      }
+    }
+    const trial = previewLearningFeedback(simulation, { ...feedback, cellId }, {
       feedbackId: `conversation-preflight:${input.owner.messageRef}:${index}`, ownerAuthenticated: true,
       observedAt: new Date().toISOString(),
     });

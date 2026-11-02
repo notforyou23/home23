@@ -88,6 +88,31 @@ test('native authenticated conversation delivers only selected candidate and rec
   assert.ok(!f.history.load(f.chatId).some(row => 'role' in row && typeof row.content === 'string' && row.content.includes('conversation-proposal.v1')));
 });
 
+test('ultra rejection recovers inside the conversational path and keeps prospective learning witnesses', async t => {
+  const f = fixture(t);
+  f.agent.setModel('gpt-6-astra', 'openai-codex', 'ultra');
+  globalThis.fetch = (async (_url, init) => {
+    const body = JSON.parse(String(init?.body)); f.requests.push(body);
+    return f.requests.length === 1
+      ? new Response(JSON.stringify({ error: { message: 'Unsupported reasoning effort: ultra' } }), { status: 400 })
+      : response(JSON.stringify(candidate));
+  }) as typeof fetch;
+  const run = await f.agent.runWithTurn(f.chatId, 'Routing envelope.', {
+    coordinationOrigin: f.origin, contextPurpose: 'conversation',
+  });
+  const result = await run.response;
+  assert.equal(result.terminalStatus, 'complete');
+  assert.equal(result.text, candidate.candidates[0]!.reply);
+  assert.equal(f.requests.length, 2);
+  assert.equal(f.requests[0].reasoning.effort, 'ultra');
+  assert.equal(f.requests[1].reasoning, undefined);
+  assert.ok(f.requests.every(request => request.tools === undefined), 'recovery must not fall through to the ordinary loop');
+  const rows = readFileSync(join(f.root, 'brain', 'event-ledger.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(rows.filter(row => row.event_type === 'ConversationReplySelected').length, 1);
+  assert.equal(rows.filter(row => row.event_type === 'LearningDecisionObserved' && row.actor === 'conversation').length, 4);
+  assert.equal(rows.filter(row => row.event_type === 'ConversationReplyCompleted').length, 1);
+});
+
 test('explicit requested work retains ordinary provider path with no conversational selection', async t => {
   const f = fixture(t, 'Please read the project report.');
   globalThis.fetch = (async (_url, init) => { f.requests.push(JSON.parse(String(init?.body))); return response('Ordinary tool-capable response.'); }) as typeof fetch;
@@ -97,6 +122,44 @@ test('explicit requested work retains ordinary provider path with no conversatio
   const events = readFileSync(join(f.root, 'brain', 'event-ledger.jsonl'), 'utf8');
   assert.doesNotMatch(events, /ConversationReplySelected/);
   assert.match(events, /explicit_action_requested/);
+});
+
+test('feedback on an ordinary delivered reply is admitted before an explicit work route', async t => {
+  const ownerText = 'Please read the project report. Stop giving me unsolicited advice.';
+  const f = fixture(t, ownerText);
+  const session = `coordination:${f.origin.channelId}`;
+  const contact = (messageId: string, role: string, content: string, sourceSequence: number, replyToMessageId?: string) => ({
+    schema: 'home23.resident.contact.v1', messageId, channelId: f.origin.channelId, session, channelKind: 'direct',
+    role, voice: role === 'user' ? 'jtr' : 'self', actor: { kind: role === 'user' ? 'owner' : 'bot', principalId: role === 'user' ? 'owner-fixture' : 'bot-fixture' },
+    content, sourceSequence, sourceRef: `coordination.message:${messageId}`, contactId: `message:${messageId}`,
+    ts: new Date(Date.now() - (4 - sourceSequence) * 1000).toISOString(), ...(replyToMessageId ? { replyToMessageId } : {}),
+  });
+  writeFileSync(f.contactPath, [contact('original-owner', 'user', 'I finally had an afternoon to myself.', 1),
+    contact('ordinary-delivered', 'assistant', 'You should make a plan for next weekend and schedule another afternoon.', 2, 'original-owner'),
+    contact(f.origin.originMessageId!, 'user', ownerText, 3)].map(row => JSON.stringify(row)).join('\n') + '\n');
+  (f.agent as any).toolContext.coordinationChannelOperation = async ({ args }: any) => args.operation === 'project_context'
+    ? { available: false } : { registry: 'canonical', work: [], ownerContact: { messageId: f.origin.originMessageId, text: ownerText,
+      channelId: f.origin.channelId, channelKind: 'direct', channelSequence: 3,
+      previousAssistantMessageId: 'ordinary-delivered', createdAt: new Date().toISOString() } };
+  const assessment = { schema: 'home23.conversation-feedback-assessment.v1',
+    observed: { situation: 'sharing', axes: { engagement: 'analyze', initiative: 'offer_next_step', continuity: 'present_only', depth: 'brief' } },
+    feedback: [{ axis: 'initiative', quote: 'Stop giving me unsolicited advice.', direction: 'attenuate', standing: true, conditions: [], supersedes: [] }] };
+  globalThis.fetch = (async (_url, init) => {
+    f.requests.push(JSON.parse(String(init?.body)));
+    return response(f.requests.length === 1 ? JSON.stringify(assessment) : 'Ordinary requested-work response.');
+  }) as typeof fetch;
+  const run = await f.agent.runWithTurn(f.chatId, 'Routing envelope.', { coordinationOrigin: f.origin, contextPurpose: 'conversation' });
+  const result = await run.response;
+  assert.equal(result.text, 'Ordinary requested-work response.');
+  assert.equal(f.requests.length, 2);
+  assert.equal(f.requests[0].tools, undefined, 'feedback assessor has no action tools');
+  assert.ok(Array.isArray(f.requests[1].tools), 'explicit work retains ordinary capable path');
+  const rows = readFileSync(join(f.root, 'brain', 'event-ledger.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(rows.filter(row => row.event_type === 'ConversationConductObserved').length, 1);
+  assert.equal(rows.filter(row => row.event_type === 'ConversationReplySelected').length, 0, 'past reply must not acquire a fabricated selection');
+  const processed = rows.find(row => row.event_type === 'ConversationFeedbackProcessed');
+  assert.equal(processed?.payload.status, 'source_recorded');
+  assert.equal(processed?.payload.seedApplication, 'not_yet_confirmed');
 });
 
 test('malformed proposal falls through to ordinary loop and never publishes draft JSON', async t => {

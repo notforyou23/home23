@@ -332,14 +332,20 @@ async function generateCodexText(
       : {}),
   };
 
+  // Parameter and credential recovery share one deadline. A provider rejecting
+  // an optional field must not restart the caller's timeout for each retry.
+  const requestSignal = combineRequestSignals(opts.signal, opts.timeoutMs ?? 90_000);
   let authRefreshSpent = false;
   const postCodex = async (): Promise<Response> => {
-    const send = () => fetch('https://chatgpt.com/backend-api/codex/responses', {
-      method: 'POST',
-      headers: getCodexHeaders(creds),
-      body: JSON.stringify(body),
-      signal: combineRequestSignals(opts.signal, opts.timeoutMs ?? 90_000),
-    });
+    const send = () => {
+      requestSignal.throwIfAborted();
+      return fetch('https://chatgpt.com/backend-api/codex/responses', {
+        method: 'POST',
+        headers: getCodexHeaders(creds),
+        body: JSON.stringify(body),
+        signal: requestSignal,
+      });
+    };
     let response = await send();
     if (!authRefreshSpent && (response.status === 401 || response.status === 403)) {
       const rejectedToken = creds.accessToken;
@@ -354,21 +360,26 @@ async function generateCodexText(
   };
 
   let res = await postCodex();
-  if (!res.ok) {
+  while (!res.ok) {
     const errText = await res.text().catch(() => '');
+    requestSignal.throwIfAborted();
     // Newer codex models (gpt-5.6-terra era) reject max_output_tokens
     // outright. The rejection has been observed under BOTH 400 and 503, so
-    // key on the error body, not the status. Retry once without the cap —
-    // server-side defaults bound the response.
-    const capRejected = errText.includes('max_output_tokens');
-    if (capRejected) {
+    // key on the error body, not the status. Like the ordinary Codex loop,
+    // recover from rejected reasoning configuration without changing accepted
+    // efforts. Each field can be removed once, in either rejection order.
+    // Strict completion and transport/output bounds still apply after recovery.
+    const parameterRetryAllowed = res.status !== 401 && res.status !== 403;
+    if (parameterRetryAllowed && Object.hasOwn(body, 'max_output_tokens') && errText.includes('max_output_tokens')) {
       delete body['max_output_tokens'];
-      res = await postCodex();
+    } else if (parameterRetryAllowed && Object.hasOwn(body, 'reasoning') && /reasoning|summary/i.test(errText)) {
+      delete body['reasoning'];
+    } else {
+      // Upstream bodies can contain request details or secrets. Only bounded
+      // scalar failure facts may escape this transport into learning receipts.
+      throw Object.assign(new Error(`codex HTTP ${res.status}`), { code: 'provider_http_error', status: res.status });
     }
-    if (!res.ok) {
-      const retryText = capRejected ? await res.text().catch(() => '') : errText;
-      throw new Error(`codex HTTP ${res.status}: ${retryText.slice(0, 300)}`);
-    }
+    res = await postCodex();
   }
   if (!res.body) throw new Error('codex response missing body');
 

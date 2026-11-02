@@ -214,13 +214,14 @@ test('source batch cannot grow or change after the authenticated encounter was s
   assert.equal(first.status, 'source_recorded');
   const changed = applyConversationFeedback({ ...args, proposals: f.feedback });
   assert.equal(changed.status, 'refused');
-  assert.match(changed.reason!, /already spent/);
+  assert.match(changed.reason!, /already.spent/);
   assert.equal(f.authorizations(), 1);
   assert.equal(f.relationshipLedger.listEntries()[0]!.learning_batch?.length, 1);
   const replayedCanonical = applyConversationFeedback({ ...args, owner: { ...f.owner, messageRef: 'different:turn:user' },
     proposals: [f.feedback[0]] });
-  assert.equal(replayedCanonical.status, 'refused');
-  assert.equal(f.authorizations(), 1, 'new transport turn cannot spend the same canonical owner encounter again');
+  assert.equal(replayedCanonical.status, 'source_recorded');
+  assert.deepEqual(replayedCanonical.projectionIds, first.projectionIds);
+  assert.equal(f.authorizations(), 1, 'new transport turn reuses the exact canonical encounter without spending it again');
 });
 
 test('generic gratitude, reported speech, hypothetical, conditional and verification statements abstain', () => {

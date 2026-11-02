@@ -36,6 +36,9 @@ const SUBJECTS: Record<ConductAxis, Record<string, RegExp>> = {
 const NEGATIVE = /\b(?:stop|don't|do not|didn't|did not|wasn't|isn't|aren't|weren't|doesn't|can't|cannot|won't|wouldn't|shouldn't|not|no|never|less|too (?:much|many|little|brief|short|long)|unnecessary|unhelpful|missed|flat|generic|shallow|dismiss\w*|rather (?:you|than)|instead|avoid|wish you|wanted you|need you)\b/i;
 const POSITIVE = /\b(?:liked|like how|love(?:d)? how|appreciat\w*|helpful|useful|worked|helped|keep|always|more|good|better)\b/i;
 const OWNER_ADDRESS = /\b(?:you|your|that (?:was|is|felt)|this (?:was|is|felt)|the (?:reply|response|question)|please|stop|keep|avoid|less|more)\b/i;
+const REPEATED_DIAGNOSIS = /\b(?:(?:same|repeated|repeating)\s+(?:diagnos\w*|explanations?|analysis)|broken record)\b/i;
+const DIRECT_RECURRENCE_COMPLAINT = /\b(?:this|that|your (?:reply|response|diagnosis|analysis))\s+(?:is|was|feels? like)\s+(?:a\s+)?broken record\b|^you(?:'re| are)?\s+(?:keep\s+)?(?:repeating|giving|offering)\s+(?:me\s+)?(?:the\s+)?same\s+(?:diagnos\w*|analysis|explanation)\b/i;
+const DIAGNOSTIC_REPLY = /\b(?:diagnos\w*|analysis|analy[sz]\w*|investigat\w*|findings|architecture|persistent responsibility|verification|repair plan)\b/i;
 const SIMPLE_REDUCTION = /\b(?:stop|avoid|less|fewer|too (?:much|many|little|brief|short|long)|unnecessary|unhelpful|missed|flat|generic|shallow|dismiss\w*)\b/i;
 const NEGATED_POSITIVE = /\b(?:not|wasn't|isn't|aren't|weren't|was not|is not|are not|were not)\s+(?:(?:very|really)\s+)?(?:helpful|useful|good|better)\b/i;
 const DIRECT_PROHIBITION = /^(?:please\s+)?(?:don't|do not|never)\s+(?:keep\s+)?(?:ask\w*|giv\w*|offer\w*|analy[sz]\w*|explain\w*|lectur\w*|bring\w*|reply\w*|respond\w*)\b/i;
@@ -104,16 +107,23 @@ export function validateConversationFeedbackClaim(
   }
   if (/\b(?:unless|except|if|when|while)\b/i.test(conditionFree)) return 'conditional_feedback_requires_supported_scope';
   const claim = normalize(unquotedClaim);
+  const repeatedDiagnosis = item.axis === 'engagement' && item.value === 'analyze'
+    && REPEATED_DIAGNOSIS.test(claim) && DIAGNOSTIC_REPLY.test(priorReply ?? '')
+    && (DIRECT_RECURRENCE_COMPLAINT.test(claim)
+      || /^literally the same diagnos\w*\s+(?:everytime|every time|again)\b/i.test(claim) && DIRECT_RECURRENCE_COMPLAINT.test(unquotedOwner));
+  if (repeatedDiagnosis && (/\b(?:not|no|never|don't|do not|doesn't|didn't|isn't|wasn't|aren't|weren't|can't|cannot|won't)\b/i.test(claim) && !DIRECT_PROHIBITION.test(claim)
+    || /\b(?:fine|okay|ok|alright|welcome|acceptable|helpful|useful|good|liked?|love|appreciat\w*|mind|bother)\b/i.test(claim))) return 'feedback_direction_ambiguous';
   const trimClause = (value: string) => normalize(value).replace(/[.!?;]+$/, '').trim();
   const clauses = unquotedOwner.split(/[.!?;\n]+|\b(?:and|but)\b/i).map(trimClause).filter(Boolean);
   if (!clauses.includes(trimClause(unquotedClaim))) return 'feedback_quote_omits_governing_clause';
   if (/\b(?:said|says|wrote|told|thinks?|thought|wants?|suggested)\b/i.test(claim)
     && !/^i (?:think|thought|want)\b/.test(claim)) return 'reported_or_hypothetical_feedback';
-  if (/\b(?:don't|do not|never|not|no)\s+(?:want(?:\s+you)?(?:\s+to)?\s+)?(?:stop|avoid|reduce|lessen|quit|limit|end)\b/i.test(claim)
+  if (/\b(?:not|isn't|wasn't|is not|was not)\s+(?:a|the)?\s*(?:broken record|same diagnosis|repeated diagnosis)\b/i.test(claim)
+    || /\b(?:don't|do not|never|not|no)\s+(?:want(?:\s+you)?(?:\s+to)?\s+)?(?:stop|avoid|reduce|lessen|quit|limit|end)\b/i.test(claim)
     || /\bnot\s+(?:too|unnecessary|unhelpful|bad|wrong|generic|flat|shallow)\b/i.test(claim)
     || /\b(?:not|never|don't|doesn't|didn't|isn't|aren't|wasn't|weren't|can't|cannot|won't|wouldn't|shouldn't)\b(?:\s+[\w']+){0,8}\s+(?:stop|avoid|reduce|quit|less|fewer|too|unhelpful|unnecessary|bad|wrong|generic|flat|shallow)\b/i.test(claim)
     || /\b(?:stop|avoid|quit)\b(?:\s+[\w']+){0,6}\s+(?:not|never|avoiding|fewer|less)\b/i.test(claim)) return 'feedback_direction_ambiguous';
-  if (!OWNER_ADDRESS.test(claim) || !SUBJECTS[item.axis][item.value]?.test(claim)) return 'conduct_attribution_ambiguous';
+  if ((!OWNER_ADDRESS.test(claim) && !repeatedDiagnosis) || (!SUBJECTS[item.axis][item.value]?.test(claim) && !repeatedDiagnosis)) return 'conduct_attribution_ambiguous';
   if (item.axis === 'initiative' && Object.entries(SUBJECTS[item.axis]).some(([value, pattern]) => value !== item.value && pattern.test(claim))) {
     return 'multiple_conduct_choices_in_one_clause';
   }
@@ -121,7 +131,7 @@ export function validateConversationFeedbackClaim(
   // Mere negation is not negative feedback. Only a supported simple reduction,
   // prohibition or negated positive evaluation can propose attenuation.
   if (item.direction === 'attenuate'
-    ? !(SIMPLE_REDUCTION.test(claim) || NEGATED_POSITIVE.test(claim) || DIRECT_PROHIBITION.test(claim))
+    ? !(SIMPLE_REDUCTION.test(claim) || NEGATED_POSITIVE.test(claim) || DIRECT_PROHIBITION.test(claim) || repeatedDiagnosis)
     : !POSITIVE.test(claim) || NEGATIVE.test(claim)) {
     return 'feedback_direction_ambiguous';
   }

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import type { DeliveredConductDecision } from './delivered-conversation-observation.js';
 import { createRequire } from 'node:module';
 import { constants, promises as fs } from 'node:fs';
 import { isAbsolute } from 'node:path';
@@ -39,7 +41,7 @@ export interface ContextDecisionBehavior {
   description: string;
 }
 export type ConversationDecisionBehavior = ConversationDecisionPayload['behavior'] & { component?: undefined; surface?: undefined };
-export type LearningDecisionBehavior = ContextDecisionBehavior | ConversationDecisionBehavior;
+export type LearningDecisionBehavior = ContextDecisionBehavior | ConversationDecisionBehavior | (DeliveredConductDecision['behavior'] & { component?: undefined; surface?: undefined });
 
 export interface LearningDecisionDelivery {
   status: 'observed' | 'unavailable';
@@ -247,6 +249,69 @@ export function canonicalConversationDelivery(selection: VerifiedConversationSel
     responseHash: selection.responseHash, deliveredChars: message.content.length, complete: true };
 }
 
+/** A retrospective annotation is distinct from a selected reply. It describes
+ * exact already-delivered bytes, with no fabricated candidates or decision time. */
+export interface VerifiedDeliveredConductObservation {
+  observationId: string; timestamp: string; sessionRef: string; conversationRef: string;
+  deliveryMessageRef: string; deliverySourceSequence: number; replyToMessageId: string;
+  reply: string; responseHash: string; decisions: DeliveredConductDecision[];
+}
+export function observedConversationDelivery(observation: VerifiedDeliveredConductObservation, contacts: RecordValue[]): LearningDecisionDelivery {
+  const rows = contacts.filter(r => r.sourceRef === observation.deliveryMessageRef);
+  if (rows.length !== 1) return {status:'unavailable',reason:'canonical_observation_delivery_ambiguous_or_missing'};
+  const r=rows[0]!,actor=object(r.actor),channel=observation.conversationRef.slice('coordination:'.length);
+  const origins=contacts.filter(c=>c.channelId===channel&&c.messageId===observation.replyToMessageId);
+  const origin=origins.length===1?origins[0]:undefined;
+  if(r.schema!=='home23.resident.contact.v1'||r.session!==observation.conversationRef||r.channelId!==channel
+    ||r.channelKind!=='direct'||r.role!=='assistant'||r.voice!=='self'||r.scheduled||r.runtime||actor?.kind!=='bot'
+    ||!boundedText(actor.principalId,512)||!boundedText(r.messageId,512)||r.contactId!==`message:${r.messageId}`
+    ||r.sourceRef!==`coordination.message:${r.messageId}`||r.replyToMessageId!==observation.replyToMessageId
+    ||r.sourceSequence!==observation.deliverySourceSequence||!Number.isSafeInteger(r.sourceSequence)
+    ||typeof r.content!=='string'||r.content!==observation.reply||conversationResponseHash(r.content)!==observation.responseHash
+    ||timestamp(r.ts)===null||timestamp(r.ts)!>timestamp(observation.timestamp)!
+    ||!origin||origin.schema!=='home23.resident.contact.v1'||origin.session!==observation.conversationRef
+    ||origin.channelKind!=='direct'||origin.role!=='user'||origin.voice!=='jtr'||object(origin.actor)?.kind!=='owner'
+    ||!boundedText(object(origin.actor)?.principalId,512)||origin.scheduled||origin.runtime||origin.worker
+    ||!Number.isSafeInteger(origin.sourceSequence)||(origin.sourceSequence as number)>=(r.sourceSequence as number)
+    ||origin.sourceRef!==`coordination.message:${origin.messageId}`||origin.contactId!==`message:${origin.messageId}`
+    ||timestamp(origin.ts)===null||timestamp(origin.ts)!>timestamp(r.ts)!) return {status:'unavailable',reason:'canonical_observation_delivery_mismatch'};
+  return {status:'observed',sourceEventId:observation.deliveryMessageRef,messageRef:observation.deliveryMessageRef,
+    timestamp:r.ts as string,sourceSequence:r.sourceSequence as number,responseHash:observation.responseHash,deliveredChars:r.content.length,complete:true};
+}
+export function verifiedDeliveredConductObservations(rows: RecordValue[]): VerifiedDeliveredConductObservation[] {
+  const out: VerifiedDeliveredConductObservation[]=[];
+  for(const e of rows.filter(r=>r.event_type==='ConversationConductObserved'&&r.actor==='conversation')) {
+    const p=object(e.payload);if(!p||p.schema!=='home23.delivered-conduct-observation.v1'||p.annotationSource!=='delivered-reply-observation'
+      ||!boundedText(p.observationId,450)||e.event_id!==p.observationId||!boundedText(e.session_id,512)||timestamp(e.timestamp)===null
+      ||!boundedText(p.conversationRef,512)||!p.conversationRef.startsWith('coordination:')||!boundedText(p.deliveryMessageRef,512)
+      ||!p.deliveryMessageRef.startsWith('coordination.message:')||!boundedText(p.replyToMessageId,512)
+      ||!Number.isSafeInteger(p.deliverySourceSequence)||(p.deliverySourceSequence as number)<0||typeof p.reply!=='string'
+      ||!p.reply.length||p.reply.length>6000||conversationResponseHash(p.reply)!==p.responseHash
+      ||p.observationId!==`conduct-observed:${createHash('sha256').update(p.deliveryMessageRef+'\n'+p.responseHash).digest('hex')}`
+      ||rows.filter(r=>r.event_id===e.event_id).length!==1||!['sharing','reflection','deliberation'].includes(String(p.situation))) continue;
+    const axes=object(p.axes);if(!axes||!same(Object.keys(axes).sort(),Object.keys(CONDUCT_AXES).sort())
+      ||!Object.entries(CONDUCT_AXES).every(([axis,values])=>(values as readonly unknown[]).includes(axes[axis])))continue;
+    const decisions:DeliveredConductDecision[]=[];
+    for(const axis of Object.keys(CONDUCT_AXES) as Array<keyof typeof CONDUCT_AXES>) {
+      const id=`${p.observationId}:${axis}`,matches=rows.filter(r=>r.event_id===id||object(r.payload)?.decisionId===id);
+      const original=matches.length===1?matches[0]:undefined,raw=object(original?.payload),normalized=normalizeLearningDecision(raw),b=object(raw?.behavior);
+      if(!original||original.event_type!=='LearningDecisionObserved'||original.actor!=='conversation'||original.event_id!==id
+        ||original.session_id!==e.session_id||original.timestamp!==e.timestamp||!normalized||normalized.decisionId!==id
+        ||normalized.scope!==`foreground.conduct.${axis}`||normalized.criterion!=='owner-value'
+        ||!same(normalized.tags,[`situation:${p.situation}`,`choice:${axes[axis]}`])
+        ||!same(normalized.sourceRefs,[p.deliveryMessageRef,p.conversationRef,p.observationId])||raw?.choice!==axes[axis]
+        ||!b||b.kind!=='delivered-conversation-observation'||b.axis!==axis||b.value!==axes[axis]||b.situation!==p.situation
+        ||!['observationId','conversationRef','deliveryMessageRef','responseHash'].every(k=>b[k]===p[k]))break;
+      decisions.push({...normalized,choice:raw!.choice as string,behavior:b as unknown as DeliveredConductDecision['behavior']});
+    }
+    if(decisions.length!==4||!same(p.decisionIds,decisions.map(d=>d.decisionId)))continue;
+    out.push({observationId:p.observationId,timestamp:e.timestamp as string,sessionRef:e.session_id as string,
+      conversationRef:p.conversationRef,deliveryMessageRef:p.deliveryMessageRef,deliverySourceSequence:p.deliverySourceSequence as number,
+      replyToMessageId:p.replyToMessageId,reply:p.reply,responseHash:p.responseHash as string,decisions});
+  }
+  return out;
+}
+
 /** Read descriptions from the resident's runtime ledger, never from tool arguments.
  * These details explain an existing Seed witness; they do not grant teaching authority.
  */
@@ -272,14 +337,24 @@ export function createLearningDecisionEvidenceReader(
       return unavailable('bounded_runtime_ledger_unavailable');
     }
     const conversations = verifiedConversationSelections(rows);
+    const observations = verifiedDeliveredConductObservations(rows);
     let contacts: RecordValue[] = [];
-    if (contactPath && conversations.length) {
+    if (contactPath && (conversations.length || observations.length)) {
       try { contacts = await readBoundedLearningEvidenceRows(contactPath, signal); } catch { /* Unavailable means no delivery claim. */ }
     }
     for (const witness of decisions) {
       if (witness.scope.startsWith('foreground.conduct.')) {
         const selection = conversations.find(item => item.decisions.some(decision => decision.decisionId === witness.decisionId));
         const original = selection?.decisions.find(decision => decision.decisionId === witness.decisionId);
+        if (!selection) {
+          const observed = observations.find(item=>item.decisions.some(d=>d.decisionId===witness.decisionId));
+          const decision=observed?.decisions.find(d=>d.decisionId===witness.decisionId);
+          if(observed&&decision&&same(coreWitness(decision),coreWitness(witness))) {
+            result[witness.decisionId]={status:'verified',sourceEventId:decision.decisionId,timestamp:observed.timestamp,sessionRef:observed.sessionRef,
+              behavior:decision.behavior,choice:decision.choice,relevant:true,explicit:false,delivery:observedConversationDelivery(observed,contacts)};
+            continue;
+          }
+        }
         if (!selection || !original || !same(coreWitness(original), coreWitness(witness))) {
           result[witness.decisionId] = { status: 'unavailable', reason: 'conversation_response_evidence_unavailable' }; continue;
         }

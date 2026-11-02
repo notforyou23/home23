@@ -60,6 +60,8 @@ import { readSeedLearning } from '../substrate/learning-state.js';
 import { generateText } from './text-generation.js';
 import { attemptConversationReply, completeConversationReply, assessConversationalOwnerOpportunity, recordConversationProposalDecline, CONVERSATION_PROPOSAL_MAX_TOKENS, type ConversationCompletion } from './conversation-judgment-runtime.js';
 import { readPriorDeliveredConversation, readCurrentConversationOwner, applyConversationFeedback } from './conversation-feedback.js';
+import { readPriorCanonicalDeliveredReply } from './delivered-conversation-observation.js';
+import { assessDeliveredConversationFeedback } from './conversation-feedback-runtime.js';
 import { TriggerIndex } from './trigger-index.js';
 import { MemoryObjectStore } from './memory-objects.js';
 import { RelationshipLedger } from './relationship-ledger.js';
@@ -1965,6 +1967,53 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
       };
 
       if (turnRuntime?.contextPurpose === 'conversation' && turnRuntime.coordinationOrigin?.originMessageId) {
+        let conversationSteered = false;
+        const currentConversation = (): boolean => {
+          this.consumeOperatorSteer(chatId, turnMessages, text => {
+            conversationSteered = true;
+            messages.push({ role: 'user', content: text });
+            truncated.push({ role: 'user', content: text });
+          }, onEvent, activeTurnId, runContext);
+          return !conversationSteered;
+        };
+        const generateConversationText = (request: Parameters<typeof generateText>[0]) => {
+          maintainModelWindow([{ role: 'system', content: request.system }, { role: 'user', content: request.prompt }]);
+          const base = runtime.providerRequest.baseUrl.replace(/\/+$/, '');
+          const baseURL = ['openai', 'xai'].includes(runtimeProvider) && !base.endsWith('/v1') ? `${base}/v1` : base;
+          return generateText({ ...request, provider: runtimeProvider, model: runtimeModel,
+            reasoningEffort: runtimeReasoningEffort, temperature: this.temperature,
+            apiKey: runtime.providerRequest.apiKey, ...(baseURL ? { baseURL } : {}),
+            signal: ac.signal, codexCredentialsProvider: this.codexCredentialsProvider,
+            onProviderActivity: () => turnRuntime.onProviderActivity?.(++codexProgressSequence) });
+        };
+        const trustedConversationOwner = (currentMessageId: string) => {
+          const owner = runContext.authenticatedUserMessage;
+          return owner?.channelKind === 'direct' && owner.channelId === turnRuntime.coordinationOrigin?.channelId
+            && Number.isSafeInteger(owner.sourceSequence) && (owner.sourceSequence ?? 0) > 0
+            && (owner.previousAssistantMessageId === null || typeof owner.previousAssistantMessageId === 'string')
+            ? { messageRef: `coordination.message:${currentMessageId}`, text: owner.text,
+              sourceSequence: owner.sourceSequence!, previousAssistantMessageId: owner.previousAssistantMessageId }
+            : undefined;
+        };
+        // Owner feedback concerns the delivered reply, including ordinary/tool
+        // replies and asynchronous reports. Assess it before candidate routing;
+        // a failed or ineligible reply proposal must not consume that encounter.
+        if (runContext.seedStateDir && runContext.ownerConversationContactPath) {
+          await assessDeliveredConversationFeedback({ context: runContext, runtime: turnRuntime,
+            eventLedger: this.eventLedger,
+            readPrior: () => readPriorCanonicalDeliveredReply({
+              ledgerPath: resolve(this.workspacePath, '..', 'brain', 'event-ledger.jsonl'),
+              contactPath: runContext.ownerConversationContactPath!,
+              conversationRef: `coordination:${turnRuntime.coordinationOrigin!.channelId}`,
+              currentMessageId: turnRuntime.coordinationOrigin!.originMessageId!,
+              currentOwner: trustedConversationOwner(turnRuntime.coordinationOrigin!.originMessageId!), signal: ac.signal,
+            }),
+            generate: generateConversationText,
+            apply: ({ proposals, owner, prior }) => applyConversationFeedback({ proposals, owner, prior,
+              relationshipLedger: this.relationshipLedger, seedStateDir: runContext.seedStateDir! }),
+            stillCurrent: currentConversation,
+          });
+        }
         const opportunity = assessConversationalOwnerOpportunity({ context: runContext,
           runtime: turnRuntime, mediaCount: userMedia?.length ?? 0 });
         if (!opportunity.opportunity) {
@@ -1978,15 +2027,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
           // contact. The proposer sees ordinary context, never Seed policy scores.
           consumeAutomaticEnrichment();
           maintainModelWindow(messages, false);
-          let steered = false;
-          const current = (): boolean => {
-            this.consumeOperatorSteer(chatId, turnMessages, text => {
-              steered = true;
-              messages.push({ role: 'user', content: text });
-              truncated.push({ role: 'user', content: text });
-            }, onEvent, activeTurnId, runContext);
-            return !steered;
-          };
+          const current = currentConversation;
           let prior: Awaited<ReturnType<typeof readPriorDeliveredConversation>> = null;
           // Use the installation's existing model/context policy. The optional
           // proposer cannot silently impose a smaller system-context ceiling, nor
@@ -2023,18 +2064,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 ...(trustedCurrent ? { currentOwner: trustedCurrent } : {}), signal: ac.signal });
               return prior?.modelView ?? null;
             },
-            feedback: ({ proposals, owner }) => applyConversationFeedback({ proposals, owner, prior,
-              relationshipLedger: this.relationshipLedger, seedStateDir: runContext.seedStateDir! }),
-            generate: request => {
-              maintainModelWindow([{ role: 'system', content: request.system }, { role: 'user', content: request.prompt }]);
-              const base = runtime.providerRequest.baseUrl.replace(/\/+$/, '');
-              const baseURL = ['openai', 'xai'].includes(runtimeProvider) && !base.endsWith('/v1') ? `${base}/v1` : base;
-              return generateText({ ...request, provider: runtimeProvider, model: runtimeModel,
-                reasoningEffort: runtimeReasoningEffort, temperature: this.temperature,
-                apiKey: runtime.providerRequest.apiKey, ...(baseURL ? { baseURL } : {}),
-                signal: ac.signal, codexCredentialsProvider: this.codexCredentialsProvider,
-                onProviderActivity: () => turnRuntime.onProviderActivity?.(++codexProgressSequence) });
-            },
+            generate: generateConversationText,
           }) : null;
           if (selected) {
             ac.signal.throwIfAborted();
