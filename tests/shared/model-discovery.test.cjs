@@ -215,6 +215,18 @@ test('unknown modalities and retired provider records are retained only as diagn
   assert.equal(normalizeProviderModel('anthropic', { ...claude('new'), max_tokens: 8192 }).maxOutputTokens, 8192);
 });
 
+test('Ollama local discovery excludes cloud proxies and retains native context capabilities', () => {
+  const raw = { name: 'local-model', capabilities: ['completion', 'tools', 'vision'],
+    model_info: { 'general.architecture': 'qwen', 'qwen.context_length': 131072 } };
+  const local = normalizeProviderModel('ollama-local', raw);
+  assert.equal(local.contextWindowTokens, 131072);
+  assert.equal(local.supportsTools, true); assert.equal(local.supportsVision, true);
+  assert.equal(normalizeProviderModel('ollama-local', { ...raw, name: 'model:cloud' }).eligible, false);
+  assert.equal(normalizeProviderModel('ollama-local', { ...raw, remote_model: 'upstream' }).eligible, false);
+  assert.equal(normalizeProviderModel('ollama-local', { ...raw, remote_host: 'https://ollama.com' }).eligible, false);
+  assert.equal(normalizeProviderModel('ollama-cloud', { ...raw, name: 'model:cloud', remote_model: 'upstream' }).eligible, true);
+});
+
 test('identity-only discovery preserves unknown reasoning and configured alias effort without inventing none', async t => {
   const f = fixture(t, { providers: { openai: { defaultModels: ['gpt-99'] }, xai: {} }, aliases: { saved: { provider: 'openai', model: 'gpt-99', reasoningEffort: 'high' } }, fetchImpl: async url => response(url.includes('x.ai')
     ? { models: [{ id: 'grok-future', input_modalities: ['text'], output_modalities: ['text'] }] }

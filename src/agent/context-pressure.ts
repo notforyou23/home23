@@ -44,7 +44,13 @@ export type ContextPressure = ReturnType<typeof measureContextPressure>;
  * resolution/provider-specific accounting still requires provider token usage. */
 export function estimateContextChars(value: unknown): number {
   let imageReserve = 0;
-  const encoded = JSON.stringify(value, (_key, item) => {
+  const encoded = JSON.stringify(value, (key, item) => {
+    // Native Ollama carries image bytes in a message.images array instead of
+    // typed image blocks. Apply the same estimate before and after conversion.
+    if (key === 'images' && Array.isArray(item) && item.every(image => typeof image === 'string')) {
+      imageReserve += item.length * 16000;
+      return item.map(() => 'image budgeted separately');
+    }
     if (item && typeof item === 'object' && ['image', 'image_url', 'input_image'].includes(item.type)) {
       imageReserve += 16000;
       return { type: item.type, image: 'budgeted separately' };

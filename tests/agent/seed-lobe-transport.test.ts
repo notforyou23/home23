@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createRequire } from 'node:module';
+const { getModelDiscovery } = createRequire(import.meta.url)('../../shared/model-discovery.cjs');
+const isCatalogRequest = (url: string) => /\/(?:api\/tags|v1\/models)$/.test(new URL(url).pathname);
 import { createSeedLobeTransport } from '../../src/substrate/lobe-transport.js';
 import { _resetCredentialCache } from '../../src/agent/provider-credentials.js';
 
@@ -18,6 +21,7 @@ function home(t: { after(fn: () => void): void }, providers: Record<string, unkn
   writeFileSync(join(root, 'config', 'secrets.yaml'), JSON.stringify({ providers: secrets }));
   _resetCredentialCache();
   t.after(() => {
+    getModelDiscovery(root).close();
     globalThis.fetch = previousFetch;
     if (previousRoot === undefined) delete process.env.HOME23_ROOT;
     else process.env.HOME23_ROOT = previousRoot;
@@ -42,8 +46,10 @@ test('a local Seed lobe uses the selected keyless Ollama endpoint and records ac
   home(t, { 'ollama-local': { baseUrl: 'http://local-llm.invalid:11434/gateway/v1/' } });
   let calls = 0;
   globalThis.fetch = async (url, init) => {
-    calls++;
     const request = new Request(url, init);
+    if (isCatalogRequest(request.url)) return Response.json({ models: [], data: [] });
+    calls++;
+    if (request.url.endsWith('/api/show')) return Response.json({ capabilities: ['completion'] });
     assert.equal(request.url, 'http://local-llm.invalid:11434/gateway/api/chat');
     assert.equal(request.headers.get('authorization'), null);
     const body = await request.json() as { model: string; messages: Array<{ content: string }>; stream: boolean };
@@ -52,12 +58,12 @@ test('a local Seed lobe uses the selected keyless Ollama endpoint and records ac
     assert.match(body.messages[0]?.content ?? '', /CURRENT HOME CONTEXT/);
     assert.match(body.messages[0]?.content ?? '', /home timezone unavailable/);
     assert.match(body.messages[0]?.content ?? '', /Home weather: unavailable/);
-    assert.equal(body.stream, false);
-    return new Response(JSON.stringify({ message: { content: '{"estimates":[]}' }, prompt_eval_count: 31, eval_count: 12 }),
+    assert.equal(body.stream, true);
+    return new Response(JSON.stringify({ message: { content: '{"estimates":[]}' }, done: true, done_reason: 'stop', prompt_eval_count: 31, eval_count: 12 }),
       { status: 200, headers: { 'content-type': 'application/json' } });
   };
   const result = await createSeedLobeTransport({ provider: 'ollama-local', model: 'gpt-local' })('Consider my garden.');
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
   assert.equal(result.modelReceipt.provider, 'ollama-local', 'the explicit selected provider wins over model inference');
   assert.equal(result.modelReceipt.tokensIn, 31);
   assert.equal(result.modelReceipt.tokensOut, 12);
@@ -67,8 +73,9 @@ test('MiniMax Seed uses its configured endpoint and owning home credential throu
   home(t, { minimax: { baseUrl: 'https://minimax-proxy.invalid/anthropic' } }, { minimax: { apiKey: 'fixture-minimax-secret' } });
   let calls = 0;
   globalThis.fetch = async (url, init) => {
-    calls++;
     const request = new Request(url, init);
+    if (isCatalogRequest(request.url)) return Response.json({ models: [], data: [] });
+    calls++;
     assert.equal(request.url, 'https://minimax-proxy.invalid/anthropic/v1/messages');
     assert.equal(request.headers.get('x-api-key'), 'fixture-minimax-secret');
     const body = await request.json() as { model: string; max_tokens: number };
@@ -99,6 +106,7 @@ test('a running cloud lobe follows endpoint and credential changes in its owning
   const calls: Array<{ url: string; authorization: string | null }> = [];
   globalThis.fetch = async (url, init) => {
     const request = new Request(url, init);
+    if (isCatalogRequest(request.url)) return Response.json({ models: [], data: [] });
     calls.push({ url: request.url, authorization: request.headers.get('authorization') });
     return new Response(JSON.stringify({ message: { content: '{"estimates":[]}' } }),
       { status: 200, headers: { 'content-type': 'application/json' } });
@@ -118,6 +126,7 @@ test('OpenAI Seed transport preserves its selected endpoint, model and response 
   home(t, { openai: { baseUrl: 'https://openai-proxy.invalid/v1' } }, { openai: { apiKey: 'fixture-openai-key' } });
   globalThis.fetch = async (url, init) => {
     const request = new Request(url, init);
+    if (isCatalogRequest(request.url)) return Response.json({ models: [], data: [] });
     assert.equal(request.url, 'https://openai-proxy.invalid/v1/chat/completions');
     assert.equal(request.headers.get('authorization'), 'Bearer fixture-openai-key');
     assert.equal((await request.json() as { model: string }).model, 'gpt-5.4-mini');

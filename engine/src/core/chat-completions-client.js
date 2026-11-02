@@ -18,6 +18,11 @@
  * 6. Graceful degradation for unsupported features
  */
 
+const { abortReason, abortableDelay, awaitWithCancellation, cancelAsyncProviderStream, rethrowCancellation, throwIfAborted } = require('../../../shared/research-runtime/lib/provider-execution.js');
+
+const { randomUUID } = require('node:crypto');
+const { generateLocalOllama, assertLocalOllamaTarget } = require('../../../shared/local-inference.cjs');
+
 function loadOpenAI() {
   try {
     return require('openai');
@@ -47,12 +52,24 @@ function getGate(baseURL) {
   return gate;
 }
 
-function acquireGateSlot(gate) {
+function acquireGateSlot(gate, signal) {
+  throwIfAborted(signal);
   if (gate.inFlight < gate.limit) {
     gate.inFlight++;
     return Promise.resolve();
   }
-  return new Promise((resolve) => gate.queue.push(resolve));
+  return new Promise((resolve, reject) => {
+    const entry = { resolve: () => { signal?.removeEventListener('abort', abort); resolve(); } };
+    const abort = () => {
+      const index = gate.queue.indexOf(entry);
+      if (index >= 0) gate.queue.splice(index, 1);
+      signal?.removeEventListener('abort', abort);
+      reject(abortReason(signal));
+    };
+    gate.queue.push(entry);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+  });
 }
 
 function releaseGateSlot(gate) {
@@ -60,7 +77,7 @@ function releaseGateSlot(gate) {
   const next = gate.queue.shift();
   if (next) {
     gate.inFlight++;
-    next();
+    next.resolve();
   }
 }
 
@@ -107,42 +124,35 @@ async function withTimeout(promise, timeoutMs, label, controller = null) {
   }
 }
 
-async function createWithGateAndRetry(client, payload, logger, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+async function createWithGateAndRetry(client, payload, logger, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, signal, consume = value => value) {
   const baseURL = String(client.baseURL || '');
   const gate = getGate(baseURL);
   const maxAttempts = 5;
-  await acquireGateSlot(gate);
+  await acquireGateSlot(gate, signal);
   try {
     let lastErr = null;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      throwIfAborted(signal);
       const controller = new AbortController();
+      const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
       try {
-        return await withTimeout(
-          client.chat.completions.create(payload, {
-            signal: controller.signal,
-            timeout: timeoutMs
-          }),
-          timeoutMs,
-          'Chat Completions request',
-          controller
-        );
+        const response = await awaitWithCancellation(() => withTimeout(
+          client.chat.completions.create(payload, { signal: requestSignal, timeout: timeoutMs }),
+          timeoutMs, 'Chat Completions request', controller
+        ), requestSignal);
+        // A streaming request owns its gate slot until consumption ends.
+        return await consume(response, requestSignal);
       } catch (error) {
+        rethrowCancellation(error, signal);
         lastErr = error;
         if (!is429(error) || attempt === maxAttempts - 1) throw error;
         const backoff = Math.min(8000, 500 * Math.pow(2, attempt)) + Math.floor(Math.random() * 250);
-        logger?.warn?.('Chat Completions 429, backing off', {
-          baseURL,
-          attempt: attempt + 1,
-          backoffMs: backoff,
-          model: payload?.model,
-        });
-        await new Promise((resolve) => setTimeout(resolve, backoff));
-      }
+        logger?.warn?.('Chat Completions 429, backing off', { baseURL, attempt: attempt + 1, backoffMs: backoff, model: payload?.model });
+        await abortableDelay(backoff, signal);
+      } finally { controller.abort(); }
     }
     throw lastErr || new Error('Chat Completions 429 retry exhausted');
-  } finally {
-    releaseGateSlot(gate);
-  }
+  } finally { releaseGateSlot(gate); }
 }
 
 class ChatCompletionsClient {
@@ -273,7 +283,12 @@ class ChatCompletionsClient {
       } else if (Array.isArray(input)) {
         // Array of message objects
         for (const item of input) {
-          if (item.type === 'message') {
+          if (item.type === 'function_call') {
+            messages.push({ role: 'assistant', content: null, tool_calls: [{ id: item.call_id || item.id, type: 'function', function: { name: item.name, arguments: item.arguments } }] });
+          } else if (item.type === 'function_call_output') {
+            if (!item.call_id) throw new Error('Function output is missing call_id');
+            messages.push({ role: 'tool', tool_call_id: item.call_id, content: item.output });
+          } else if (item.type === 'message') {
             // Extract text content from Responses API format
             let content = '';
             if (typeof item.content === 'string') {
@@ -297,25 +312,17 @@ class ChatCompletionsClient {
       }
     }
 
-    // Handle messages array (already in Chat Completions format)
+    // Already-typed chat history must retain its call/result linkage and
+    // structured content. Empty tool results and tool-only assistants matter.
     if (inputMessages && inputMessages.length > 0) {
       for (const msg of inputMessages) {
-        let content = '';
-        if (typeof msg.content === 'string') {
-          content = msg.content;
-        } else if (Array.isArray(msg.content)) {
-          content = msg.content
-            .filter(c => c.text)
-            .map(c => c.text)
-            .join('\n');
-        }
-
-        if (content) {
-          messages.push({
-            role: msg.role || 'user',
-            content
-          });
-        }
+        if (msg.role === 'tool' && !msg.tool_call_id) throw new Error('Tool result is missing tool_call_id');
+        messages.push({
+          role: msg.role || 'user', content: msg.content ?? null,
+          ...(msg.tool_calls ? { tool_calls: msg.tool_calls } : {}),
+          ...(msg.tool_call_id ? { tool_call_id: msg.tool_call_id } : {}),
+          ...(msg.name ? { name: msg.name } : {}),
+        });
       }
     }
 
@@ -329,6 +336,34 @@ class ChatCompletionsClient {
     }
 
     return messages;
+  }
+
+  toOllamaMessages(messages) {
+    const toolNames = new Map();
+    return messages.map(message => {
+      let content = message.content ?? '';
+      if (Array.isArray(content)) {
+        if (content.some(block => !['text', 'input_text', 'output_text'].includes(block.type))) {
+          throw new Error('Structured non-text input requires a separately qualified local modality');
+        }
+        content = content.map(block => block.text || '').join('\n');
+      }
+      const result = { role: message.role, content: String(content) };
+      if (message.tool_calls) {
+        result.tool_calls = message.tool_calls.map(call => {
+          const input = typeof call.function?.arguments === 'string' ? JSON.parse(call.function.arguments) : call.function?.arguments;
+          if (!input || typeof input !== 'object' || Array.isArray(input) || !call.id || !call.function?.name) throw new Error('Malformed local tool-call history');
+          toolNames.set(call.id, call.function.name);
+          return { id: call.id, type: 'function', function: { name: call.function.name, arguments: input } };
+        });
+      }
+      if (message.role === 'tool') {
+        const name = toolNames.get(message.tool_call_id) || message.name;
+        if (!name) throw new Error('Local tool result has no matching tool call');
+        result.tool_name = name;
+      }
+      return result;
+    });
   }
 
   /**
@@ -370,6 +405,7 @@ class ChatCompletionsClient {
    * Matches GPT5Client.generate() interface exactly
    */
   async generate(options = {}) {
+    throwIfAborted(options.signal);
     const {
       model = this.defaultModel,
       max_output_tokens,
@@ -380,7 +416,7 @@ class ChatCompletionsClient {
       tool_choice,
       temperature,
       top_p,
-      // These Responses API options are logged but not used
+      // Native Ollama resolves reasoning against the current model metadata.
       reasoning,
       reasoningEffort,
       verbosity,
@@ -393,8 +429,9 @@ class ChatCompletionsClient {
       timeoutMs
     } = options;
 
-    // Log unsupported options for debugging
-    if (reasoning || reasoningEffort) {
+    const nativeLocal = options.localProvider === 'ollama-local';
+    // Generic Chat Completions endpoints do not use these reasoning options.
+    if (!nativeLocal && (reasoning || reasoningEffort)) {
       this.logger?.debug?.('Reasoning options not supported by Chat Completions API', {
         reasoning,
         reasoningEffort
@@ -402,10 +439,30 @@ class ChatCompletionsClient {
     }
 
     // Map model name
-    const mappedModel = this.mapModelName(model);
+    if (nativeLocal && !options.model) throw new Error('Ollama local generation requires an explicit model');
+    const mappedModel = nativeLocal ? model : this.mapModelName(model);
 
     // Transform input to messages
     const messages = this.transformInputToMessages(options);
+
+    if (nativeLocal) {
+      const result = await generateLocalOllama({
+        baseURL: this.clientConfig.baseURL, apiKey: this.clientConfig.apiKey === 'not-needed' ? undefined : this.clientConfig.apiKey,
+        model: mappedModel, messages: this.toOllamaMessages(messages), tools: this.transformTools(tools),
+        maxTokens: max_output_tokens ?? maxOutputTokens ?? maxTokens ?? 2000,
+        localInference: { ...this.config.localInference, ...(this.config.localOnly ? { localOnly: true } : {}) },
+        signal: options.signal, timeoutMs: requestTimeoutMs ?? timeoutMs ?? this.requestTimeoutMs, temperature,
+        reasoningEffort: reasoningEffort ?? reasoning?.effort,
+        ...(options.think !== undefined ? { reasoningParameters: { think: options.think } } : {}),
+        ...(typeof options.onChunk === 'function' ? { onChunk: options.onChunk } : {}),
+        ...(typeof options.onProviderActivity === 'function' ? { onProviderActivity: options.onProviderActivity } : {}),
+      });
+      return this.formatResponse({ content: result.message.content,
+        toolCalls: (result.message.tool_calls || []).map(call => ({ id: call.id || `local-call-${randomUUID()}`, name: call.function.name, arguments: JSON.stringify(call.function.arguments) })),
+        model: mappedModel, originalModel: model,
+        usage: { prompt_tokens: result.usage.tokensIn, completion_tokens: result.usage.tokensOut },
+        finishReason: result.message.tool_calls?.length ? 'tool_calls' : 'stop', hadError: false });
+    }
 
     // Build Chat Completions payload
     const payload = {
@@ -441,6 +498,7 @@ class ChatCompletionsClient {
     // wastes tokens on internal reasoning that the COSMO framework already handles.
     // Ollama's OpenAI-compat API accepts 'options' for model-specific params.
     const client = this.getClient();
+    if (this.config.localOnly) assertLocalOllamaTarget(client.baseURL, mappedModel, undefined, true);
     if (client?.baseURL?.includes('11434')) {
       payload.options = { ...(payload.options || {}), think: false };
     }
@@ -462,9 +520,9 @@ class ChatCompletionsClient {
 
     try {
       if (this.supportsStreaming) {
-        return await this.generateStreaming(payload, model, effectiveRequestTimeoutMs);
+        return await this.generateStreaming(payload, model, effectiveRequestTimeoutMs, options.signal);
       } else {
-        return await this.generateNonStreaming(payload, model, effectiveRequestTimeoutMs);
+        return await this.generateNonStreaming(payload, model, effectiveRequestTimeoutMs, options.signal);
       }
     } catch (error) {
       this.logger?.error?.('Chat Completions API call failed', {
@@ -479,9 +537,9 @@ class ChatCompletionsClient {
   /**
    * Generate with streaming (preferred method)
    */
-  async generateStreaming(payload, originalModel, timeoutMs = this.requestTimeoutMs) {
+  async generateStreaming(payload, originalModel, timeoutMs = this.requestTimeoutMs, signal) {
     const client = this.getClient();
-    const stream = await createWithGateAndRetry(client, payload, this.logger, timeoutMs);
+    return createWithGateAndRetry(client, payload, this.logger, timeoutMs, signal, async (stream, requestSignal) => {
     const streamIdleTimeoutMs = this.streamIdleTimeoutMs || timeoutMs;
 
     let aggregatedText = '';
@@ -489,19 +547,18 @@ class ChatCompletionsClient {
     let hadError = false;
     let errorType = null;
     let toolCalls = [];
+    let iterator;
 
     try {
-      const iterator = stream?.[Symbol.asyncIterator]?.();
+      iterator = stream?.[Symbol.asyncIterator]?.();
       if (!iterator) {
         throw new Error('Chat Completions streaming response is not async iterable');
       }
 
       while (true) {
-        const next = await withTimeout(
-          iterator.next(),
-          streamIdleTimeoutMs,
-          'Chat Completions stream'
-        );
+        const next = await awaitWithCancellation(() => withTimeout(
+          iterator.next(), streamIdleTimeoutMs, 'Chat Completions stream'
+        ), requestSignal);
         if (next.done) break;
 
         const chunk = next.value;
@@ -542,6 +599,7 @@ class ChatCompletionsClient {
         }
       }
     } catch (streamError) {
+      rethrowCancellation(streamError, requestSignal);
       if (streamError?.code === 'ETIMEDOUT' || streamError?.name === 'TimeoutError') {
         throw streamError;
       }
@@ -551,7 +609,7 @@ class ChatCompletionsClient {
       });
       hadError = true;
       errorType = 'stream_error';
-    }
+    } finally { cancelAsyncProviderStream(stream, iterator); }
 
     // Handle no content case
     if (!aggregatedText && toolCalls.length === 0) {
@@ -571,16 +629,17 @@ class ChatCompletionsClient {
       hadError,
       errorType
     });
+    });
   }
 
   /**
    * Generate without streaming (fallback)
    */
-  async generateNonStreaming(payload, originalModel, timeoutMs = this.requestTimeoutMs) {
+  async generateNonStreaming(payload, originalModel, timeoutMs = this.requestTimeoutMs, signal) {
     payload.stream = false;
 
     const client = this.getClient();
-    const response = await createWithGateAndRetry(client, payload, this.logger, timeoutMs);
+    const response = await createWithGateAndRetry(client, payload, this.logger, timeoutMs, signal);
 
     const choice = response.choices?.[0];
     const content = choice?.message?.content || '';
@@ -643,6 +702,7 @@ class ChatCompletionsClient {
       response.output = toolCalls.map(tc => ({
         type: 'function_call',
         id: tc.id,
+        call_id: tc.id,
         name: tc.name,
         arguments: tc.arguments
       }));
@@ -658,6 +718,7 @@ class ChatCompletionsClient {
     let lastError = null;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
+      throwIfAborted(options.signal);
       try {
         const result = await this.generate(options);
 
@@ -675,12 +736,14 @@ class ChatCompletionsClient {
             maxRetries,
             errorType: result.errorType
           });
-          await new Promise(resolve => setTimeout(resolve, backoff));
+          await abortableDelay(backoff, options.signal);
           continue;
         }
 
         return result;
       } catch (error) {
+        rethrowCancellation(error, options.signal);
+        if (error?.retryable === false) throw error;
         lastError = error;
 
         if (attempt < maxRetries - 1) {
@@ -689,7 +752,7 @@ class ChatCompletionsClient {
             error: error.message,
             attempt: attempt + 1
           });
-          await new Promise(resolve => setTimeout(resolve, backoff));
+          await abortableDelay(backoff, options.signal);
         }
       }
     }

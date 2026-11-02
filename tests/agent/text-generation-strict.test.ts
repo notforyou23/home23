@@ -71,7 +71,8 @@ test('strict OpenAI refuses length termination, accepts stop and preserves confi
 test('strict Ollama applies token cap and requires actual done/stop outcome', async t => {
   const original = globalThis.fetch; t.after(() => { globalThis.fetch = original; });
   let done = false;
-  globalThis.fetch = (async (_url, options) => {
+  globalThis.fetch = (async (url, options) => {
+    if (String(url).endsWith('/api/show')) return Response.json({ capabilities: ['completion'] });
     assert.equal(JSON.parse(String(options?.body)).options.num_predict, 321);
     return Response.json({ message: { content: 'complete answer' }, done, done_reason: 'stop' });
   }) as typeof fetch;

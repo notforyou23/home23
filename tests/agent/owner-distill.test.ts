@@ -391,6 +391,7 @@ test('home harness prefers Core projection for Seed and non-Seed residents; abse
     ownerChannelKindReader, join, dirname, existsSync, process: { env: {} },
     HOME23_ROOT: f.root, INSTANCE_DIR: instanceDir, AGENT_NAME: 'jerry', BRAIN_DIR: f.brainDir,
     workspacePath: join(instanceDir, 'workspace'), config: { chat: {}, agent: {} },
+    toolContext: {},
     resolveSubstrateStateDir: () => hasSeed ? dirname(streamPath) : undefined,
   });
   writeFileSync(projectionPath, '');

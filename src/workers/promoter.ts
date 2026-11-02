@@ -26,6 +26,8 @@ import { readFileSync, existsSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { VerifiedObservation } from '../agent/verification.js';
+import { generateText, type TextGenerationOptions } from '../agent/text-generation.js';
+import { resolveModelOverride, type ModelAliases } from '../agent/model-resolution.js';
 
 interface Notification {
   id: string;
@@ -68,10 +70,28 @@ type PromoterOutcome =
 export interface PromoterOpts {
   brainDir: string;
   dashboardBaseUrl: string;
-  client: Anthropic;
+  client?: Anthropic;
   model: string;
+  provider?: string;
+  generate?: (request: TextGenerationOptions) => Promise<string>;
   intervalMs?: number;
   logger?: { info?: (msg: string) => void; warn?: (msg: string) => void; error?: (msg: string) => void };
+}
+
+export interface PromoterConfig { enabled?: boolean; model?: string; provider?: string }
+
+/** Local chat uses its selected model unless the owner explicitly binds a
+ * different promoter. Cloud installations retain the historical default. */
+export function resolvePromoterModel(config: PromoterConfig | undefined, current: { model: string; provider: string }, aliases?: ModelAliases) {
+  if (config?.provider && !config.model) throw new Error('Promoter provider requires an explicit model');
+  if (config?.model) {
+    const selected = config.provider ? { model: config.model, provider: config.provider } : resolveModelOverride(config.model, aliases);
+    if (!selected) throw new Error('Unknown promoter model alias');
+    return selected;
+  }
+  return current.provider === 'ollama-local' || current.provider === 'local'
+    ? { model: current.model, provider: 'ollama-local' }
+    : { model: 'claude-haiku-4-5', provider: 'anthropic' };
 }
 
 const DEFAULT_INTERVAL_MS = 60 * 1000;
@@ -143,13 +163,14 @@ export class PromoterWorker {
   private notifFile: string;
   private ackFile: string;
   private dashboardBaseUrl: string;
-  private client: Anthropic;
+  private generate: (request: TextGenerationOptions) => Promise<string>;
   private model: string;
   private intervalMs: number;
   private logger: Required<NonNullable<PromoterOpts['logger']>>;
   private running = false;
   private timer: NodeJS.Timeout | null = null;
   private _ticking = false;
+  private abort = new AbortController();
 
   private registryPromptText: string = '';
   private registryLoadedAt: number = 0;
@@ -161,7 +182,8 @@ export class PromoterWorker {
     this.notifFile = join(opts.brainDir, 'notifications.jsonl');
     this.ackFile = join(opts.brainDir, 'notifications-ack.json');
     this.dashboardBaseUrl = opts.dashboardBaseUrl.replace(/\/$/, '');
-    this.client = opts.client;
+    this.generate = opts.generate ?? (request => generateText({ ...request, model: opts.model,
+      provider: opts.provider ?? 'anthropic', ...(opts.client ? { client: opts.client } : {}) }));
     this.model = opts.model;
     this.intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
     const log = opts.logger;
@@ -206,6 +228,7 @@ export class PromoterWorker {
 
   start(): void {
     if (this.running) return;
+    if (this.abort.signal.aborted) this.abort = new AbortController();
     this.running = true;
     this.timer = setTimeout(() => this.tick(), WARMUP_DELAY_MS);
     this.logger.info(`[promoter] worker started (interval=${Math.round(this.intervalMs / 1000)}s, warmup=${Math.round(WARMUP_DELAY_MS / 1000)}s)`);
@@ -213,6 +236,7 @@ export class PromoterWorker {
 
   stop(): void {
     this.running = false;
+    this.abort.abort(new Error('Promoter stopped'));
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
   }
@@ -554,17 +578,16 @@ export class PromoterWorker {
     const system = registryText
       ? `${SYSTEM_PROMPT_HEADER}\n${registryText}`
       : SYSTEM_PROMPT_HEADER;
-    const resp = await this.client.messages.create({
+    const text = (await this.generate({
       model: this.model,
-      max_tokens: 600,
+      maxTokens: 600,
+      maxOutputChars: 12_000,
+      requireComplete: true,
+      timeoutMs: 60_000,
+      signal: this.abort.signal,
       system,
-      messages: [{ role: 'user', content: userMsg }],
-    });
-    const text = resp.content
-      .filter((b) => b.type === 'text')
-      .map((b) => (b as { type: 'text'; text: string }).text)
-      .join('\n')
-      .trim();
+      prompt: userMsg,
+    })).trim();
     // Strip code fences if the model wrapped JSON
     const stripped = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
     let parsed: unknown;

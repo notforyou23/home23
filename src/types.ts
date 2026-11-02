@@ -176,6 +176,7 @@ export interface HomeConfig {
   };
 
   providers?: Record<string, unknown>;
+  promoter?: import('./workers/promoter.js').PromoterConfig;
 
   files?: {
     /** Standing owner authority for local filesystem repairs, including source. */

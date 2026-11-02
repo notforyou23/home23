@@ -9,6 +9,7 @@ const yaml = require('js-yaml');
 const { createHome23OAuthBroker, extractOpenAIAccountId } = require('./home23-oauth.cjs');
 const { registerModelCapabilities, reviewedReasoningCapabilities } = require('./responses-reasoning.cjs');
 const { createCodexCatalogVersionDetector, fetchCodexRegistryVersion, maxStableVersion, parseCodexVersion } = require('./cli-binary.cjs');
+const { isRemoteOllamaModel, ollamaModelContextTokens } = require('./local-inference.cjs');
 const MAX_AGE_MS = 15 * 60 * 1000;
 const CACHE_VERSION = 2;
 const LEGACY_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
@@ -22,7 +23,7 @@ const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).
 function readYaml(file) { try { return yaml.load(fs.readFileSync(file, 'utf8')) || {}; } catch (error) { if (error.code === 'ENOENT') return {}; throw error; } }
 function originBase(provider, config, env) {
   const defaults = { openai: 'https://api.openai.com/v1', 'openai-codex': 'https://chatgpt.com/backend-api/codex', anthropic: 'https://api.anthropic.com', xai: 'https://api.x.ai/v1', minimax: 'https://api.minimax.io', 'ollama-cloud': 'https://ollama.com', 'ollama-local': env.LOCAL_LLM_BASE_URL || 'http://127.0.0.1:11434' };
-  return (text(config.baseUrl) || text(config.baseURL) || defaults[provider]).replace(/\/+$/, '').replace(/\/(?:anthropic(?:\/v1)?|v1)$/, '');
+  return (text(config.baseUrl) || text(config.baseURL) || defaults[provider] || '').replace(/\/+$/, '').replace(/\/(?:anthropic(?:\/v1)?|v1)$/, '');
 }
 function descriptor(provider, config, secrets, env) {
   const entry = secrets.providers?.[provider] || {};
@@ -42,6 +43,7 @@ function normalize(provider, raw) {
   const id = text(raw.slug) || text(raw.id) || text(raw.model) || text(raw.name);
   if (!id) throw Object.assign(new Error('Invalid provider model identity'), { code: 'model_snapshot_invalid' });
   if (raw.lifecycle === 'retired' || raw.status === 'retired' || raw.available === false) return null;
+  if (provider === 'ollama-local' && isRemoteOllamaModel(id, raw)) return { id, eligible: false };
   let eligible = false;
   const caps = raw.capabilities;
   const capList = Array.isArray(caps) ? caps : [];
@@ -93,7 +95,8 @@ function normalize(provider, raw) {
     defaultReasoningEffortAdvertised,
     reasoningEfforts: options.filter(v => LEGACY_EFFORTS.includes(v)),
     reasoningTransport, thinkingValues,
-    contextWindowTokens: raw.context_window || raw.max_input_tokens || null,
+    ...(provider.startsWith('ollama-') ? { supportsTools: capList.includes('tools'), supportsVision: capList.includes('vision') } : {}),
+    contextWindowTokens: raw.context_window || raw.max_input_tokens || (provider.startsWith('ollama-') ? ollamaModelContextTokens(raw) : null),
     maxOutputTokens: raw.max_output_tokens || raw.max_tokens || null };
 }
 function createModelDiscovery({ home23Root, fetchImpl = globalThis.fetch, now = Date.now, env = process.env, intervalMs = 60_000, autoStart = true, cachePath = path.join(home23Root, 'instances', '.house', 'model-catalog-cache.json'), credentialsProvider, codexVersionDetector = createCodexCatalogVersionDetector({ env }), codexRegistryFetchImpl = globalThis.fetch } = {}) {
@@ -252,6 +255,7 @@ function createModelDiscovery({ home23Root, fetchImpl = globalThis.fetch, now = 
       });
       const selected = desc.configured ? cached?.checkedAt ? cached.models : fallback : [];
       for (const row of selected) {
+        if (provider === 'ollama-local' && isRemoteOllamaModel(row.id, row)) continue;
         const alias = `${provider}/${row.id}`;
         const publicRow = { ...row, provider, providerLabel: text(config.label) || LABELS[provider], kind: 'chat', alias, available: true, source: cached?.checkedAt ? 'provider-discovery' : 'configured', stale: !fresh };
         models.push(publicRow);

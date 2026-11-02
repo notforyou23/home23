@@ -50,9 +50,7 @@ import { AgentLoop } from './agent/loop.js';
 import { resolveDiagnosticInspection, type DiagnosticInspection } from './agent/diagnostic-inspection.js';
 import { DEFAULT_BOOTSTRAP_READS } from './agent/session-bootstrap.js';
 import { startResidentCoordinationHarness } from './coordination-adapter/index.js';
-import { anthropicOAuthStealthHeaders } from './agent/anthropic-headers.js';
 import { resolveModelOverride, type ModelOverride } from './agent/model-resolution.js';
-import { resolveProviderKey } from './agent/provider-credentials.js';
 import { executeTrackedTurn, createTrackedAgentRunner } from './agent/turn-entrypoint.js';
 import { assertCanStartSpeaking } from './agent/foreground-admission.js';
 import type { ForegroundDetachRequest } from './agent/foreground-tool-policy.js';
@@ -118,7 +116,7 @@ import { createLegacyBridgeAuthMiddleware } from './routes/legacy-bridge-auth.js
 import { createRealtimeSessionHandler, createRealtimeSessionTextParser } from './routes/chat-realtime.js';
 import { resolveQueryNotebookBridgeToken } from './query-notebook-credential-config.js';
 import { syncSharedSkillsRegistry } from './skills/runtime.js';
-import { PromoterWorker } from './workers/promoter.js';
+import { PromoterWorker, resolvePromoterModel } from './workers/promoter.js';
 import { createWorkerRouter } from './workers/connector.js';
 import {
   buildCronResultPacket,
@@ -473,10 +471,7 @@ async function main(): Promise<void> {
     return providers?.[provider]?.baseUrl;
   }
   const authToken = resolveApiKey(startupProvider);
-  const anthropicToken = resolveApiKey('anthropic');
   const startupBaseURL = resolveBaseUrl(startupProvider);
-  const compactionToken = anthropicToken || (startupProvider === 'minimax' ? authToken : '');
-  const compactionBaseURL = !anthropicToken && startupProvider === 'minimax' ? startupBaseURL : undefined;
   // openai-codex resolves its OAuth token inside the codex client, not via
   // resolveApiKey — the banner must not print a false MISSING for it (that
   // false MISSING misdirected the 2026-08-09 outage investigation).
@@ -486,52 +481,10 @@ async function main(): Promise<void> {
       : '');
   console.log(`[home] Provider: ${startupProvider}, auth: ${bannerAuth ? 'configured' : startupProvider === 'ollama-local' ? 'keyless local provider' : 'MISSING'}`);
 
-  // ── Agent Loop ──
-  // Anthropic client shared by compaction + the promoter worker. Read-at-use
-  // (2026-08-11): the boot-frozen client here was the last E8 rotation gap —
-  // the Proxy re-resolves the credential (mtime-cached, cheap) on access and
-  // rebuilds the SDK client when the token rotated. An empty re-resolution
-  // keeps the current client (never downgrade mid-flight to 'placeholder').
-  const AnthropicSDK = (await import('@anthropic-ai/sdk')).default;
-  const buildCompactionClient = (token: string, baseURL: string | undefined) =>
-    token.startsWith('sk-ant-oat')
-      ? new AnthropicSDK({
-          authToken: token,
-          ...(baseURL ? { baseURL } : {}),
-          defaultHeaders: anthropicOAuthStealthHeaders(),
-          dangerouslyAllowBrowser: true,
-        })
-      : new AnthropicSDK({
-          apiKey: token || 'placeholder',
-          ...(baseURL ? { baseURL } : {}),
-        });
-  const resolveCompactionCredential = (): { token: string; baseURL: string | undefined } => {
-    const providersCfg = config.providers as Record<string, { apiKey?: string }> | undefined;
-    const anth = resolveProviderKey('anthropic', providersCfg?.anthropic?.apiKey);
-    if (anth) return { token: anth, baseURL: undefined };
-    if (startupProvider === 'minimax') {
-      const mm = resolveProviderKey('minimax', providersCfg?.minimax?.apiKey);
-      if (mm) return { token: mm, baseURL: startupBaseURL };
-    }
-    return { token: '', baseURL: undefined };
-  };
-  let compactionCred = { token: compactionToken, baseURL: compactionBaseURL };
-  let compactionClient = buildCompactionClient(compactionCred.token, compactionCred.baseURL);
-  const anthropicClient = new Proxy(compactionClient, {
-    get(_target, prop) {
-      const fresh = resolveCompactionCredential();
-      if (fresh.token !== '' && fresh.token !== compactionCred.token) {
-        compactionCred = fresh;
-        compactionClient = buildCompactionClient(fresh.token, fresh.baseURL);
-        console.log('[home] compaction/promoter anthropic client rebuilt — credential rotated');
-      }
-      return Reflect.get(compactionClient, prop, compactionClient);
-    },
-  }) as InstanceType<typeof AnthropicSDK>;
-
+  // Background generation resolves the selected provider at use time through
+  // generateText. Starting a local home does not need an Anthropic client.
   // ── Compaction Manager ──
   const compaction = new CompactionManager({
-    client: anthropicClient,
     history,
     memory: null as unknown as import('./agent/memory.js').MemoryManager, // wired after agent creation
     provider: startupProvider,
@@ -539,6 +492,7 @@ async function main(): Promise<void> {
     apiKey: authToken,
     baseURL: startupBaseURL,
     config: config.chat.compaction,
+    resolveProviderConfig: provider => ({ apiKey: resolveApiKey(provider), baseURL: resolveBaseUrl(provider) }),
   });
 
   const agent = new AgentLoop({
@@ -547,7 +501,7 @@ async function main(): Promise<void> {
     model: startupModel,
     provider: startupProvider,
     // Note: providerMap set via setProviderMap below, after construction.
-    maxTokens: 8192,
+    maxTokens: config.chat.maxTokens ?? 8192,
     temperature: config.chat.temperature,
     reasoningEffort: config.chat.reasoningEffort,
     modelReasoningEfforts: config.models?.reasoningEffort,
@@ -1425,24 +1379,30 @@ async function main(): Promise<void> {
   // + verifier dry-run. Unverified concerns get empirically tested before they
   // become tracked problems; vague/subjective ones get dropped. See
   // src/workers/promoter.ts for the full contract.
+  let promoter: PromoterWorker | undefined;
   try {
-    // Classification uses a fixed small model regardless of the agent's chat
-    // default. Reason: we need well-behaved structured JSON output; haiku is
-    // reliable and cheap. anthropicClient is already configured for Anthropic
-    // (OAuth or API key), so this always resolves correctly.
-    const promoter = new PromoterWorker({
-      brainDir: BRAIN_DIR,
-      dashboardBaseUrl: ENGINE_BASE,
-      client: anthropicClient,
-      model: 'claude-haiku-4-5',
-      logger: {
-        info: (m) => console.log(m),
-        warn: (m) => console.warn(m),
-        error: (m) => console.error(m),
-      },
-    });
-    promoter.start();
-    console.log('[home] Promoter worker started');
+    if (config.promoter?.enabled !== false) {
+      promoter = new PromoterWorker({
+        brainDir: BRAIN_DIR,
+        dashboardBaseUrl: ENGINE_BASE,
+        model: 'claude-haiku-4-5',
+        generate: request => {
+          const selected = resolvePromoterModel(config.promoter,
+            { model: agent.getModel(), provider: agent.getProvider() }, readModelAliases());
+          return generateText({ ...request, ...selected,
+            apiKey: resolveApiKey(selected.provider!), baseURL: resolveBaseUrl(selected.provider!) });
+        },
+        logger: {
+          info: (m) => console.log(m),
+          warn: (m) => console.warn(m),
+          error: (m) => console.error(m),
+        },
+      });
+      promoter.start();
+      console.log('[home] Promoter worker started');
+    } else {
+      console.log('[home] Promoter worker disabled by configuration');
+    }
   } catch (err) {
     console.warn('[home] Promoter worker start failed:', err instanceof Error ? err.message : String(err));
   }
@@ -2403,6 +2363,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string): Promise<void> => {
     if (!shutdownGuard.begin(signal)) return;
     ownerDistiller.stop();
+    promoter?.stop();
     await seedOperatorOutreach?.stop();
     clearInterval(chatTurnRecoveryInterval);
     agent.stopRecoverySweep();

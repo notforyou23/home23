@@ -5,6 +5,7 @@ import { anthropicOAuthStealthHeaders } from './anthropic-headers.js';
 import { combineRequestSignals } from './abort-signals.js';
 import { inferProviderFromModel } from './model-resolution.js';
 import { resolveProviderKey, isAuthError, refreshManagedOAuth } from './provider-credentials.js';
+import { generateLocalOllama, type LocalInferencePolicy } from './local-ollama.js';
 import {
   DEFAULT_REASONING_EFFORT,
   supportsResponsesReasoning,
@@ -32,6 +33,8 @@ export interface TextGenerationOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   reasoningEffort?: ReasoningEffort;
+  /** Operational local limits, independent of the artifact's maximum context. */
+  localInference?: Partial<LocalInferencePolicy>;
   codexCredentialsProvider?: (
     signal?: AbortSignal,
     force?: boolean,
@@ -209,16 +212,34 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
     return boundedOutput(extractAnthropicText(response), opts);
   }
 
-  if (provider === 'ollama-cloud' || provider === 'ollama-local') {
-    const local = provider === 'ollama-local';
+  if (provider === 'ollama-local') {
+    const response = await generateLocalOllama({
+      model,
+      baseURL: opts.baseURL || process.env.LOCAL_LLM_BASE_URL || 'http://127.0.0.1:11434',
+      apiKey: resolveProviderKey(provider, opts.apiKey, forceFreshCredential),
+      messages: [
+        ...(opts.system ? [{ role: 'system', content: opts.system }] : []),
+        { role: 'user', content: opts.prompt },
+      ],
+      maxTokens, temperature, timeoutMs, signal: opts.signal,
+      localInference: opts.localInference,
+      maxOutputChars: opts.maxOutputChars,
+      reasoningParameters: opts.reasoningEffort ? providerReasoningParameters(provider, model, opts.reasoningEffort) : undefined,
+      reasoningEffort: opts.reasoningEffort,
+      onProviderActivity: opts.onProviderActivity,
+    });
+    if (response.message.tool_calls?.length) throw incompleteProvider();
+    if (opts.usageSink) Object.assign(opts.usageSink, response.usage);
+    return boundedOutput(response.message.content.trim(), opts);
+  }
+
+  if (provider === 'ollama-cloud') {
     const apiKey = resolveProviderKey(provider, opts.apiKey, forceFreshCredential);
-    if (!apiKey && !local) throw new Error('OLLAMA_CLOUD_API_KEY not set');
+    if (!apiKey) throw new Error('OLLAMA_CLOUD_API_KEY not set');
     // Home configuration uses either an Ollama origin or its /v1 compatible
     // base. Text generation uses the native endpoint, as the cloud path has
     // always done, preserving any configured reverse-proxy prefix.
-    const baseURL = opts.baseURL || (local
-      ? process.env.LOCAL_LLM_BASE_URL || 'http://127.0.0.1:11434'
-      : 'https://ollama.com');
+    const baseURL = opts.baseURL || 'https://ollama.com';
     const ollamaRoot = baseURL.replace(/\/+$/, '').replace(/\/(?:v1|api\/chat)$/, '');
     const messages = [
       ...(opts.system ? [{ role: 'system', content: opts.system }] : []),
@@ -232,7 +253,7 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
         messages,
         stream: false,
         ...(opts.reasoningEffort ? providerReasoningParameters(provider, model, opts.reasoningEffort) : {}),
-        options: { num_ctx: 32768, temperature, ...(opts.requireComplete ? { num_predict: maxTokens } : {}) },
+        options: { num_ctx: 32768, temperature, num_predict: maxTokens },
       }),
       signal: requestSignal,
     });

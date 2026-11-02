@@ -113,6 +113,35 @@ test('ultra rejection recovers inside the conversational path and keeps prospect
   assert.equal(rows.filter(row => row.event_type === 'ConversationReplyCompleted').length, 1);
 });
 
+test('bounded local inference keeps conversational selection and its learning witnesses', async t => {
+  const f = fixture(t);
+  f.agent.setModel('fixture-local:latest', 'ollama-local', 'none');
+  mkdirSync(join(f.root, 'config'));
+  writeFileSync(join(f.root, 'config', 'home.yaml'), JSON.stringify({ providers: { 'ollama-local': {
+    inference: { contextTokens: 32768, maxOutputTokens: 2048, keepAlive: '5m', localOnly: true },
+  } } }));
+  const chunks: string[] = [];
+  globalThis.fetch = (async (url, init) => {
+    if (String(url).endsWith('/api/show')) return Response.json({ capabilities: ['completion', 'tools'], model_info: { 'fixture.context_length': 32768 } });
+    assert.ok(String(url).startsWith('http://127.0.0.1:11434/'), 'selection must remain on the local transport');
+    f.requests.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ message: { role: 'assistant', content: JSON.stringify(candidate) }, done: false }) + '\n'
+      + JSON.stringify({ message: { role: 'assistant', content: '' }, done: true, done_reason: 'stop', prompt_eval_count: 500, eval_count: 150 }) + '\n');
+  }) as typeof fetch;
+  const run = await f.agent.runWithTurn(f.chatId, 'Routing envelope.', { coordinationOrigin: f.origin, contextPurpose: 'conversation',
+    onEvent: event => { if (event.type === 'response_chunk') chunks.push(event.chunk); } });
+  assert.equal((await run.response).text, candidate.candidates[0]!.reply);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.requests[0].options.num_predict, 2048);
+  assert.equal(f.requests[0].options.num_ctx, 32768);
+  assert.equal(f.requests[0].tools, undefined);
+  assert.deepEqual(chunks, [candidate.candidates[0]!.reply], 'draft candidates are never streamed as the reply');
+  const rows = readFileSync(join(f.root, 'brain', 'event-ledger.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(rows.filter(row => row.event_type === 'ConversationReplySelected').length, 1);
+  assert.equal(rows.filter(row => row.event_type === 'LearningDecisionObserved' && row.actor === 'conversation').length, 4);
+  assert.equal(rows.filter(row => row.event_type === 'ConversationReplyCompleted').length, 1);
+});
+
 test('explicit requested work retains ordinary provider path with no conversational selection', async t => {
   const f = fixture(t, 'Please read the project report.');
   globalThis.fetch = (async (_url, init) => { f.requests.push(JSON.parse(String(init?.body))); return response('Ordinary tool-capable response.'); }) as typeof fetch;

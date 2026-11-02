@@ -93,6 +93,8 @@ import {
   visibleReasoningText,
 } from './reasoning-stream.js';
 import { takeOperatorSteer } from './steer-queue.js';
+import { generateLocalOllama, getLocalInferencePolicy } from './local-ollama.js';
+import { normalizeProviderToolCalls, serializeProviderHistory, toolRoundHistory, type ToolHistoryResult, type ProviderToolCall } from './provider-history.js';
 
 const MAX_ITERATIONS = 5000;
 const TYPING_INTERVAL_MS = 4000;
@@ -133,17 +135,6 @@ function toolMediaEvent(media: MediaAttachment, toolCallId: string): AgentEvent 
     sha256: media.sha256,
     toolCallId,
     sourceEventType: 'runtime.tool_media',
-  };
-}
-
-function toolRoundHistoryEntry(names: string[], receipts: string[]): StoredMessage {
-  const lines = names.map((name, i) => {
-    const flat = String(receipts[i] ?? '').replace(/\s+/g, ' ').trim().slice(0, 1500);
-    return `${name}: ${flat}`;
-  });
-  return {
-    role: 'assistant',
-    content: `[Used tools: ${names.join(', ')}]\n${lines.join('\n')}`,
   };
 }
 
@@ -1454,6 +1445,8 @@ export class AgentLoop {
     const allMedia: MediaAttachment[] = [];
     const runtimeModel = runtime.model;
     const runtimeProvider = runtime.provider;
+    const localInference = runtimeProvider === 'ollama-local' ? getLocalInferencePolicy() : undefined;
+    const runtimeMaxTokens = localInference ? Math.min(this.maxTokens, localInference.maxOutputTokens) : this.maxTokens;
     const runtimeReasoningEffort = runtime.reasoningEffort;
     const runtimeReasoningCapabilities = runtime.reasoningCapabilities;
     const runtimeClient = runtime.client;
@@ -1827,14 +1820,15 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
       const contextPressureInput = {
         historyChars: this.history.estimateChars(storedHistory), systemChars: rawSystemPrompt.length + enrichmentReserve,
         toolSchemaChars: Math.max(JSON.stringify(registry.getAnthropicTools()).length, JSON.stringify(registry.getOpenAITools()).length),
-        incomingChars: this.history.estimateChars([userMsg]), outputTokens: this.maxTokens,
-        historyBudget: this.history.budget, model: runtimeModel, provider: runtimeProvider,
+        incomingChars: this.history.estimateChars([userMsg]), outputTokens: runtimeMaxTokens,
+        historyBudget: localInference ? Math.min(this.history.budget, localInference.contextTokens * 3) : this.history.budget, model: runtimeModel, provider: runtimeProvider,
       };
-      const pressure = this.compaction?.measure(contextPressureInput);
+      const pressure = this.compaction?.measure(contextPressureInput)
+        ?? (localInference ? measureContextPressure(contextPressureInput, DEFAULT_CONTEXT_POLICY) : undefined);
       if (pressure) {
         this.history.recordContextStatus?.(chatId, { trigger: pressure.shouldCompact ? pressure.reason : 'within_budget', pressure, measuredAt: new Date().toISOString() });
         if (pressure.availableHistoryChars <= 0) throw Object.assign(new Error('Context budget is exhausted by instructions, input, tools and output reserve; task history retained.'), { code: 'context_pressure' });
-        if (pressure.shouldCompact) {
+        if (pressure.shouldCompact && this.compaction) {
           const compacted = await this.compaction!.compact(chatId, storedHistory, runtimeModel, runtimeProvider, ac.signal, pressure, historyRevision);
           truncated = compacted.messages;
           didTruncate = compacted.result.compacted;
@@ -1984,6 +1978,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             reasoningEffort: runtimeReasoningEffort, temperature: this.temperature,
             apiKey: runtime.providerRequest.apiKey, ...(baseURL ? { baseURL } : {}),
             signal: ac.signal, codexCredentialsProvider: this.codexCredentialsProvider,
+            ...(localInference ? { localInference } : {}),
             onProviderActivity: () => turnRuntime.onProviderActivity?.(++codexProgressSequence) });
         };
         const trustedConversationOwner = (currentMessageId: string) => {
@@ -2108,45 +2103,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               ? systemPrompt
               : (systemPrompt as Array<{ text: string }>).map(b => b.text).join('\n');
 
-            // Convert Anthropic-format history to OAI messages.
-            // For user messages with image blocks, build a Responses API content
-            // array so vision models can actually see the bytes.
-            const chatMsgs: Array<Record<string, unknown>> = [];
-            for (const m of truncated) {
-              if (typeof m.content === 'string') {
-                chatMsgs.push({ role: m.role, content: m.content });
-              } else {
-                const blocks = m.content as Array<Record<string, unknown>>;
-                const hasImage = m.role === 'user' && blocks.some(b => b.type === 'image');
-                if (hasImage) {
-                  const respContent: Array<Record<string, unknown>> = [];
-                  for (const block of blocks) {
-                    if (block.type === 'text' && block.text) {
-                      respContent.push({ type: 'input_text', text: block.text as string });
-                    } else if (block.type === 'image') {
-                      const src = block.source as { type?: string; media_type?: string; data?: string } | undefined;
-                      if (src?.type === 'base64' && src.data && src.media_type) {
-                        respContent.push({
-                          type: 'input_image',
-                          image_url: `data:${src.media_type};base64,${src.data}`,
-                        });
-                      }
-                    }
-                  }
-                  if (respContent.length === 0) respContent.push({ type: 'input_text', text: '(empty)' });
-                  chatMsgs.push({ role: m.role, content: respContent });
-                } else {
-                  const parts: string[] = [];
-                  for (const block of blocks) {
-                    if (block.type === 'text' && block.text) parts.push(block.text as string);
-                    else if (block.type === 'tool_use') parts.push(`[Used tool: ${block.name}]`);
-                    else if (block.type === 'tool_result') parts.push(`[Tool result: ${((block.content as string) || '').slice(0, 4000)}]`);
-                    else if (block.type === 'image') parts.push('[image]');
-                  }
-                  chatMsgs.push({ role: m.role, content: parts.join('\n') || '(empty)' });
-                }
-              }
-            }
+            const chatMsgs = serializeProviderHistory(truncated, 'chat-completions');
 
             // Build the live message array (system at index 0, always stays there)
             const apiMessages: Array<Record<string, unknown>> = [
@@ -2201,7 +2158,9 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                     type: 'message',
                     role: 'user',
                     content: Array.isArray(content)
-                      ? content
+                      ? content.map(block => block.type === 'image_url'
+                        ? { type: 'input_image', image_url: (block.image_url as { url: string }).url }
+                        : block.type === 'text' ? { type: 'input_text', text: block.text } : block)
                       : [{ type: 'input_text', text: (content as string | null | undefined) ?? '' }],
                   });
                 } else if (role === 'assistant') {
@@ -2502,7 +2461,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               console.log(`[agent] codex response: content=${(respMsg.content || '').length} chars, tool_calls=${respMsg.tool_calls?.length ?? 0}, tools_sent=${codexTools.length}, model=${runtimeModel}`);
 
               // ── Process the response ──
-              const toolCalls = respMsg.tool_calls;
+              const toolCalls = normalizeProviderToolCalls(respMsg.tool_calls, index => `runtime-tool-${activeTurnId}-${i}-${index}`);
 
               if (!toolCalls || toolCalls.length === 0) {
                 let contentStr = (respMsg.content || '').trim();
@@ -2556,24 +2515,19 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 response_output: responseOutput,
               });
 
+              const roundResults: ToolHistoryResult[] = [];
               for (const tc of toolCalls) {
                 if (ac.signal.aborted) {
-                  apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: 'Interrupted by /stop' });
+                  apiMessages.push({ role: 'tool', tool_call_id: tc.id, tool_name: tc.function.name, content: 'Interrupted by /stop' });
+                  roundResults.push({ id: tc.id, content: 'Interrupted by /stop', isError: true });
                   continue;
                 }
 
                 toolCallCount++;
-                const toolCallId = tc.id || `runtime-tool-${toolCallCount}`;
-                let input: Record<string, unknown>;
-                if (typeof tc.function.arguments === 'string') {
-                  try { input = JSON.parse(tc.function.arguments); } catch { input = { raw: tc.function.arguments }; }
-                } else {
-                  input = tc.function.arguments as Record<string, unknown>;
-                }
+                const toolCallId = tc.id;
+                const input = tc.function.arguments;
 
-                const argsPreview = typeof tc.function.arguments === 'string'
-                  ? tc.function.arguments.slice(0, 100)
-                  : JSON.stringify(tc.function.arguments).slice(0, 100);
+                const argsPreview = JSON.stringify(tc.function.arguments).slice(0, 100);
                 console.log(`[agent] Tool call #${toolCallCount}: ${tc.function.name}(${argsPreview})`);
                 if (onEvent) onEvent({
                   type: 'tool_start', tool: tc.function.name, args: input, toolCallId,
@@ -2596,11 +2550,13 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                     allMedia.push(...result.media);
                     if (onEvent) for (const m of result.media) onEvent(toolMediaEvent(m, toolCallId));
                   }
-                  apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: formatted.modelContent });
+                  apiMessages.push({ role: 'tool', tool_call_id: tc.id, tool_name: tc.function.name, content: formatted.modelContent });
+                  roundResults.push({ id: tc.id, content: formatted.modelContent, isError: result.is_error === true });
                 } catch (toolErr) {
                   console.error(`[agent] Tool ${tc.function.name} threw:`, toolErr);
                   const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
-                  apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: `Tool error: ${errMsg}` });
+                  apiMessages.push({ role: 'tool', tool_call_id: tc.id, tool_name: tc.function.name, content: `Tool error: ${errMsg}` });
+                  roundResults.push({ id: tc.id, content: `Tool error: ${errMsg}`, isError: true });
                   if (onEvent) onEvent({
                     type: 'tool_result', tool: tc.function.name, toolCallId,
                     result: errMsg, exactResult: errMsg, success: false,
@@ -2609,9 +2565,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 }
               }
 
-              const names = toolCalls.map(tc => tc.function.name);
-              const receipts = apiMessages.slice(-toolCalls.length).map(m => String(m.content ?? ''));
-              turnMessages.push(toolRoundHistoryEntry(names, receipts));
+              turnMessages.push(...toolRoundHistory(toolCalls, roundResults, respMsg.content ?? ''));
               // continue to next iteration
             }
 
@@ -2633,21 +2587,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               ? systemPrompt
               : (systemPrompt as Array<{ text: string }>).map(b => b.text).join('\n');
 
-            const chatMsgs: Array<Record<string, unknown>> = [];
-            for (const m of truncated) {
-              if (typeof m.content === 'string') {
-                chatMsgs.push({ role: m.role, content: m.content });
-              } else {
-                const parts: string[] = [];
-                for (const block of m.content as Array<Record<string, unknown>>) {
-                  if (block.type === 'text' && block.text) parts.push(block.text as string);
-                  else if (block.type === 'tool_use') parts.push(`[Used tool: ${block.name}]`);
-                    else if (block.type === 'tool_result') parts.push(`[Tool result: ${((block.content as string) || '').slice(0, 4000)}]`);
-                  else if (block.type === 'image') parts.push('[image]');
-                }
-                chatMsgs.push({ role: m.role, content: parts.join('\n') || '(empty)' });
-              }
-            }
+            const chatMsgs = serializeProviderHistory(truncated, 'responses');
 
             // Native provider tools do not pass through registry.execute(). A
             // restricted registry or chat must never acquire this side channel.
@@ -2720,7 +2660,8 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               type FunctionCallItem = { call_id: string; name: string; arguments: string };
               const functionCallItems: FunctionCallItem[] = [];
               const completedOutputItems: Array<Record<string, unknown>> = [];
-              const serverToolNames: string[] = [];
+              const serverToolCalls: ProviderToolCall[] = [];
+              const serverToolResults: ToolHistoryResult[] = [];
               let terminalEvent: Record<string, unknown> | null = null;
               const flushThinking = (): void => {
                 const evidence = takeReasoningEvidence(thinkingState);
@@ -2774,9 +2715,14 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                         ? item.id
                         : typeof item?.call_id === 'string' && item.call_id
                           ? item.call_id
-                          : `runtime-server-tool-${toolCallCount}`;
-                      serverToolNames.push(toolName);
+                          : `runtime-server-tool-${activeTurnId}-${toolCallCount}`;
                       const args = item ? getXaiServerToolArgs(item) : {};
+                      // Native server tools can expose a raw query instead of a
+                      // function argument object; retain it explicitly as raw.
+                      const historyArgs = args && typeof args === 'object' && !Array.isArray(args)
+                        ? args as Record<string, unknown> : { raw: args };
+                      serverToolCalls.push({ id: toolCallId, type: 'function', function: { name: toolName, arguments: historyArgs } });
+                      serverToolResults.push({ id: toolCallId, content: summarizeXaiServerToolResult(toolName, item ?? {}), isError: !xaiServerToolSucceeded(item ?? {}) });
                       if (onEvent) {
                         onEvent({
                           type: 'tool_start', tool: toolName, args, toolCallId,
@@ -2840,12 +2786,11 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               }
 
               reportCacheUsage((terminalEvent.response as Record<string, unknown> | undefined)?.usage);
+              turnMessages.push(...toolRoundHistory(serverToolCalls, serverToolResults));
               const answerText = (textContent || visibleReasoningText(thinkingState) || '').trim();
-              const toolCalls: ToolCallObj[] = functionCallItems.map(fc => ({
-                id: fc.call_id,
-                type: 'function' as const,
-                function: { name: fc.name, arguments: fc.arguments },
-              }));
+              const toolCalls = normalizeProviderToolCalls(functionCallItems.map(fc => ({
+                id: fc.call_id, function: { name: fc.name, arguments: fc.arguments },
+              })), index => `runtime-tool-${activeTurnId}-${i}-${index}`);
 
               console.log(`[agent] xai responses: content=${answerText.length} chars, tool_calls=${toolCalls.length}, tools_sent=${xaiTools.length}, model=${runtimeModel}`);
 
@@ -2853,9 +2798,6 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 const answer = answerText || '(no response)';
                 if (onEvent && answer && !streamedAnswer) {
                   onEvent({ type: 'response_chunk', chunk: answer });
-                }
-                if (serverToolNames.length > 0) {
-                  turnMessages.push({ role: 'assistant', content: `[Used tools: ${serverToolNames.join(', ')}]` });
                 }
                 turnMessages.push({ role: 'assistant', content: answer });
                 persistTurn();
@@ -2866,16 +2808,16 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               // complete response output (including encrypted reasoning and the
               // completed function_call items) before appending matching outputs.
               xaiInputItems.push(...completedOutputItems);
+              const roundResults: ToolHistoryResult[] = [];
               for (const tc of toolCalls) {
                 if (ac.signal.aborted) {
                   xaiInputItems.push({ type: 'function_call_output', call_id: tc.id, output: 'Interrupted by /stop' });
+                  roundResults.push({ id: tc.id, content: 'Interrupted by /stop', isError: true });
                   continue;
                 }
                 toolCallCount++;
-                const toolCallId = tc.id || `runtime-tool-${toolCallCount}`;
-                let input: Record<string, unknown>;
-                try { input = typeof tc.function.arguments === 'string' ? JSON.parse(tc.function.arguments) : tc.function.arguments; }
-                catch { input = {}; }
+                const toolCallId = tc.id;
+                const input = tc.function.arguments;
                 if (onEvent) onEvent({
                   type: 'tool_start', tool: tc.function.name, args: input, toolCallId,
                   sourceEventType: 'response.output_item.done', providerEvent: tc,
@@ -2894,18 +2836,15 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   const { result } = formatted;
                   if (result.media?.length) { allMedia.push(...result.media); if (onEvent) for (const m of result.media) onEvent(toolMediaEvent(m, toolCallId)); }
                   xaiInputItems.push({ type: 'function_call_output', call_id: tc.id, output: formatted.modelContent });
+                  roundResults.push({ id: tc.id, content: formatted.modelContent, isError: result.is_error === true });
                 } catch (toolErr) {
                   const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
                   xaiInputItems.push({ type: 'function_call_output', call_id: tc.id, output: `Error: ${errMsg}` });
+                  roundResults.push({ id: tc.id, content: `Error: ${errMsg}`, isError: true });
                   if (onEvent) onEvent({ type: 'tool_result', tool: tc.function.name, toolCallId, result: errMsg, exactResult: errMsg, success: false, sourceEventType: 'runtime.tool_error' });
                 }
               }
-              const names = [...serverToolNames, ...toolCalls.map(tc => tc.function.name)];
-              const receipts = xaiInputItems
-                .filter(item => item.type === 'function_call_output')
-                .slice(-toolCalls.length)
-                .map(item => String(item.output ?? ''));
-              turnMessages.push(toolRoundHistoryEntry(names, receipts));
+              turnMessages.push(...toolRoundHistory(toolCalls, roundResults, answerText));
             }
 
             const capText = `Hit max tool calls (${MAX_ITERATIONS}).`;
@@ -2940,22 +2879,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             ? systemPrompt
             : (systemPrompt as Array<{text: string}>).map(b => b.text).join('\n');
 
-          // Convert Anthropic-format history to plain text messages
-          const chatMsgs: Array<Record<string, unknown>> = [];
-          for (const m of truncated) {
-            if (typeof m.content === 'string') {
-              chatMsgs.push({ role: m.role, content: m.content });
-            } else {
-              const parts: string[] = [];
-              for (const block of m.content as Array<Record<string, unknown>>) {
-                if (block.type === 'text' && block.text) parts.push(block.text as string);
-                else if (block.type === 'tool_use') parts.push(`[Used tool: ${block.name}]`);
-                    else if (block.type === 'tool_result') parts.push(`[Tool result: ${((block.content as string) || '').slice(0, 4000)}]`);
-                else if (block.type === 'image') parts.push('[image]');
-              }
-              chatMsgs.push({ role: m.role, content: parts.join('\n') || '(empty)' });
-            }
-          }
+          const chatMsgs = serializeProviderHistory(truncated, isOllamaLocal || isOllamaCloud ? 'ollama' : 'chat-completions');
 
           // Check if model supports tools (Ollama Cloud only — cache per model)
           let modelSupportsTools = true;
@@ -3005,10 +2929,27 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
 
             // ── Make the API call ──
             type ToolCallObj = { id?: string; function: { name: string; arguments: string | Record<string, unknown> } };
-            type ResponseMessage = { role: string; content?: string | null; tool_calls?: ToolCallObj[] };
+            type ResponseMessage = { role: string; content?: string | null; thinking?: string; tool_calls?: ToolCallObj[] };
             let respMsg: ResponseMessage;
+            let streamedAnswer = false;
 
-            if (isOllamaCloud || (isOllamaLocal && runtimeReasoningCapabilities?.reasoningTransport === 'ollama-think')) {
+            if (isOllamaLocal) {
+              const local = await generateLocalOllama({
+                baseURL: providerRequest.baseUrl, apiKey, model: runtimeModel,
+                messages: apiMessages, tools: oaiTools.length ? oaiTools : undefined,
+                maxTokens: runtimeMaxTokens, localInference, temperature: this.temperature,
+                signal: ac.signal, timeoutMs: pconf.timeout,
+                reasoningParameters: providerReasoningParameters(runtimeProvider, runtimeModel, runtimeReasoningEffort, runtimeReasoningCapabilities),
+                reasoningEffort: runtimeReasoningEffort,
+                onChunk: chunk => {
+                  streamedAnswer = true;
+                  onEvent?.({ type: 'response_chunk', chunk, sourceEventType: 'ollama.message.content' });
+                },
+                onProviderActivity: () => turnRuntime?.onProviderActivity?.(++codexProgressSequence),
+              });
+              respMsg = local.message;
+              reportCacheUsage({ prompt_eval_count: local.usage.tokensIn, eval_count: local.usage.tokensOut });
+            } else if (isOllamaCloud) {
               // Native Ollama /api/chat — proper tool support + num_ctx
               const nativeBase = providerRequest.baseUrl;
               const res = await fetch(`${nativeBase}/api/chat`, {
@@ -3063,7 +3004,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             }
 
             // ── Process the response ──
-            const toolCalls = respMsg.tool_calls;
+            const toolCalls = normalizeProviderToolCalls(respMsg.tool_calls, index => `runtime-tool-${activeTurnId}-${i}-${index}`);
 
             // Log response shape for debugging
             console.log(`[agent] Response: content=${(respMsg.content || '').length} chars, tool_calls=${toolCalls?.length ?? 0}, tools_sent=${oaiTools.length}, model=${runtimeModel}`);
@@ -3096,7 +3037,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
 
               // Final text response
               const answer = contentStr || '(no response)';
-              if (onEvent && answer) onEvent({ type: 'response_chunk', chunk: answer });
+              if (onEvent && answer && !streamedAnswer) onEvent({ type: 'response_chunk', chunk: answer });
               turnMessages.push({ role: 'assistant', content: answer });
               persistTurn();
               return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
@@ -3106,26 +3047,23 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             apiMessages.push({
               role: 'assistant',
               content: respMsg.content || null,
-              tool_calls: toolCalls,
+              ...(respMsg.thinking ? { thinking: respMsg.thinking } : {}),
+              tool_calls: isOllamaCloud || isOllamaLocal ? toolCalls : toolCalls.map(call => ({ ...call, function: { ...call.function, arguments: JSON.stringify(call.function.arguments) } })),
             });
 
+            const roundResults: ToolHistoryResult[] = [];
             for (const tc of toolCalls) {
               if (ac.signal.aborted) {
-                apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: 'Interrupted by /stop' });
+                apiMessages.push({ role: 'tool', tool_call_id: tc.id, ...(isOllamaLocal || isOllamaCloud ? { tool_name: tc.function.name } : {}), content: 'Interrupted by /stop' });
+                roundResults.push({ id: tc.id, content: 'Interrupted by /stop', isError: true });
                 continue;
               }
 
               toolCallCount++;
-              const toolCallId = tc.id || `runtime-tool-${toolCallCount}`;
-              // Native Ollama returns arguments as object; OpenAI returns as string
-              let input: Record<string, unknown>;
-              if (typeof tc.function.arguments === 'string') {
-                try { input = JSON.parse(tc.function.arguments); } catch { input = { raw: tc.function.arguments }; }
-              } else {
-                input = tc.function.arguments as Record<string, unknown>;
-              }
+              const toolCallId = tc.id;
+              const input = tc.function.arguments;
 
-              const argsPreview = typeof tc.function.arguments === 'string' ? tc.function.arguments.slice(0, 100) : JSON.stringify(tc.function.arguments).slice(0, 100);
+              const argsPreview = JSON.stringify(tc.function.arguments).slice(0, 100);
               console.log(`[agent] Tool call #${toolCallCount}: ${tc.function.name}(${argsPreview})`);
               if (onEvent) onEvent({ type: 'tool_start', tool: tc.function.name, args: input, toolCallId, sourceEventType: 'provider.tool_call', providerEvent: tc });
 
@@ -3145,18 +3083,18 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   allMedia.push(...result.media);
                   if (onEvent) for (const m of result.media) onEvent(toolMediaEvent(m, toolCallId));
                 }
-                apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: formatted.modelContent });
+                apiMessages.push({ role: 'tool', tool_call_id: tc.id, ...(isOllamaLocal || isOllamaCloud ? { tool_name: tc.function.name } : {}), content: formatted.modelContent });
+                roundResults.push({ id: tc.id, content: formatted.modelContent, isError: result.is_error === true });
               } catch (toolErr) {
                 console.error(`[agent] Tool ${tc.function.name} threw:`, toolErr);
                 const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
-                apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: `Tool error: ${errMsg}` });
+                apiMessages.push({ role: 'tool', tool_call_id: tc.id, ...(isOllamaLocal || isOllamaCloud ? { tool_name: tc.function.name } : {}), content: `Tool error: ${errMsg}` });
+                roundResults.push({ id: tc.id, content: `Tool error: ${errMsg}`, isError: true });
                 if (onEvent) onEvent({ type: 'tool_result', tool: tc.function.name, toolCallId, result: errMsg, exactResult: errMsg, success: false, sourceEventType: 'runtime.tool_error' });
               }
             }
 
-            const names = toolCalls.map(tc => tc.function.name);
-            const receipts = apiMessages.slice(-toolCalls.length).map(m => String(m.content ?? ''));
-            turnMessages.push(toolRoundHistoryEntry(names, receipts));
+            turnMessages.push(...toolRoundHistory(toolCalls, roundResults, respMsg.content ?? ''));
             continue;
           }
 
@@ -3229,7 +3167,8 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               delete requestParams.temperature;
             } else if (thinkingEnabled && thinkingCfg) {
               requestParams.thinking = thinkingCfg.thinking;
-              requestParams.temperature = 1;
+              if (omitSamplingParams) delete requestParams.temperature;
+              else requestParams.temperature = 1;
               requestParams.max_tokens = thinkingCfg.maxTokens;
             } else {
               delete requestParams.thinking;

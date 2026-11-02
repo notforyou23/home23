@@ -63,12 +63,14 @@ class UnifiedClient extends GPT5Client {
     
     // Store config (can be null for backward compatibility)
     this.config = config || {};
+    this.localOnly = this.config.localOnly === true || this.config.providers?.['ollama-local']?.inference?.localOnly === true;
     
     // Initialize additional providers ONLY if explicitly enabled in config
     this.xai = null;
     this.anthropic = null;
     this.minimax = null;
-    this.localClient = null; // For local LLM support via Chat Completions API
+    this.localClient = null; // Legacy generic local OpenAI-compatible server
+    this.ollamaLocalClient = null; // Canonical native Ollama route
     this.groqClient = null;  // Groq free tier (OpenAI-compatible)
     this.hfClient = null;    // HuggingFace Inference (OpenAI-compatible)
     this.openaiCodexClient = null; // OpenAI Codex OAuth-only client
@@ -137,21 +139,30 @@ class UnifiedClient extends GPT5Client {
       }
     }
 
-    // Initialize local LLM client if enabled
-    // Supports Ollama, vLLM, llama.cpp, LocalAI, etc.
-    if (this.config.providers?.local?.enabled || process.env.LLM_BACKEND === 'local') {
-      const localConfig = this.config.providers?.local || {};
-      this.localClient = new ChatCompletionsClient({
-        baseURL: localConfig.baseURL || process.env.LOCAL_LLM_BASE_URL,
-        apiKey: localConfig.apiKey || process.env.LOCAL_LLM_API_KEY,
-        modelMapping: localConfig.modelMapping,
-        defaultModel: localConfig.defaultModel,
-        supportsTools: localConfig.supportsTools,
-        supportsStreaming: localConfig.supportsStreaming,
-        requestTimeoutMs: localConfig.requestTimeoutMs || localConfig.timeoutMs || this.config.timeouts?.operationTimeoutMs,
-        searxngUrl: localConfig.searxngUrl || process.env.SEARXNG_URL
-      }, this.logger);
-      this.logger?.info('✅ Local LLM provider initialized (Chat Completions API)');
+    // The catalog and harness use ollama-local; retain local for older generic
+    // OpenAI-compatible servers. Only the canonical name selects native Ollama.
+    const localAssignments = Object.values(this.config.modelAssignments || {}).some(a => a?.provider === 'ollama-local');
+    const canonicalLocal = this.config.providers?.['ollama-local'];
+    const legacyLocal = this.config.providers?.local;
+    const makeLocalClient = localConfig => new ChatCompletionsClient({
+      baseURL: localConfig.baseURL || localConfig.baseUrl || process.env.LOCAL_LLM_BASE_URL || 'http://127.0.0.1:11434/v1',
+      apiKey: localConfig.apiKey || process.env.LOCAL_LLM_API_KEY || 'not-needed',
+      modelMapping: localConfig.modelMapping,
+      defaultModel: localConfig.defaultModel,
+      supportsTools: localConfig.supportsTools,
+      supportsStreaming: localConfig.supportsStreaming,
+      requestTimeoutMs: localConfig.requestTimeoutMs || localConfig.timeoutMs || this.config.timeouts?.operationTimeoutMs,
+      searxngUrl: localConfig.searxngUrl || process.env.SEARXNG_URL,
+      localInference: localConfig.inference,
+      localOnly: this.localOnly,
+    }, this.logger);
+    if (canonicalLocal?.enabled === true || (localAssignments && canonicalLocal?.enabled !== false)) {
+      this.ollamaLocalClient = makeLocalClient(canonicalLocal || {});
+      this.logger?.info('Ollama local provider initialized');
+    }
+    if (legacyLocal?.enabled || process.env.LLM_BACKEND === 'local') {
+      this.localClient = makeLocalClient(legacyLocal || {});
+      this.logger?.info('Generic local provider initialized');
     }
 
     // Initialize Groq client if enabled (OpenAI-compatible, free tier)
@@ -517,6 +528,7 @@ class UnifiedClient extends GPT5Client {
     for (let i = 0; i < chain.length; i++) {
       throwIfAborted(options.signal);
       const fb = chain[i];
+      this.assertLocalAssignment(fb);
       try {
         // Check rate limits before trying
         if ((fb.provider === 'groq' || fb.provider === 'huggingface') && !this.checkRateLimit(fb.provider, fb.model)) {
@@ -536,7 +548,7 @@ class UnifiedClient extends GPT5Client {
           return await this.generateAnthropic(fb, options);
         } else if (fb.provider === 'minimax') {
           return await this.generateMiniMax(fb, options);
-        } else if (fb.provider === 'local') {
+        } else if (fb.provider === 'local' || fb.provider === 'ollama-local') {
           return await this.generateLocal(fb, options);
         } else if (fb.provider === 'groq') {
           return await this.generateWithChatClient(this.groqClient, 'groq', fb, options);
@@ -564,6 +576,8 @@ class UnifiedClient extends GPT5Client {
     throwIfAborted(options.signal);
     // Get model assignment from config (returns null if none configured)
     const assignment = this.getModelAssignment(options.component, options.purpose);
+    this.assertLocalAssignment(assignment);
+    const hasFallback = Array.isArray(assignment?.fallback) ? assignment.fallback.length > 0 : Boolean(assignment?.fallback);
     
     // If no assignment OR assignment is OpenAI -> use parent GPT5Client implementation.
     // openai-codex is OAuth-only and must never fall through to OPENAI_API_KEY.
@@ -588,7 +602,7 @@ class UnifiedClient extends GPT5Client {
       this.logger?.info('Primary provider rate-limited, going to fallback chain', {
         provider: assignment.provider, model: assignment.model
       });
-      if (assignment.fallback) {
+      if (hasFallback) {
         return await this.resolveFallbackChain(assignment.fallback, options);
       }
       throw new Error(`Rate limited on ${assignment.provider}/${assignment.model} with no fallback`);
@@ -606,7 +620,7 @@ class UnifiedClient extends GPT5Client {
           return await this.generateAnthropic(assignment, options);
         } else if (assignment.provider === 'minimax') {
           return await this.generateMiniMax(assignment, options);
-        } else if (assignment.provider === 'local') {
+        } else if (assignment.provider === 'local' || assignment.provider === 'ollama-local') {
           return await this.generateLocal(assignment, options);
         } else if (assignment.provider === 'groq') {
           return await this.generateWithChatClient(this.groqClient, 'groq', assignment, options);
@@ -640,7 +654,7 @@ class UnifiedClient extends GPT5Client {
     }
     
     // All retries exhausted, try fallback chain
-    if (assignment.fallback) {
+    if (hasFallback) {
       this.logger?.info('Attempting fallback chain after all retries failed');
       try {
         return await this.resolveFallbackChain(assignment.fallback, options);
@@ -653,6 +667,26 @@ class UnifiedClient extends GPT5Client {
     
     // No fallback configured -> throw error
     throw lastError || new Error('Generation failed after all retries');
+  }
+
+  localClientFor(provider) {
+    return provider === 'ollama-local' ? this.ollamaLocalClient : this.localClient;
+  }
+
+  requireLocalClient(provider) {
+    const client = this.localClientFor(provider);
+    if (!client) throw new Error(`Local provider ${provider} is disabled or unconfigured`);
+    return client;
+  }
+
+  assertLocalAssignment(assignment) {
+    if (!this.localOnly) return;
+    if (!assignment || !['local', 'ollama-local'].includes(assignment.provider)) {
+      throw Object.assign(new Error('Local-only engine requires an explicit local assignment for every requested role'), { code: 'local_provider_required' });
+    }
+    if (!assignment.model || /:cloud(?:$|[-/])/i.test(assignment.model)) {
+      throw Object.assign(new Error('Local-only engine requires a local model artifact'), { code: 'local_model_required' });
+    }
   }
 
   getOpenAICodexGPT5Client() {
@@ -1115,7 +1149,8 @@ class UnifiedClient extends GPT5Client {
    * Delegates to ChatCompletionsClient which handles format translation
    */
   async generateLocal(assignment, options) {
-    if (!this.localClient) {
+    const client = this.localClientFor(assignment.provider);
+    if (!client) {
       throw new Error('Local LLM provider not initialized. Enable it in config or set LLM_BACKEND=local');
     }
 
@@ -1138,9 +1173,11 @@ class UnifiedClient extends GPT5Client {
 
     // ChatCompletionsClient handles all the format translation
     // Pass through options with model from assignment
-    return await this.localClient.generate({
+    return await client.generate({
       ...options,
+      localProvider: assignment.provider,
       model: assignment.model,
+      reasoningEffort: options.reasoningEffort ?? options.reasoning?.effort ?? assignment.reasoningEffort,
       instructions,
       messages,
       input,
@@ -1216,6 +1253,7 @@ class UnifiedClient extends GPT5Client {
    */
   async generateWithWebSearch(options = {}) {
     const assignment = this.getModelAssignment(options.component, options.purpose);
+    this.assertLocalAssignment(assignment);
     
     // If OpenAI or no assignment -> use parent (GPT-5.5) with model override
     if (!assignment || assignment.provider === 'openai') {
@@ -1246,8 +1284,9 @@ class UnifiedClient extends GPT5Client {
     }
 
     // If local -> use local client's web search handling (graceful fallback)
-    if (assignment.provider === 'local' && this.localClient) {
-      return await this.localClient.generateWithWebSearch(options);
+    if (assignment.provider === 'local' || assignment.provider === 'ollama-local') {
+      return await this.requireLocalClient(assignment.provider).generateWithWebSearch({ ...options, model: assignment.model, localProvider: assignment.provider,
+        reasoningEffort: options.reasoningEffort ?? options.reasoning?.effort ?? assignment.reasoningEffort });
     }
 
     // Groq/HF/OllamaCloud -> use local web search enrichment then send to cloud model
@@ -1275,8 +1314,8 @@ class UnifiedClient extends GPT5Client {
     if (assignment.provider === 'xai') {
       return { supported: true, provider: assignment.provider };
     }
-    if (assignment.provider === 'local') {
-      return { supported: Boolean(this.localClient?.generateWithWebSearch), provider: assignment.provider };
+    if (assignment.provider === 'local' || assignment.provider === 'ollama-local') {
+      return { supported: Boolean(this.localClientFor(assignment.provider)?.generateWithWebSearch), provider: assignment.provider };
     }
     if (assignment.provider === 'groq' || assignment.provider === 'huggingface' || assignment.provider === 'ollama-cloud') {
       const client = assignment.provider === 'groq' ? this.groqClient
@@ -1293,6 +1332,7 @@ class UnifiedClient extends GPT5Client {
    */
   async generateWithReasoning(options = {}) {
     const assignment = this.getModelAssignment(options.component, options.purpose);
+    this.assertLocalAssignment(assignment);
     
     // If OpenAI or no assignment -> use parent (GPT-5.5) with model override
     if (!assignment || assignment.provider === 'openai') {
@@ -1328,8 +1368,9 @@ class UnifiedClient extends GPT5Client {
     }
 
     // Local LLMs don't have separate reasoning -> use standard generation with more tokens
-    if (assignment.provider === 'local' && this.localClient) {
-      return await this.localClient.generateWithReasoning(options);
+    if (assignment.provider === 'local' || assignment.provider === 'ollama-local') {
+      return await this.requireLocalClient(assignment.provider).generateWithReasoning({ ...options, model: assignment.model, localProvider: assignment.provider,
+        reasoningEffort: options.reasoningEffort ?? options.reasoning?.effort ?? assignment.reasoningEffort });
     }
 
     // Groq/HF/OllamaCloud -> standard generation with more tokens
@@ -1349,6 +1390,7 @@ class UnifiedClient extends GPT5Client {
    */
   async generateFast(options = {}) {
     const assignment = this.getModelAssignment(options.component, options.purpose);
+    this.assertLocalAssignment(assignment);
     
     // If no assignment -> use parent
     if (!assignment) {
@@ -1378,10 +1420,11 @@ class UnifiedClient extends GPT5Client {
     }
 
     // If local -> use local client's fast generation
-    if (assignment.provider === 'local' && this.localClient) {
-      return await this.localClient.generateFast({
-        ...options,
-        model: assignment.model
+    if (assignment.provider === 'local' || assignment.provider === 'ollama-local') {
+      return await this.requireLocalClient(assignment.provider).generateFast({
+        ...options, localProvider: assignment.provider,
+        model: assignment.model,
+        reasoningEffort: options.reasoningEffort ?? options.reasoning?.effort ?? assignment.reasoningEffort
       });
     }
 

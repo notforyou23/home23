@@ -124,7 +124,7 @@ class ConfigLoader {
     const baseProviders = this.config.providers || {};
     const isProviderEnabled = (name) => {
       if (CALL_TIME_PROVIDERS.has(name)) return true;
-      const prov = baseProviders[name];
+      const prov = baseProviders[name] || (name === 'ollama-local' ? baseProviders.local : name === 'local' ? baseProviders['ollama-local'] : null);
       return prov && prov.enabled === true;
     };
     const resolveProvider = (model) => {
@@ -257,6 +257,18 @@ class ConfigLoader {
     }
   }
 
+  /** Local-only applies to engine inference dispatch, not external tools or
+   * other product services. Explicit assignments still identify each model. */
+  applyLocalInferenceConfig(source) {
+    const local = source?.providers?.['ollama-local'];
+    if (local && typeof local === 'object') {
+      this.config.providers ||= {};
+      this.config.providers['ollama-local'] = { ...(this.config.providers['ollama-local'] || {}), ...local };
+    }
+    if (typeof source?.engine?.localOnly === 'boolean') this.config.localOnly = source.engine.localOnly;
+    if (local?.inference?.localOnly === true) this.config.localOnly = true;
+  }
+
   /**
    * Apply per-agent feeder overrides on top of the shared base-engine.yaml
    * feeder block. This lets each Home23 agent own its own watch paths and
@@ -373,6 +385,7 @@ class ConfigLoader {
       const homePath = path.join(homeRoot, 'config', 'home.yaml');
       if (fs.existsSync(homePath)) {
         const home = yaml.load(fs.readFileSync(homePath, 'utf8')) || {};
+        this.applyLocalInferenceConfig(home);
         if (home.architecture?.memory?.embedding) {
           this.applyInstanceArchitectureOverrides({ architecture: { memory: { embedding: home.architecture.memory.embedding } } });
         }
@@ -387,6 +400,7 @@ class ConfigLoader {
           const instanceConfig = this.normalizeManagedInstanceConfig(
             yaml.load(fs.readFileSync(instancePath, 'utf8')) || {},
           );
+          this.applyLocalInferenceConfig(instanceConfig);
           this.applyInstanceEngineOverrides(instanceConfig);
           // Per-slot overrides run AFTER the blunt `engine.thought` shortcut so
           // specific assignments win over the sweep.
