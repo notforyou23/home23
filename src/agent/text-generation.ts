@@ -253,7 +253,7 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
         messages,
         stream: false,
         ...(opts.reasoningEffort ? providerReasoningParameters(provider, model, opts.reasoningEffort) : {}),
-        options: { num_ctx: 32768, temperature, num_predict: maxTokens },
+        options: { num_ctx: 32768, temperature, ...(opts.requireComplete ? { num_predict: maxTokens } : {}) },
       }),
       signal: requestSignal,
     });

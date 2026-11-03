@@ -3,9 +3,29 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import { CompactionManager } from '../../src/agent/compaction.js';
 import { PromoterWorker, resolvePromoterModel } from '../../src/workers/promoter.js';
 import type { TextGenerationOptions } from '../../src/agent/text-generation.js';
+
+test('home startup preserves existing cloud output allowance and honors explicit local budgets', () => {
+  const source = readFileSync(new URL('../../src/home.ts', import.meta.url), 'utf8');
+  const wiring = source.match(/  const agent = new AgentLoop\(\{[\s\S]*?\n  \}\);/)?.[0];
+  assert.ok(wiring, 'actual home AgentLoop wiring must be present');
+  for (const [provider, configured, expected] of [
+    ['openai-codex', 4096, 8192], ['anthropic', 4096, 8192],
+    ['ollama-cloud', 4096, 8192], ['ollama-local', 512, 512],
+    ['ollama-local', undefined, 8192],
+  ] as const) {
+    const actual = runInNewContext(`${wiring}\nagent.options.maxTokens`, {
+      AgentLoop: class { constructor(public options: unknown) {} },
+      authToken: '', startupBaseURL: undefined, startupModel: 'fixture', startupProvider: provider,
+      config: { chat: { maxTokens: configured } }, CACHE_DIAGNOSTICS_ENABLED: false,
+      registry: {}, contextManager: {}, history: {}, toolContext: {}, workspacePath: '/fixture', compaction: {},
+    });
+    assert.equal(actual, expected, provider);
+  }
+});
 
 test('compaction follows a cloud-to-local model switch without retaining cloud endpoint or client', async () => {
   const requests: TextGenerationOptions[] = [];

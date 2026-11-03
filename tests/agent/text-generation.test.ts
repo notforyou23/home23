@@ -44,6 +44,7 @@ test('ollama-cloud text generation uses the agent model and API', async () => {
     requestSignal = init?.signal as AbortSignal;
     const body = JSON.parse(String(init?.body || '{}'));
     assert.equal(body.model, 'kimi-k2.6');
+    assert.equal(body.options.num_predict, undefined, 'non-strict cloud calls retain their existing output policy');
     assert.deepEqual(body.messages.map((m: { role: string }) => m.role), ['system', 'user']);
     return new Response(JSON.stringify({ message: { content: 'compact summary' } }), {
       status: 200,

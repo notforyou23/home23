@@ -501,7 +501,9 @@ async function main(): Promise<void> {
     model: startupModel,
     provider: startupProvider,
     // Note: providerMap set via setProviderMap below, after construction.
-    maxTokens: config.chat.maxTokens ?? 8192,
+    // Cloud homes historically use 8192 even when an older config says 4096.
+    // Apply explicit startup budgets only to the new local inference path.
+    maxTokens: startupProvider === 'ollama-local' ? (config.chat.maxTokens ?? 8192) : 8192,
     temperature: config.chat.temperature,
     reasoningEffort: config.chat.reasoningEffort,
     modelReasoningEfforts: config.models?.reasoningEffort,
