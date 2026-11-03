@@ -41,18 +41,25 @@ function makeConfigDir() {
 }
 
 function loadWith(root, engineOverrides) {
-  const modulePath = require.resolve('../../../engine/src/core/config-loader');
-  delete require.cache[modulePath];
-  const { ConfigLoader } = require(modulePath);
-  const loader = new ConfigLoader(path.join(root, 'configs', 'base-engine.yaml'));
-  loader.load();
-  loader.config.providers = { minimax: { enabled: true }, openai: { enabled: false } };
-  loader.config.modelAssignments = {
-    'quantumReasoner.branches': { provider: 'minimax', model: 'MiniMax-M3' },
-    coordinator: { provider: 'minimax', model: 'MiniMax-M3' },
-  };
-  loader.applyInstanceEngineOverrides({ engine: engineOverrides });
-  return loader.config;
+  const previousRoot = process.env.HOME23_ROOT;
+  process.env.HOME23_ROOT = root;
+  try {
+    const modulePath = require.resolve('../../../engine/src/core/config-loader');
+    delete require.cache[modulePath];
+    const { ConfigLoader } = require(modulePath);
+    const loader = new ConfigLoader(path.join(root, 'configs', 'base-engine.yaml'));
+    loader.load();
+    loader.config.providers = { minimax: { enabled: true }, openai: { enabled: false } };
+    loader.config.modelAssignments = {
+      'quantumReasoner.branches': { provider: 'minimax', model: 'MiniMax-M3' },
+      coordinator: { provider: 'minimax', model: 'MiniMax-M3' },
+    };
+    loader.applyInstanceEngineOverrides({ engine: engineOverrides });
+    return loader.config;
+  } finally {
+    if (previousRoot === undefined) delete process.env.HOME23_ROOT;
+    else process.env.HOME23_ROOT = previousRoot;
+  }
 }
 
 test('an openai-codex model IS accepted for engine roles — codex needs no enabled flag', (t) => {

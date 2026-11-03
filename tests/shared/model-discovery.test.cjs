@@ -288,7 +288,10 @@ test('resident background cadence refreshes an expired catalog without another c
     calls++; if (calls === 2) observed(); return response({ data: [claude(calls === 1 ? 'before' : 'after')] });
   } });
   await f.service.refreshAll(); time += MAX_AGE_MS + 1;
-  await Promise.race([changed, new Promise((_, reject) => { const timer = setTimeout(() => reject(Error('background discovery did not run')), 1000); timer.unref(); })]);
+  let timer;
+  try {
+    await Promise.race([changed, new Promise((_, reject) => { timer = setTimeout(() => reject(Error('background discovery did not run')), 1000); })]);
+  } finally { clearTimeout(timer); }
   await f.service.refreshAll();
   assert.equal(f.service.snapshot({ refreshAutomatically: false }).models[0].id, 'after');
   assert.equal(calls, 2);
