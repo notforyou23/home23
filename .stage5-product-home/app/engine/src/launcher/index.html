@@ -1,0 +1,2035 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COSMO Launcher</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);
+            color: #c9d1d9;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+        }
+
+        .header h1 {
+            font-size: 32px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #58a6ff 0%, #79c0ff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 6px;
+        }
+
+        .header p {
+            color: #8b949e;
+            font-size: 14px;
+        }
+
+        .main-grid {
+            display: grid;
+            grid-template-columns: 420px 1fr;
+            gap: 20px;
+            margin-bottom: 80px;
+        }
+
+        .sidebar {
+            background: #161b22;
+            border-radius: 8px;
+            border: 1px solid #30363d;
+            padding: 20px;
+            height: fit-content;
+            max-height: calc(100vh - 200px);
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+
+        .sidebar::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .sidebar::-webkit-scrollbar-track {
+            background: #0d1117;
+            border-radius: 4px;
+        }
+
+        .sidebar::-webkit-scrollbar-thumb {
+            background: #30363d;
+            border-radius: 4px;
+        }
+
+        .sidebar::-webkit-scrollbar-thumb:hover {
+            background: #484f58;
+        }
+
+        .sidebar h2 {
+            font-size: 16px;
+            margin-bottom: 15px;
+            color: #f39c12;
+            font-weight: 700;
+        }
+
+        .runs-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+
+        .run-row {
+            cursor: pointer;
+            transition: background 0.15s;
+            border-bottom: 1px solid #21262d;
+        }
+
+        .run-row:hover {
+            background: rgba(88, 166, 255, 0.05);
+        }
+
+        .run-row.selected {
+            background: rgba(88, 166, 255, 0.12);
+        }
+
+        .run-row td {
+            padding: 16px 10px;
+            vertical-align: middle;
+        }
+
+        .run-row:first-child td {
+            padding-top: 12px;
+        }
+
+        .run-icon {
+            font-size: 20px;
+            width: 40px;
+            text-align: center;
+        }
+
+        .run-name-cell {
+            font-weight: 600;
+            color: #c9d1d9;
+            font-size: 13px;
+            margin-bottom: 5px;
+        }
+
+        .run-row.selected .run-name-cell {
+            color: #58a6ff;
+        }
+
+        .run-badge {
+            display: inline-block;
+            font-size: 8px;
+            padding: 3px 6px;
+            border-radius: 3px;
+            background: #238636;
+            color: white;
+            font-weight: 700;
+            margin-left: 6px;
+        }
+
+        .run-info {
+            font-size: 11px;
+            color: #8b949e;
+            line-height: 1.5;
+        }
+
+        .run-domain {
+            font-size: 11px;
+            color: #8b949e;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            margin-top: 3px;
+        }
+
+        .run-stats {
+            font-size: 11px;
+            color: #8b949e;
+            text-align: right;
+            width: 70px;
+        }
+
+        .run-actions {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 12px;
+        }
+        
+        .run-actions .btn {
+            font-size: 11px;
+            padding: 6px 10px;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 13px;
+        }
+
+        .btn-primary {
+            background: #238636;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #2ea043;
+        }
+
+        .btn-secondary {
+            background: #21262d;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+        }
+
+        .btn-secondary:hover {
+            background: #30363d;
+        }
+
+        .btn-danger {
+            background: #da3633;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #f85149;
+        }
+
+        .config-panel {
+            background: #161b22;
+            border-radius: 8px;
+            border: 1px solid #30363d;
+            padding: 20px;
+            max-height: calc(100vh - 200px);
+            overflow-y: auto;
+        }
+
+        .config-panel::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .config-panel::-webkit-scrollbar-track {
+            background: #0d1117;
+        }
+
+        .config-panel::-webkit-scrollbar-thumb {
+            background: #30363d;
+            border-radius: 4px;
+        }
+
+        .config-section {
+            margin-bottom: 20px;
+            background: #0d1117;
+            border-radius: 8px;
+            border: 1px solid #30363d;
+            overflow: hidden;
+        }
+
+        .config-section h3 {
+            font-size: 14px;
+            margin: 0;
+            padding: 15px 18px;
+            color: #f39c12;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: pointer;
+            background: #0d1117;
+            border-bottom: 1px solid #30363d;
+            transition: background 0.2s;
+        }
+
+        .config-section h3:hover {
+            background: #161b22;
+        }
+
+        .config-section-content {
+            padding: 20px;
+        }
+
+        .config-section.collapsed .config-section-content {
+            display: none;
+        }
+
+        .collapse-icon {
+            transition: transform 0.2s;
+        }
+
+        .config-section.collapsed .collapse-icon {
+            transform: rotate(-90deg);
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            color: #c9d1d9;
+        }
+
+        .form-input,
+        .form-select,
+        .form-textarea {
+            width: 100%;
+            padding: 8px 10px;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #c9d1d9;
+            font-size: 13px;
+            font-family: inherit;
+        }
+
+        .form-textarea {
+            min-height: 60px;
+            resize: vertical;
+        }
+
+        .form-input:focus,
+        .form-select:focus,
+        .form-textarea:focus {
+            outline: none;
+            border-color: #58a6ff;
+        }
+
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 26px;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #30363d;
+            transition: .3s;
+            border-radius: 26px;
+        }
+
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 4px;
+            bottom: 4px;
+            background-color: #8b949e;
+            transition: .3s;
+            border-radius: 50%;
+        }
+
+        input:checked + .toggle-slider {
+            background-color: #238636;
+        }
+
+        input:checked + .toggle-slider:before {
+            transform: translateX(24px);
+            background-color: white;
+        }
+
+        .toggle-group {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px;
+            background: #0d1117;
+            border-radius: 6px;
+            margin-bottom: 10px;
+        }
+
+        .toggle-label {
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .launch-panel {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(to top, #161b22 0%, #161b22 90%, transparent 100%);
+            border-top: 1px solid #30363d;
+            padding: 15px 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 12px;
+            z-index: 1000;
+            box-shadow: 0 -4px 20px rgba(0,0,0,0.3);
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-new {
+            background: #238636;
+            color: white;
+        }
+
+        .status-running {
+            background: #1f6feb;
+            color: white;
+        }
+
+        .help-text {
+            font-size: 11px;
+            color: #8b949e;
+            margin-top: 4px;
+        }
+
+        .modal-description {
+            color: #8b949e;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+
+        .dream-estimates-box {
+            background: #1c2128;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 12px;
+            margin-top: 15px;
+        }
+
+        .dream-estimates-box small {
+            color: #8b949e;
+        }
+
+        .modal-actions {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.8);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: #161b22;
+            border-radius: 8px;
+            border: 1px solid #30363d;
+            padding: 30px;
+            max-width: 500px;
+            width: 90%;
+        }
+
+        .modal-title {
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 20px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #8b949e;
+        }
+
+        .spinner {
+            border: 3px solid #30363d;
+            border-top: 3px solid #58a6ff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .alert {
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
+        .alert-warning {
+            background: rgba(243, 156, 18, 0.1);
+            border: 1px solid #f39c12;
+            color: #f39c12;
+        }
+
+        .alert-info {
+            background: rgba(88, 166, 255, 0.1);
+            border: 1px solid #58a6ff;
+            color: #58a6ff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🧠 COSMO LAUNCHER</h1>
+            <p>Configure and launch your autonomous AI research system</p>
+        </div>
+
+        <!-- Main Grid -->
+        <div class="main-grid">
+            <!-- Sidebar: Run Selection -->
+            <div class="sidebar">
+                <h2>📂 Runs</h2>
+                
+                <div class="run-actions">
+                    <button class="btn btn-primary" style="flex: 1;" onclick="createNewRun()">+ New</button>
+                </div>
+                
+                <div class="run-actions" style="margin-top: 8px;">
+                    <button class="btn btn-secondary" style="flex: 1;" onclick="forkRun()">Fork</button>
+                    <button class="btn btn-secondary" style="flex: 1;" onclick="dreamForkRun()">Dream Fork</button>
+                    <button class="btn btn-secondary" style="flex: 1;" onclick="mergeRuns()">Merge</button>
+                </div>
+                
+                <div class="run-actions" style="margin-top: 8px;">
+                    <button class="btn btn-secondary" style="flex: 1;" onclick="dashboardOnly()">Dashboard Only</button>
+                </div>
+
+                <!-- Sort/Filter Controls -->
+                <div style="margin: 12px 0 8px 0;">
+                    <select id="sort-runs" class="form-select" style="font-size: 11px; padding: 6px 8px;" onchange="renderRunsList()">
+                        <option value="recent">Most Recent</option>
+                        <option value="name">Name (A-Z)</option>
+                        <option value="cycles">Most Cycles</option>
+                        <option value="mode">Mode</option>
+                    </select>
+                </div>
+
+                <div style="margin-bottom: 10px;">
+                    <input 
+                        type="text" 
+                        id="filter-runs" 
+                        class="form-input" 
+                        placeholder="Filter runs..."
+                        style="font-size: 11px; padding: 6px 8px;"
+                        oninput="renderRunsList()"
+                    >
+                </div>
+
+                <div id="runs-list" class="loading">
+                    <div class="spinner"></div>
+                    Loading runs...
+                </div>
+            </div>
+
+            <!-- Main Panel: Configuration -->
+            <div class="config-panel">
+                <div id="config-form" style="display: none;">
+                    <div class="alert alert-info" id="run-status">
+                        <strong id="current-run-name">No run selected</strong>
+                    </div>
+
+                    <!-- Thinking Section -->
+                    <div class="config-section">
+                        <h3 onclick="toggleSection(this)">
+                            <span>🧠 Thinking</span>
+                            <span class="collapse-icon">▼</span>
+                        </h3>
+                        <div class="config-section-content">
+                        <div class="form-group">
+                            <label class="form-label">Mode</label>
+                            <select id="exploration_mode" class="form-select" onchange="updateModeUI()">
+                                <option value="guided">Guided - Focus on specific task</option>
+                                <option value="autonomous">Autonomous - Free exploration</option>
+                                <option value="pure">Pure - Minimal prompting (experimental)</option>
+                            </select>
+                        </div>
+
+                        <div id="guided-fields">
+                            <div class="form-group">
+                                <label class="form-label">What should COSMO focus on?</label>
+                                <input type="text" id="domain" class="form-input" placeholder="e.g., litigation ediscovery pipeline">
+                                <div class="help-text">The main task or research area</div>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label">Additional Context (optional)</label>
+                                <textarea id="context" class="form-textarea" placeholder="e.g., focus on Relativity, Purview, privilege review"></textarea>
+                                <div class="help-text">Extra details or constraints</div>
+                            </div>
+
+                            <div class="grid-2">
+                                <div class="form-group">
+                                    <label class="form-label">Execution Mode</label>
+                                    <select id="execution_mode" class="form-select">
+                                        <option value="strict">Strict - 100% task focus</option>
+                                        <option value="mixed">Mixed - 85% task, 15% exploration</option>
+                                        <option value="advisory">Advisory - 65% task, 35% exploration</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Depth</label>
+                                    <select id="depth" class="form-select">
+                                        <option value="normal">Normal - Standard analysis</option>
+                                        <option value="deep">Deep - Exhaustive research</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="toggle-group">
+                                <span class="toggle-label">Show Execution Plan</span>
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="show_plan" checked>
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                            <div class="help-text" style="margin-top: -8px;">
+                                Display detailed plan before starting
+                            </div>
+                        </div>
+                        </div>
+                    </div>
+
+                    <!-- Execution Section -->
+                    <div class="config-section">
+                        <h3 onclick="toggleSection(this)">
+                            <span>⚙️ Execution</span>
+                            <span class="collapse-icon">▼</span>
+                        </h3>
+                        <div class="config-section-content">
+                        
+                        <div class="grid-2">
+                            <div class="form-group">
+                                <label class="form-label">Max Cycles</label>
+                                <input type="text" id="max_cycles" class="form-input" placeholder="100 or unlimited">
+                                <div class="help-text">How long to run</div>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label">Review Period</label>
+                                <input type="number" id="review_period" class="form-input" value="20" min="5" max="200">
+                                <div class="help-text">Cycles between coordinator reviews</div>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label">Max Concurrent Agents</label>
+                                <input type="number" id="max_concurrent" class="form-input" value="4" min="1" max="20">
+                                <div class="help-text">Parallel specialist agents</div>
+                            </div>
+                        </div>
+                        </div>
+                    </div>
+
+                    <!-- Capabilities Section -->
+                    <div class="config-section">
+                        <h3 onclick="toggleSection(this)">
+                            <span>🔧 Capabilities</span>
+                            <span class="collapse-icon">▼</span>
+                        </h3>
+                        <div class="config-section-content">
+                        
+                        <div class="toggle-group">
+                            <span class="toggle-label">Web Search</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="enable_web_search">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+
+                        <div class="toggle-group">
+                            <span class="toggle-label">💻 Coding Agents</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="enable_coding_agents" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="help-text" style="margin-top: -8px; margin-bottom: 10px;">
+                            Write and execute code during research
+                        </div>
+
+                        <div class="toggle-group">
+                            <span class="toggle-label">Sleep & Dreams</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="enable_sleep">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+
+                        <div class="toggle-group">
+                            <span class="toggle-label">🔒 Stabilization Mode</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="enable_stabilization" onchange="updateStabilizationUI()">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="help-text" style="margin-top: -8px; margin-bottom: 10px;">
+                            First 20-50 cycles of merged brains (disables curiosity, chaos, mutations)
+                        </div>
+                        
+                        <div id="stabilization-info" style="display: none; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 6px; padding: 12px; margin-top: 10px; margin-bottom: 10px;">
+                            <div style="font-size: 12px; font-weight: 600; color: #f59e0b; margin-bottom: 6px;">⚠️ Stabilization Overrides Active (20-cycle warm start):</div>
+                            <div style="font-size: 11px; color: #8b949e; line-height: 1.6;">
+                                • Curiosity & Mood: <span style="color: #f85149;">OFF</span><br>
+                                • Parallel Branches: <span style="color: #f59e0b;">2</span> (normally 5)<br>
+                                • Quantum Entanglement: <span style="color: #f85149;">OFF</span><br>
+                                • Quantum Tunneling: <span style="color: #f85149;">0.0</span><br>
+                                • Chaos & Mutations: <span style="color: #f85149;">OFF</span><br>
+                                • Thermodynamic Surprise: <span style="color: #f85149;">OFF</span><br>
+                                • Oscillations: <span style="color: #f85149;">OFF</span><br>
+                                • Intrinsic Goals: <span style="color: #f85149;">OFF</span><br>
+                                • Max Goals: <span style="color: #f59e0b;">25</span> (normally 150)<br>
+                                • Exploration Weight: <span style="color: #f85149;">0</span><br>
+                                • Review Period: <span style="color: #f59e0b;">15 cycles</span> (reduced overhead)<br>
+                                • Max Concurrent: <span style="color: #f59e0b;">2 agents</span>
+                            </div>
+                        </div>
+
+                        <div class="toggle-group">
+                            <span class="toggle-label">🧪 Experimental Mode</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="enable_experimental" onchange="updateExperimentalUI()">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="help-text" style="margin-top: -8px; margin-bottom: 10px;">
+                            Local OS autonomy (mouse, keyboard, bash, screenshots). Requires approval per session.
+                        </div>
+
+                        <div class="toggle-group">
+                            <span class="toggle-label">🔍 Introspection</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="enable_introspection">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="help-text" style="margin-top: -8px; margin-bottom: 10px;">
+                            Self-awareness layer - COSMO reads its own agent outputs into memory
+                        </div>
+
+                        <div class="toggle-group">
+                            <span class="toggle-label">🛰 Agent Routing</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="enable_agent_routing">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="help-text" style="margin-top: -8px; margin-bottom: 10px;">
+                            Auto-spawn follow-up agents from introspection (requires introspection enabled)
+                        </div>
+
+                        <div class="toggle-group">
+                            <span class="toggle-label">🧹 Memory Governance</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="enable_memory_governance">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="help-text" style="margin-top: -8px; margin-bottom: 10px;">
+                            Advisory memory management (tracks activation, non-destructive)
+                        </div>
+
+                        <div class="toggle-group">
+                            <span class="toggle-label">🔁 Recursive Mode</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="enable_recursive_mode">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="help-text" style="margin-top: -8px; margin-bottom: 10px;">
+                            Meta-cognitive planning - COSMO evaluates progress and decides when to halt
+                        </div>
+
+                        <div class="toggle-group">
+                            <span class="toggle-label">🛡️ Frontier Governance</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="enable_frontier">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="help-text" style="margin-top: -8px; margin-bottom: 10px;">
+                            Runtime governance - tracks agent actions, provenance, and capability gates (observe mode)
+                        </div>
+                        
+                        <div id="experimental-info" style="display: none; background: rgba(168, 85, 247, 0.1); border: 1px solid rgba(168, 85, 247, 0.3); border-radius: 6px; padding: 12px; margin-top: 10px; margin-bottom: 10px;">
+                            <div style="font-size: 12px; font-weight: 600; color: #a855f7; margin-bottom: 6px;">🧪 Experimental Capabilities:</div>
+                            <div style="font-size: 11px; color: #8b949e; line-height: 1.6;">
+                                • Mouse & Keyboard Control: <span style="color: #3fb950;">ENABLED</span><br>
+                                • Bash Execution: <span style="color: #3fb950;">ENABLED</span> (sandboxed)<br>
+                                • File Operations: <span style="color: #3fb950;">ENABLED</span> (runtime/outputs only)<br>
+                                • Screenshots: <span style="color: #3fb950;">ENABLED</span><br>
+                                • macOS Automation: <span style="color: #3fb950;">ENABLED</span> (if macOS)<br>
+                                • Manual Approval: <span style="color: #f59e0b;">REQUIRED</span> per session<br>
+                                • Time Limit: <span style="color: #f59e0b;">10 minutes</span> (hard max: 15)<br>
+                                • Action Limit: <span style="color: #f59e0b;">50 actions</span> (hard max: 200)
+                            </div>
+                        </div>
+
+                        <div class="toggle-group">
+                            <span class="toggle-label">GitHub MCP</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="enable_github_mcp" onchange="handleGitHubToggle()">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+
+                        <div id="github-token-input" style="display: none; margin-top: 10px;">
+                            <input type="password" id="github_token" class="form-input" placeholder="GitHub Personal Access Token">
+                            <div class="help-text">Get token at: github.com/settings/tokens</div>
+                        </div>
+
+                        <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #30363d;">
+                            <div class="toggle-group" style="background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(59, 130, 246, 0.1) 100%); border: 1px solid rgba(16, 185, 129, 0.3);">
+                                <span class="toggle-label">🏠 Local LLM (Air-Gapped)</span>
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="enable_local_llm" onchange="handleLocalLLMToggle()">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                            <div class="help-text" style="margin-top: -8px; margin-bottom: 10px;">
+                                Use local models (Ollama, vLLM) instead of OpenAI API - zero API costs, full privacy
+                            </div>
+                        </div>
+
+                        <div id="local-llm-config" style="display: none; margin-top: 10px; background: rgba(16, 185, 129, 0.05); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 6px; padding: 15px;">
+                            <div style="font-size: 12px; font-weight: 600; color: #10b981; margin-bottom: 12px;">🔧 Local LLM Configuration</div>
+
+                            <div class="form-group">
+                                <label class="form-label">Server URL</label>
+                                <input type="text" id="local_llm_base_url" class="form-input" value="http://localhost:11434/v1" placeholder="http://localhost:11434/v1">
+                                <div class="help-text">Ollama: :11434/v1 | vLLM: :8000/v1 | llama.cpp: :8080/v1</div>
+                            </div>
+
+                            <div class="grid-2">
+                                <div class="form-group">
+                                    <label class="form-label">Primary Model</label>
+                                    <input type="text" id="local_llm_default_model" class="form-input" value="qwen2.5:14b" placeholder="qwen2.5:14b">
+                                    <div class="help-text">Best quality model</div>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Fast Model</label>
+                                    <input type="text" id="local_llm_fast_model" class="form-input" value="qwen2.5:14b" placeholder="qwen2.5:14b">
+                                    <div class="help-text">Quick operations</div>
+                                </div>
+                            </div>
+
+                            <div class="form-group" style="margin-top: 15px;">
+                                <label class="form-label">SearXNG URL (Optional)</label>
+                                <input type="text" id="searxng_url" class="form-input" value="" placeholder="http://your-server:8888">
+                                <div class="help-text">Self-hosted meta-search for reliable web search. Leave empty to use DuckDuckGo.</div>
+                            </div>
+
+                            <div style="font-size: 11px; color: #8b949e; margin-top: 10px; padding: 10px; background: #0d1117; border-radius: 4px;">
+                                <strong style="color: #10b981;">✅ Available with Local LLM:</strong><br>
+                                • Web Search (SearXNG if configured, DuckDuckGo fallback)<br>
+                                <br>
+                                <strong style="color: #f59e0b;">⚠️ Not available with Local LLM:</strong><br>
+                                • Extended Reasoning (GPT-5 specific)<br>
+                                • Code Interpreter containers (OpenAI specific)
+                            </div>
+                        </div>
+                        </div>
+                    </div>
+
+                    <!-- File Access Section -->
+                    <div class="config-section collapsed">
+                        <h3 onclick="toggleSection(this)">
+                            <span>📁 File Access</span>
+                            <span class="collapse-icon">▼</span>
+                        </h3>
+                        <div class="config-section-content">
+                        
+                        <div class="form-group">
+                            <label class="form-label">What can COSMO read?</label>
+                            <select id="file_access_mode" class="form-select" onchange="updateFileAccessUI()">
+                                <option value="outputs">Outputs only (isolated)</option>
+                                <option value="codebase">Codebase exploration (src/, docs/, etc.)</option>
+                                <option value="full">Full repository access</option>
+                                <option value="external">External folders (outside COSMO)</option>
+                                <option value="custom">Custom paths</option>
+                                <option value="injected">Injection-only (ONLY injected documents)</option>
+                            </select>
+                            <div class="help-text" style="margin-top: 8px;">
+                                ℹ️ All modes (except Injection-only) include <strong>runtime/outputs/</strong> and <strong>runtime/outputs/injected/</strong> for agent coordination and document injection.
+                            </div>
+                        </div>
+
+                        <div id="custom-paths-input" style="display: none;">
+                            <label class="form-label">Custom Paths (comma-separated)</label>
+                            <input type="text" id="custom_paths" class="form-input" placeholder="docs/, src/, research/">
+                        </div>
+
+                        <div id="external-paths-input" style="display: none;">
+                            <label class="form-label">External Folder Paths (absolute paths, comma-separated)</label>
+                            <input type="text" id="external_paths" class="form-input" placeholder="/Users/you/Documents/MyProject, /Users/you/Research">
+                            <div class="help-text" style="margin-top: 8px; color: #f85149;">
+                                ⚠️ External access: COSMO will be able to read files in these folders. Always includes runtime/outputs/ and runtime/exports/ for agent coordination.
+                            </div>
+                        </div>
+
+                        <div id="current-paths" class="help-text">
+                            Current: runtime/outputs/, runtime/exports/
+                        </div>
+                        </div>
+                    </div>
+
+                    <!-- Cluster Section -->
+                    <div class="config-section collapsed">
+                        <h3 onclick="toggleSection(this)">
+                            <span>🌐 Cluster (Advanced)</span>
+                            <span class="collapse-icon">▼</span>
+                        </h3>
+                        <div class="config-section-content">
+                        
+                        <div class="toggle-group">
+                            <span class="toggle-label">Hive Mind Mode</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="cluster_enabled" onchange="updateClusterUI()">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+
+                        <div id="cluster-options" style="display: none; margin-top: 15px;">
+                            <div class="grid-2">
+                                <div class="form-group">
+                                    <label class="form-label">Backend</label>
+                                    <select id="cluster_backend" class="form-select">
+                                        <option value="redis">Redis (high-performance)</option>
+                                        <option value="filesystem">Filesystem (zero infra)</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">Instances</label>
+                                    <select id="cluster_size" class="form-select">
+                                        <option value="3">3 minds</option>
+                                        <option value="5">5 minds</option>
+                                        <option value="9">9 minds</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="toggle-group">
+                                <span class="toggle-label">Specialization (assign roles)</span>
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="specialization_enabled" onchange="updateSpecializationUI()">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                            <div class="help-text" style="margin-top: -8px; margin-bottom: 10px;">
+                                Give each instance a specialized role
+                            </div>
+
+                            <div id="specialization-roles" style="display: none;">
+                                <div class="alert alert-info" style="font-size: 12px;">
+                                    Specialization assigns roles to cluster instances.<br>
+                                    For now, uses default role distribution (analysis/research/synthesis/experimental/qa).<br>
+                                    Advanced customization available in terminal launcher.
+                                </div>
+                            </div>
+                        </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="no-selection" style="text-align: center; padding: 60px 20px; color: #8b949e;">
+                    <div style="font-size: 48px; margin-bottom: 15px;">👈</div>
+                    <div style="font-size: 16px;">Select or create a run to begin</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Launch Panel (Fixed Bottom) -->
+    <div class="launch-panel" id="launch-panel" style="display: none;">
+        <button class="btn btn-secondary" onclick="previewConfig()">📄 Preview Config</button>
+        <button class="btn btn-primary" onclick="launchCOSMO()" style="padding: 12px 40px; font-size: 16px;">
+            🚀 Launch COSMO
+        </button>
+    </div>
+
+    <!-- Modals -->
+    <div id="preview-modal" class="modal">
+        <div class="modal-content" style="max-width: 800px; max-height: 80vh; overflow: auto;">
+            <h2 class="modal-title">Configuration Preview</h2>
+            <pre id="preview-content" style="background: #0d1117; padding: 20px; border-radius: 6px; overflow: auto; max-height: 500px; font-size: 12px;"></pre>
+            <div style="margin-top: 20px; text-align: right;">
+                <button class="btn btn-secondary" onclick="closeModal('preview-modal')">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="create-modal" class="modal">
+        <div class="modal-content">
+            <h2 class="modal-title">Create New Run</h2>
+            <div class="form-group">
+                <label class="form-label">Run Name</label>
+                <input type="text" id="new-run-name" class="form-input" placeholder="e.g., quantum-research">
+                <div class="help-text">Letters, numbers, dashes, underscores only</div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeModal('create-modal')">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmCreateRun()">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="fork-modal" class="modal">
+        <div class="modal-content">
+            <h2 class="modal-title">Fork Run</h2>
+            <div class="form-group">
+                <label class="form-label">Source Run</label>
+                <select id="fork-source" class="form-select"></select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">New Run Name</label>
+                <input type="text" id="fork-name" class="form-input" placeholder="e.g., experiment-v2">
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeModal('fork-modal')">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmForkRun()">Fork</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="dream-fork-modal" class="modal">
+        <div class="modal-content">
+            <h2 class="modal-title">🌙 Dream Fork - Continuous Sleep & Dreaming</h2>
+            <p class="modal-description">
+                Creates a fork that continuously sleeps and dreams without normal thinking or agents.
+            </p>
+            <div class="form-group">
+                <label class="form-label">Source Run</label>
+                <select id="dream-fork-source" class="form-select"></select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">New Run Name</label>
+                <input type="text" id="dream-fork-name" class="form-input" placeholder="e.g., garcia_dreams">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Dream Cycles</label>
+                <input type="number" id="dream-cycles" class="form-input" value="100" min="1" max="1000" oninput="updateDreamEstimates()">
+                <div class="help-text">How many consolidation/dream rounds to run</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Dreams Per Cycle</label>
+                <input type="number" id="dreams-per-cycle" class="form-input" value="10" min="1" max="50" oninput="updateDreamEstimates()">
+                <div class="help-text">How many dreams to generate each cycle</div>
+            </div>
+            <div class="dream-estimates-box">
+                <small>
+                    <strong>Total dreams:</strong> <span id="total-dreams">1000</span><br>
+                    <strong>Estimated time:</strong> <span id="estimated-time">~8-16 hours</span>
+                </small>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeModal('dream-fork-modal')">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmDreamFork()">Create Dream Fork</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="launch-modal" class="modal">
+        <div class="modal-content">
+            <h2 class="modal-title">🚀 Launching COSMO...</h2>
+            <div class="loading">
+                <div class="spinner"></div>
+                <div id="launch-status">Starting services...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let runs = [];
+        let selectedRun = null;
+        let currentSettings = {};
+
+        // =============================================================================
+        // UI HELPERS
+        // =============================================================================
+
+        function toggleSection(header) {
+            const section = header.parentElement;
+            section.classList.toggle('collapsed');
+        }
+
+        // =============================================================================
+        // INITIALIZATION
+        // =============================================================================
+
+        async function init() {
+            await loadRuns();
+            await loadDefaults();
+        }
+
+        async function loadRuns() {
+            try {
+                const response = await fetch('/api/runs');
+                const data = await response.json();
+                
+                if (data.success) {
+                    runs = data.runs;
+                    renderRunsList();
+                }
+            } catch (error) {
+                console.error('Failed to load runs:', error);
+                document.getElementById('runs-list').innerHTML = 
+                    '<div style="color: #f85149; padding: 20px;">Failed to load runs</div>';
+            }
+        }
+
+        async function loadDefaults() {
+            try {
+                const response = await fetch('/api/config/defaults');
+                const data = await response.json();
+                
+                if (data.success) {
+                    currentSettings = data.defaults;
+                }
+            } catch (error) {
+                console.error('Failed to load defaults:', error);
+            }
+        }
+
+        function renderRunsList() {
+            const container = document.getElementById('runs-list');
+            
+            if (runs.length === 0) {
+                container.innerHTML = '<div style="color: #8b949e; padding: 20px; text-align: center; font-size: 12px;">No runs yet<br>Click + New to start</div>';
+                return;
+            }
+
+            // Get filter and sort values
+            const filterText = document.getElementById('filter-runs')?.value?.toLowerCase() || '';
+            const sortBy = document.getElementById('sort-runs')?.value || 'recent';
+
+            // Filter runs
+            let filteredRuns = runs.filter(run => {
+                if (!filterText) return true;
+                return run.name.toLowerCase().includes(filterText) ||
+                       (run.domain && run.domain.toLowerCase().includes(filterText)) ||
+                       (run.mode && run.mode.toLowerCase().includes(filterText));
+            });
+
+            // Sort runs
+            filteredRuns.sort((a, b) => {
+                switch(sortBy) {
+                    case 'name':
+                        return a.name.localeCompare(b.name);
+                    case 'cycles':
+                        return (b.cycleCount || 0) - (a.cycleCount || 0);
+                    case 'mode':
+                        return (a.mode || '').localeCompare(b.mode || '');
+                    case 'recent':
+                    default:
+                        return (b.modified || 0) - (a.modified || 0);
+                }
+            });
+
+            if (filteredRuns.length === 0) {
+                container.innerHTML = '<div style="color: #8b949e; padding: 20px; text-align: center; font-size: 12px;">No matching runs</div>';
+                return;
+            }
+
+            const tableHtml = `
+                <table class="runs-table">
+                    ${filteredRuns.map((run, idx) => {
+                        const modeIcon = run.mode === 'guided' ? '🎯' : run.mode === 'autonomous' ? '🌌' : '✨';
+                        const isLatest = runs[0]?.name === run.name;
+
+                        return `
+                        <tr class="run-row ${selectedRun?.name === run.name ? 'selected' : ''}" 
+                            onclick="selectRun('${run.name}')">
+                            <td class="run-icon">${modeIcon}</td>
+                            <td>
+                                <div class="run-name-cell">
+                                    ${run.name}
+                                    ${isLatest ? '<span class="run-badge">LATEST</span>' : ''}
+                                </div>
+                                <div class="run-domain">${run.domain || '<span style="opacity: 0.5;">No focus set</span>'}</div>
+                            </td>
+                            <td class="run-stats">
+                                Cycle ${run.cycleCount}<br>
+                                <span style="opacity: 0.7;">${run.size}</span>
+                            </td>
+                        </tr>
+                        `;
+                    }).join('')}
+                </table>
+            `;
+            
+            container.innerHTML = tableHtml;
+        }
+
+        async function selectRun(runName) {
+            selectedRun = runs.find(r => r.name === runName);
+            
+            if (!selectedRun) return;
+
+            // Load metadata
+            try {
+                const response = await fetch(`/api/runs/${runName}/metadata`);
+                const data = await response.json();
+                
+                if (data.success && data.metadata) {
+                    currentSettings = {
+                        exploration_mode: data.metadata.explorationMode || 'guided',
+                        domain: data.metadata.domain || '',
+                        context: data.metadata.context || '',
+                        execution_mode: data.metadata.executionMode || 'mixed',
+                        depth: data.metadata.depth || 'normal',
+                        max_cycles: data.metadata.maxCycles === 'null' ? 'unlimited' : data.metadata.maxCycles,
+                        silent_planning: data.metadata.silentPlanning || false,
+                        enable_web_search: data.metadata.enableWebSearch || false,
+                        enable_sleep: data.metadata.enableSleep || false,
+                        enable_coding_agents: data.metadata.enableCodingAgents !== false,
+                        enable_stabilization: data.metadata.enableStabilization || false,
+                        enable_experimental: data.metadata.enableExperimental || false,
+                        enable_introspection: data.metadata.enableIntrospection || false,
+                        enable_agent_routing: data.metadata.enableAgentRouting || false,
+                        enable_memory_governance: data.metadata.enableMemoryGovernance || false,
+                        enable_recursive_mode: data.metadata.enableRecursiveMode || false,
+                        enable_frontier: data.metadata.enableFrontier || false,
+                        enable_github_mcp: data.metadata.githubMcpEnabled || false,
+                        review_period: data.metadata.reviewPeriod || 20,
+                        max_concurrent: data.metadata.maxConcurrent || 4,
+                        file_access_paths: data.metadata.fileAccessPaths || 'runtime/outputs/, runtime/exports/',
+                        cluster_enabled: data.metadata.clusterEnabled || false,
+                        cluster_backend: data.metadata.clusterBackend || 'none',
+                        cluster_size: data.metadata.clusterSize || 1,
+                        specialization_enabled: data.metadata.clusterSpecializationEnabled || false,
+                        specialization_profiles: [],
+                        dream_mode: false,
+                        dream_cycles: 100,
+                        dreams_per_cycle: 10,
+                        // Local LLM settings
+                        enable_local_llm: data.metadata.enableLocalLlm || false,
+                        local_llm_base_url: data.metadata.localLlmBaseUrl || 'http://localhost:11434/v1',
+                        local_llm_default_model: data.metadata.localLlmDefaultModel || 'qwen2.5:14b',
+                        local_llm_fast_model: data.metadata.localLlmFastModel || 'qwen2.5:14b'
+                    };
+                }
+            } catch (error) {
+                console.error('Failed to load metadata:', error);
+                // Use defaults
+                currentSettings = await (await fetch('/api/config/defaults')).json().then(d => d.defaults);
+            }
+
+            // Check for dream fork metadata
+            try {
+                const dreamResponse = await fetch(`/api/runs/${runName}/dream-metadata`);
+                const dreamData = await dreamResponse.json();
+                
+                if (dreamData.success && dreamData.metadata && dreamData.metadata.dreamMode) {
+                    currentSettings.dream_mode = true;
+                    currentSettings.dream_cycles = dreamData.metadata.settings?.dreamCycles || 100;
+                    currentSettings.dreams_per_cycle = dreamData.metadata.settings?.dreamsPerCycle || 10;
+                    currentSettings.enable_sleep = true;  // CRITICAL: Dream mode requires sleep
+                    
+                    // Show dream mode indicator
+                    document.getElementById('run-status').innerHTML = 
+                        `<strong>Configuring: ${runName}</strong> 🌙 <span style="color: #f39c12;">DREAM FORK</span>`;
+                }
+            } catch (error) {
+                // No dream metadata, that's fine
+            }
+
+            populateForm();
+            renderRunsList();
+
+            // Show config form and launch panel
+            document.getElementById('no-selection').style.display = 'none';
+            document.getElementById('config-form').style.display = 'block';
+            document.getElementById('launch-panel').style.display = 'flex';
+            document.getElementById('run-status').innerHTML = 
+                `<strong>Configuring: ${runName}</strong> ${selectedRun.hasState ? '(existing run)' : '(new run)'}`;
+        }
+
+        function populateForm() {
+            // Thinking
+            document.getElementById('exploration_mode').value = currentSettings.exploration_mode || 'guided';
+            document.getElementById('domain').value = currentSettings.domain || '';
+            document.getElementById('context').value = currentSettings.context || '';
+            document.getElementById('execution_mode').value = currentSettings.execution_mode || 'mixed';
+            document.getElementById('depth').value = currentSettings.depth || 'normal';
+            document.getElementById('show_plan').checked = !(currentSettings.silent_planning || false);
+
+            // Execution
+            document.getElementById('max_cycles').value = currentSettings.max_cycles || '100';
+            document.getElementById('review_period').value = currentSettings.review_period || 20;
+            document.getElementById('max_concurrent').value = currentSettings.max_concurrent || 4;
+
+            // Capabilities
+            document.getElementById('enable_web_search').checked = currentSettings.enable_web_search || false;
+            document.getElementById('enable_coding_agents').checked = currentSettings.enable_coding_agents !== false;
+            document.getElementById('enable_sleep').checked = currentSettings.enable_sleep || false;
+            document.getElementById('enable_stabilization').checked = currentSettings.enable_stabilization || false;
+            document.getElementById('enable_experimental').checked = currentSettings.enable_experimental || false;
+            document.getElementById('enable_introspection').checked = currentSettings.enable_introspection || false;
+            document.getElementById('enable_agent_routing').checked = currentSettings.enable_agent_routing || false;
+            document.getElementById('enable_memory_governance').checked = currentSettings.enable_memory_governance || false;
+            document.getElementById('enable_recursive_mode').checked = currentSettings.enable_recursive_mode || false;
+            document.getElementById('enable_frontier').checked = currentSettings.enable_frontier || false;
+            document.getElementById('enable_github_mcp').checked = currentSettings.enable_github_mcp || false;
+
+            // File access
+            const paths = currentSettings.file_access_paths || '';
+            if (paths === 'FULL_ACCESS') {
+                document.getElementById('file_access_mode').value = 'full';
+            } else if (paths === 'runtime/outputs/injected/' || paths === 'runtime/outputs/injected') {
+                document.getElementById('file_access_mode').value = 'injected';
+            } else if (paths.includes('src/') && paths.includes('docs/')) {
+                document.getElementById('file_access_mode').value = 'codebase';
+            } else if (paths.match(/^[\/\\]/) || paths.includes(':/')) {
+                // Detected absolute path (starts with / or \ or contains drive letter)
+                document.getElementById('file_access_mode').value = 'external';
+                document.getElementById('external_paths').value = paths.replace(/, runtime\/outputs\/, runtime\/exports\/$/g, '').trim();
+            } else if (paths.includes('runtime/outputs')) {
+                document.getElementById('file_access_mode').value = 'outputs';
+            } else {
+                document.getElementById('file_access_mode').value = 'custom';
+                document.getElementById('custom_paths').value = paths;
+            }
+
+            // Cluster
+            document.getElementById('cluster_enabled').checked = currentSettings.cluster_enabled || false;
+            document.getElementById('cluster_backend').value = currentSettings.cluster_backend || 'redis';
+            document.getElementById('cluster_size').value = currentSettings.cluster_size || 3;
+            document.getElementById('specialization_enabled').checked = currentSettings.specialization_enabled || false;
+
+            // Local LLM
+            document.getElementById('enable_local_llm').checked = currentSettings.enable_local_llm || false;
+            document.getElementById('local_llm_base_url').value = currentSettings.local_llm_base_url || 'http://localhost:11434/v1';
+            document.getElementById('local_llm_default_model').value = currentSettings.local_llm_default_model || 'qwen2.5:14b';
+            document.getElementById('local_llm_fast_model').value = currentSettings.local_llm_fast_model || 'qwen2.5:14b';
+            document.getElementById('searxng_url').value = currentSettings.searxng_url || '';
+
+            updateModeUI();
+            updateFileAccessUI();
+            updateClusterUI();
+            updateSpecializationUI();
+            updateStabilizationUI();
+            updateExperimentalUI();
+            handleLocalLLMToggle();
+        }
+
+        function updateModeUI() {
+            const mode = document.getElementById('exploration_mode').value;
+            document.getElementById('guided-fields').style.display = mode === 'guided' ? 'block' : 'none';
+        }
+
+        function updateFileAccessUI() {
+            const mode = document.getElementById('file_access_mode').value;
+            document.getElementById('custom-paths-input').style.display = mode === 'custom' ? 'block' : 'none';
+            document.getElementById('external-paths-input').style.display = mode === 'external' ? 'block' : 'none';
+            
+            let pathsText = '';
+            switch(mode) {
+                case 'outputs':
+                    pathsText = 'runtime/outputs/, runtime/exports/';
+                    break;
+                case 'codebase':
+                    pathsText = 'src/, docs/, scripts/, tests/, lib/, mcp/, runtime/outputs/, runtime/exports/';
+                    break;
+                case 'full':
+                    pathsText = 'Full repository access';
+                    break;
+                case 'external':
+                    const externalPaths = document.getElementById('external_paths').value;
+                    pathsText = externalPaths ? `${externalPaths}, runtime/outputs/, runtime/exports/` : '(specify external paths above)';
+                    break;
+                case 'custom':
+                    pathsText = document.getElementById('custom_paths').value || '(specify above)';
+                    break;
+                case 'injected':
+                    pathsText = 'runtime/outputs/injected/ (ONLY injected documents)';
+                    break;
+            }
+            document.getElementById('current-paths').textContent = `Current: ${pathsText}`;
+        }
+
+        function updateClusterUI() {
+            const enabled = document.getElementById('cluster_enabled').checked;
+            document.getElementById('cluster-options').style.display = enabled ? 'block' : 'none';
+        }
+
+        function updateSpecializationUI() {
+            const enabled = document.getElementById('specialization_enabled').checked;
+            document.getElementById('specialization-roles').style.display = enabled ? 'block' : 'none';
+        }
+
+        function updateStabilizationUI() {
+            const enabled = document.getElementById('enable_stabilization').checked;
+            document.getElementById('stabilization-info').style.display = enabled ? 'block' : 'none';
+        }
+
+        function updateExperimentalUI() {
+            const enabled = document.getElementById('enable_experimental').checked;
+            document.getElementById('experimental-info').style.display = enabled ? 'block' : 'none';
+        }
+
+        function generateDefaultSpecialization(clusterSize) {
+            const defaultRoles = [
+                { 
+                    name: 'analysis-node',
+                    agentTypes: ['analysis'],
+                    keywords: ['analysis', 'audit', 'assessment', 'insight'],
+                    tags: ['analysis', 'governance', 'compliance'],
+                    avoidKeywords: [],
+                    avoidTags: []
+                },
+                { 
+                    name: 'research-node',
+                    agentTypes: ['research', 'exploration'],
+                    keywords: ['research', 'discover', 'explore', 'review'],
+                    tags: ['research', 'exploration', 'discovery'],
+                    avoidKeywords: [],
+                    avoidTags: []
+                },
+                { 
+                    name: 'synthesis-node',
+                    agentTypes: ['synthesis', 'integration'],
+                    keywords: ['synthesize', 'integration', 'report', 'summary'],
+                    tags: ['synthesis', 'integration', 'summary'],
+                    avoidKeywords: [],
+                    avoidTags: []
+                },
+                { 
+                    name: 'experimental-node',
+                    agentTypes: ['code_execution', 'analysis'],
+                    keywords: ['prototype', 'experiment', 'implement', 'test'],
+                    tags: ['experiment', 'implementation', 'prototype'],
+                    avoidKeywords: ['summarize'],
+                    avoidTags: []
+                },
+                { 
+                    name: 'qa-node',
+                    agentTypes: ['quality_assurance', 'analysis'],
+                    keywords: ['validate', 'review', 'verify', 'check'],
+                    tags: ['qa', 'validation', 'review'],
+                    avoidKeywords: ['draft', 'brainstorm'],
+                    avoidTags: []
+                }
+            ];
+
+            const profiles = [];
+            for (let i = 0; i < clusterSize; i++) {
+                profiles.push(defaultRoles[i % defaultRoles.length]);
+            }
+            return profiles;
+        }
+
+        function handleGitHubToggle() {
+            const enabled = document.getElementById('enable_github_mcp').checked;
+            document.getElementById('github-token-input').style.display = enabled ? 'block' : 'none';
+        }
+
+        function handleLocalLLMToggle() {
+            const enabled = document.getElementById('enable_local_llm').checked;
+            document.getElementById('local-llm-config').style.display = enabled ? 'block' : 'none';
+
+            // Web search is available with local LLM (uses free DuckDuckGo)
+            // Auto-enable it when switching to local LLM since it's useful for research
+            if (enabled) {
+                document.getElementById('enable_web_search').checked = true;
+            }
+            // Web search is always available (OpenAI built-in or DuckDuckGo for local)
+        }
+
+        // =============================================================================
+        // RUN OPERATIONS
+        // =============================================================================
+
+        function createNewRun() {
+            document.getElementById('create-modal').classList.add('active');
+            document.getElementById('new-run-name').value = '';
+            document.getElementById('new-run-name').focus();
+        }
+
+        async function confirmCreateRun() {
+            const runName = document.getElementById('new-run-name').value.trim();
+            
+            if (!runName) {
+                alert('Please enter a run name');
+                return;
+            }
+
+            // Sanitize
+            const sanitized = runName.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+
+            try {
+                const response = await fetch('/api/runs/create', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ runName: sanitized })
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    closeModal('create-modal');
+                    await loadRuns();
+                    selectRun(sanitized);
+                } else {
+                    alert('Failed to create run: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error creating run: ' + error.message);
+            }
+        }
+
+        async function forkRun() {
+            if (runs.length === 0) {
+                alert('No runs available to fork');
+                return;
+            }
+
+            // Populate source dropdown
+            const select = document.getElementById('fork-source');
+            select.innerHTML = runs.map(r => 
+                `<option value="${r.name}">${r.name} (Cycle: ${r.cycleCount})</option>`
+            ).join('');
+
+            document.getElementById('fork-modal').classList.add('active');
+            document.getElementById('fork-name').value = '';
+        }
+
+        async function confirmForkRun() {
+            const sourceRun = document.getElementById('fork-source').value;
+            const forkName = document.getElementById('fork-name').value.trim();
+
+            if (!forkName) {
+                alert('Please enter a name for the fork');
+                return;
+            }
+
+            const sanitized = forkName.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+
+            try {
+                const response = await fetch('/api/runs/fork', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sourceRunName: sourceRun, newRunName: sanitized })
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    closeModal('fork-modal');
+                    await loadRuns();
+                    selectRun(sanitized);
+                } else {
+                    alert('Failed to fork run: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error forking run: ' + error.message);
+            }
+        }
+
+        async function dreamForkRun() {
+            if (runs.length === 0) {
+                alert('No runs available to dream fork');
+                return;
+            }
+
+            // Populate source dropdown
+            const select = document.getElementById('dream-fork-source');
+            select.innerHTML = runs.map(r => 
+                `<option value="${r.name}">${r.name} (Cycle: ${r.cycleCount})</option>`
+            ).join('');
+
+            // Reset form
+            document.getElementById('dream-fork-name').value = '';
+            document.getElementById('dream-cycles').value = '100';
+            document.getElementById('dreams-per-cycle').value = '10';
+            updateDreamEstimates();
+
+            document.getElementById('dream-fork-modal').classList.add('active');
+        }
+
+        function updateDreamEstimates() {
+            const cycles = parseInt(document.getElementById('dream-cycles').value) || 100;
+            const perCycle = parseInt(document.getElementById('dreams-per-cycle').value) || 10;
+            const total = cycles * perCycle;
+            
+            document.getElementById('total-dreams').textContent = total;
+            
+            // Rough estimate: ~5-10 min per cycle
+            const minMinutes = Math.round(cycles * 5);
+            const maxMinutes = Math.round(cycles * 10);
+            const minHours = Math.floor(minMinutes / 60);
+            const maxHours = Math.floor(maxMinutes / 60);
+            
+            let estimate;
+            if (maxHours < 1) {
+                estimate = `~${minMinutes}-${maxMinutes} minutes`;
+            } else {
+                estimate = `~${minHours}-${maxHours} hours`;
+            }
+            
+            document.getElementById('estimated-time').textContent = estimate;
+        }
+
+        async function confirmDreamFork() {
+            const sourceRun = document.getElementById('dream-fork-source').value;
+            const forkName = document.getElementById('dream-fork-name').value.trim();
+            const dreamCycles = parseInt(document.getElementById('dream-cycles').value) || 100;
+            const dreamsPerCycle = parseInt(document.getElementById('dreams-per-cycle').value) || 10;
+
+            if (!forkName) {
+                alert('Please enter a name for the dream fork');
+                return;
+            }
+
+            const sanitized = forkName.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+
+            try {
+                const response = await fetch('/api/runs/dream-fork', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        sourceRunName: sourceRun, 
+                        newRunName: sanitized,
+                        dreamCycles: dreamCycles,
+                        dreamsPerCycle: dreamsPerCycle
+                    })
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    closeModal('dream-fork-modal');
+                    
+                    // Link to runtime
+                    await fetch('/api/runs/link', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ runName: sanitized })
+                    });
+                    
+                    // Launch directly with dream mode settings (skip config form)
+                    await launchDreamFork(sanitized, dreamCycles, dreamsPerCycle, sourceRun);
+                } else {
+                    alert('Failed to create dream fork: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error creating dream fork: ' + error.message);
+            }
+        }
+
+        async function launchDreamFork(forkName, dreamCycles, dreamsPerCycle, sourceRun) {
+            // Show launch modal
+            document.getElementById('launch-modal').classList.add('active');
+            document.getElementById('launch-status').textContent = 'Preparing dream mode configuration...';
+
+            try {
+                // Build dream mode settings
+                const dreamSettings = {
+                    exploration_mode: 'autonomous',
+                    domain: '',
+                    context: '',
+                    execution_mode: 'mixed',
+                    max_cycles: dreamCycles.toString(),
+                    silent_planning: false,
+                    enable_web_search: false,
+                    enable_sleep: true,           // CRITICAL: Required for dream mode
+                    enable_coding_agents: false,  // Not needed in dream mode
+                    enable_github_mcp: false,
+                    review_period: 20,
+                    max_concurrent: 4,
+                    file_access_paths: 'runtime/outputs/, runtime/exports/',
+                    cluster_enabled: false,
+                    cluster_backend: 'none',
+                    cluster_size: 1,
+                    specialization_enabled: false,
+                    specialization_profiles: [],
+                    dream_mode: true,             // ACTIVATE DREAM MODE
+                    dream_cycles: dreamCycles,
+                    dreams_per_cycle: dreamsPerCycle
+                };
+
+                document.getElementById('launch-status').textContent = 'Saving dream mode configuration...';
+
+                // Save config
+                const saveResponse = await fetch('/api/config/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        runName: forkName,
+                        settings: dreamSettings,
+                        cleanStart: false
+                    })
+                });
+
+                const saveData = await saveResponse.json();
+                if (!saveData.success) {
+                    throw new Error('Failed to save config: ' + saveData.error);
+                }
+
+                document.getElementById('launch-status').textContent = 'Starting continuous dream mode...';
+
+                // Start COSMO
+                const startResponse = await fetch('/api/process/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(dreamSettings)
+                });
+
+                const startData = await startResponse.json();
+                
+                if (startData.success) {
+                    const dashboardUrl = startData.dashboardUrl || 'http://localhost:3344';
+                    document.getElementById('launch-status').textContent = 'Waiting for dashboard...';
+                    
+                    await waitForDashboard(dashboardUrl, 30);
+                    
+                    document.getElementById('launch-status').innerHTML = 
+                        `✅ Dream fork launched!<br><br>` +
+                        `🌙 ${forkName}<br>` +
+                        `Source: ${sourceRun}<br>` +
+                        `Cycles: ${dreamCycles}<br>` +
+                        `Dreams per cycle: ${dreamsPerCycle}<br>` +
+                        `Total dreams: ${dreamCycles * dreamsPerCycle}`;
+                    
+                    // Redirect after showing success
+                    setTimeout(() => {
+                        window.location.href = dashboardUrl;
+                    }, 2000);
+                } else {
+                    throw new Error('Failed to start COSMO: ' + startData.error);
+                }
+
+            } catch (error) {
+                closeModal('launch-modal');
+                alert('Dream fork launch failed: ' + error.message);
+            }
+        }
+
+        async function mergeRuns() {
+            alert('Merge tool will open in terminal.\n\nAfter merging, refresh this page to see the merged run.');
+            
+            try {
+                const response = await fetch('/api/tools/merge', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Reload runs list after merge
+                    setTimeout(() => loadRuns(), 2000);
+                } else {
+                    alert('Merge failed: ' + data.error);
+                }
+            } catch (error) {
+                console.error('Merge error:', error);
+            }
+        }
+
+        async function dashboardOnly() {
+            if (runs.length === 0) {
+                alert('No runs available. Create a run first.');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/tools/dashboard-only', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert('Dashboard-only mode starting...\n\nWaiting for dashboard to be ready.');
+                    
+                    // Wait for dashboard then redirect
+                    await waitForDashboard('http://localhost:3344', 20);
+                    window.location.href = 'http://localhost:3344';
+                } else {
+                    alert('Failed to start dashboard: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        }
+
+        // =============================================================================
+        // CONFIG & LAUNCH
+        // =============================================================================
+
+        function gatherSettings() {
+            const mode = document.getElementById('exploration_mode').value;
+            
+            // File access
+            const fileAccessMode = document.getElementById('file_access_mode').value;
+            let fileAccessPaths = '';
+            
+            switch(fileAccessMode) {
+                case 'outputs':
+                    fileAccessPaths = 'runtime/outputs/, runtime/exports/';
+                    break;
+                case 'codebase':
+                    fileAccessPaths = 'src/, docs/, scripts/, tests/, lib/, mcp/, runtime/outputs/, runtime/exports/';
+                    break;
+                case 'full':
+                    fileAccessPaths = 'FULL_ACCESS';
+                    break;
+                case 'external':
+                    // External paths are absolute, always include runtime outputs for coordination
+                    const externalPaths = document.getElementById('external_paths').value || '';
+                    fileAccessPaths = externalPaths ? `${externalPaths}, runtime/outputs/, runtime/exports/` : 'runtime/outputs/, runtime/exports/';
+                    break;
+                case 'custom':
+                    fileAccessPaths = document.getElementById('custom_paths').value || 'runtime/outputs/, runtime/exports/';
+                    break;
+                case 'injected':
+                    fileAccessPaths = 'runtime/outputs/injected/';
+                    break;
+            }
+
+            return {
+                exploration_mode: mode,
+                domain: mode === 'guided' ? document.getElementById('domain').value : '',
+                context: mode === 'guided' ? document.getElementById('context').value : '',
+                execution_mode: mode === 'guided' ? document.getElementById('execution_mode').value : 'mixed',
+                depth: mode === 'guided' ? document.getElementById('depth').value : 'normal',
+                max_cycles: document.getElementById('max_cycles').value || '100',
+                silent_planning: !document.getElementById('show_plan').checked,
+                enable_web_search: document.getElementById('enable_web_search').checked,
+                enable_sleep: document.getElementById('enable_sleep').checked,
+                enable_coding_agents: document.getElementById('enable_coding_agents').checked,
+                enable_stabilization: document.getElementById('enable_stabilization').checked,
+                enable_experimental: document.getElementById('enable_experimental').checked,
+                enable_introspection: document.getElementById('enable_introspection')?.checked || false,
+                enable_agent_routing: document.getElementById('enable_agent_routing')?.checked || false,
+                enable_memory_governance: document.getElementById('enable_memory_governance')?.checked || false,
+                enable_recursive_mode: document.getElementById('enable_recursive_mode')?.checked || false,
+                enable_frontier: document.getElementById('enable_frontier')?.checked || false,
+                enable_github_mcp: document.getElementById('enable_github_mcp').checked,
+                review_period: parseInt(document.getElementById('review_period').value) || 20,
+                max_concurrent: parseInt(document.getElementById('max_concurrent').value) || 4,
+                file_access_paths: fileAccessPaths,
+                cluster_enabled: document.getElementById('cluster_enabled').checked,
+                cluster_backend: document.getElementById('cluster_backend').value || 'redis',
+                cluster_size: parseInt(document.getElementById('cluster_size').value) || 3,
+                specialization_enabled: document.getElementById('specialization_enabled').checked,
+                specialization_profiles: document.getElementById('specialization_enabled').checked ?
+                    generateDefaultSpecialization(parseInt(document.getElementById('cluster_size').value) || 3) : [],
+                dream_mode: currentSettings.dream_mode || false,
+                dream_cycles: currentSettings.dream_cycles || 100,
+                dreams_per_cycle: currentSettings.dreams_per_cycle || 10,
+                // Local LLM settings
+                enable_local_llm: document.getElementById('enable_local_llm').checked,
+                local_llm_base_url: document.getElementById('local_llm_base_url').value || 'http://localhost:11434/v1',
+                local_llm_default_model: document.getElementById('local_llm_default_model').value || 'qwen2.5:14b',
+                local_llm_fast_model: document.getElementById('local_llm_fast_model').value || 'qwen2.5:14b',
+                searxng_url: document.getElementById('searxng_url').value || ''
+            };
+        }
+
+        async function previewConfig() {
+            const settings = gatherSettings();
+
+            try {
+                const response = await fetch('/api/config/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ settings })
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    document.getElementById('preview-content').textContent = data.config;
+                    document.getElementById('preview-modal').classList.add('active');
+                } else {
+                    alert('Failed to generate config: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error generating config: ' + error.message);
+            }
+        }
+
+        async function launchCOSMO() {
+            if (!selectedRun) {
+                alert('Please select a run first');
+                return;
+            }
+
+            const settings = gatherSettings();
+
+            // Show launch modal
+            document.getElementById('launch-modal').classList.add('active');
+            document.getElementById('launch-status').textContent = 'Saving configuration...';
+
+            try {
+                // Save config and metadata
+                const saveResponse = await fetch('/api/config/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        runName: selectedRun.name,
+                        settings,
+                        cleanStart: !selectedRun.hasState
+                    })
+                });
+
+                const saveData = await saveResponse.json();
+                
+                if (!saveData.success) {
+                    throw new Error('Failed to save config: ' + saveData.error);
+                }
+
+                document.getElementById('launch-status').textContent = 'Starting services...';
+
+                // Set GitHub token if provided
+                const githubToken = document.getElementById('github_token').value;
+                if (settings.enable_github_mcp && githubToken) {
+                    // Note: This needs to be set in environment before starting processes
+                    // For now, we'll note it in settings
+                    settings._github_token = githubToken;
+                }
+
+                // Start COSMO
+                const startResponse = await fetch('/api/process/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings)
+                });
+
+                const startData = await startResponse.json();
+                
+                console.log('[LAUNCH] API Response:', startData);
+                
+                if (startData.success) {
+                    const dashboardUrl = startData.dashboardUrl || 'http://localhost:3344';
+                    console.log('[LAUNCH] Dashboard URL:', dashboardUrl);
+                    
+                    document.getElementById('launch-status').textContent = 'Waiting for dashboard...';
+                    
+                    // Wait for dashboard to be ready
+                    await waitForDashboard(dashboardUrl, 30);
+                    
+                    document.getElementById('launch-status').textContent = '✅ Dashboard ready!';
+                    
+                    console.log('[LAUNCH] Redirecting to:', dashboardUrl);
+                    
+                    // Wait 1 more second then redirect
+                    setTimeout(() => {
+                        window.location.href = dashboardUrl;
+                    }, 1000);
+                } else {
+                    throw new Error('Failed to start COSMO: ' + startData.error);
+                }
+
+            } catch (error) {
+                closeModal('launch-modal');
+                alert('Launch failed: ' + error.message);
+            }
+        }
+
+        // =============================================================================
+        // UTILITIES
+        // =============================================================================
+
+        async function waitForDashboard(url, maxAttempts = 30) {
+            for (let i = 0; i < maxAttempts; i++) {
+                try {
+                    const response = await fetch(url, { 
+                        method: 'HEAD',
+                        mode: 'no-cors' // Allow checking without CORS
+                    });
+                    // If we get here without error, dashboard is responding
+                    return true;
+                } catch (error) {
+                    // Dashboard not ready yet, wait and try again
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+            }
+            throw new Error('Dashboard did not start within timeout period');
+        }
+
+        function closeModal(modalId) {
+            document.getElementById(modalId).classList.remove('active');
+        }
+
+        // Close modal on background click
+        document.addEventListener('click', (e) => {
+            if (e.target.classList.contains('modal')) {
+                e.target.classList.remove('active');
+            }
+        });
+
+        // Enter key in text inputs
+        document.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                if (document.getElementById('create-modal').classList.contains('active')) {
+                    confirmCreateRun();
+                } else if (document.getElementById('fork-modal').classList.contains('active')) {
+                    confirmForkRun();
+                }
+            }
+        });
+
+        // Initialize on load
+        init();
+    </script>
+</body>
+</html>
+
+

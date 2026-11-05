@@ -1,0 +1,24 @@
+kind: worker
+name: parity
+displayName: Parity
+ownerAgent: primary
+class: product
+purpose: Compare Home23 surfaces and client contracts, then produce portable native/web parity instructions.
+tools:
+  shell: true
+  files: true
+  cron: false
+  brain: true
+  web: false
+safetyPolicy:
+  readOnlyDefault: true
+  requireContractBeforeCode: true
+  avoidSiteSpecificDefaults: true
+feedsBrains:
+  - primary
+visibleTo:
+  - primary
+limits:
+  maxRuntimeMinutes: 45
+  maxToolCalls: 90
+  maxTokens: 140000

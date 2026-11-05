@@ -1,0 +1,35 @@
+{
+  "id": "browser-automation",
+  "version": "1.0.0",
+  "name": "Browser Automation",
+  "description": "Inspect a live web page with the shared browser controller when you need screenshots, rendered text, or navigation checks.",
+  "layer": "skill",
+  "runtime": "nodejs",
+  "category": "browser",
+  "author": "home23",
+  "entry": "index.js",
+  "keywords": [
+    "browser",
+    "screenshot",
+    "page",
+    "extract",
+    "rendered",
+    "navigate"
+  ],
+  "triggers": [
+    "take a screenshot",
+    "extract the page text",
+    "check if this page loads",
+    "inspect the rendered page"
+  ],
+  "requiresTools": [],
+  "dependsOn": [],
+  "composes": [
+    "source-validation"
+  ],
+  "actions": [
+    "navigate",
+    "extract",
+    "screenshot"
+  ]
+}

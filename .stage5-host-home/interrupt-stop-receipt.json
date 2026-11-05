@@ -1,0 +1,119 @@
+{
+  "schema": "home23.embedder-stage5-host-interrupt.v1",
+  "home": ".stage5-product-home",
+  "startedAt": "2026-09-11T15:42:02.264Z",
+  "overlay": [
+    "cli/lib/product-host.js",
+    "cli/lib/product-embedder.js",
+    "scripts/embedder/artifacts.mjs",
+    "scripts/product/semantic-prepare-worker.mjs"
+  ],
+  "steps": [
+    {
+      "name": "seeded",
+      "at": "2026-09-11T15:42:02.333Z",
+      "partBytes": 33554432,
+      "keepBytes": 547310275,
+      "phase": "interrupted"
+    },
+    {
+      "name": "semantic-prepare-1",
+      "at": "2026-09-11T15:42:03.004Z",
+      "ok": true,
+      "phase": "downloading",
+      "handle": "f17e296e-4e37-4d1f-a35c-1389ebc3e1da"
+    },
+    {
+      "name": "killed",
+      "at": "2026-09-11T15:42:07.723Z",
+      "workerPid": 27878,
+      "partBytesBeforeKill": 143685617,
+      "grew": true,
+      "statusPhase": "interrupted",
+      "error": {
+        "code": "host_semantic_interrupted",
+        "message": "Semantic preparation was interrupted. Resume to continue with this home."
+      },
+      "partBytesAfter": 143685617,
+      "onnxPresent": false
+    },
+    {
+      "name": "semantic-prepare-2",
+      "at": "2026-09-11T15:42:08.044Z",
+      "ok": true,
+      "phase": "downloading"
+    },
+    {
+      "name": "resume-wait",
+      "at": "2026-09-11T15:42:28.060Z",
+      "ready": true,
+      "phase": "ready",
+      "onnxBytes": 547310275
+    },
+    {
+      "name": "start",
+      "at": "2026-09-11T15:42:28.699Z",
+      "ok": false,
+      "status": "degraded"
+    },
+    {
+      "name": "status-after-start",
+      "at": "2026-09-11T15:42:33.178Z",
+      "status": "stopped",
+      "processes": [
+        {
+          "name": "home23-embedder",
+          "status": "stopped"
+        },
+        {
+          "name": "home23-coordination",
+          "status": "stopped"
+        },
+        {
+          "name": "home23-stage5host",
+          "status": "stopped"
+        },
+        {
+          "name": "home23-stage5host-dash",
+          "status": "stopped"
+        },
+        {
+          "name": "home23-stage5host-harness",
+          "status": "stopped"
+        },
+        {
+          "name": "home23-stage5host-seed",
+          "status": "stopped"
+        },
+        {
+          "name": "home23-stage5host-shipper",
+          "status": "stopped"
+        },
+        {
+          "name": "home23-seed-observatory",
+          "status": "stopped"
+        },
+        {
+          "name": "home23-evobrew",
+          "status": "stopped"
+        }
+      ]
+    },
+    {
+      "name": "stop",
+      "at": "2026-09-11T15:42:33.704Z",
+      "ok": true,
+      "status": "stopped",
+      "readyWarm": true
+    },
+    {
+      "name": "ready-after-stop",
+      "at": "2026-09-11T15:42:33.721Z",
+      "refused": true,
+      "message": "ECONNREFUSED"
+    }
+  ],
+  "stopReadyRefused": true,
+  "ok": true,
+  "finishedAt": "2026-09-11T15:42:33.721Z"
+}

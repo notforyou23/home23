@@ -1,0 +1,30 @@
+{
+  "id": "deep-research-synthesizer",
+  "version": "1.0.0",
+  "name": "Deep Research Synthesizer",
+  "description": "Optional reference for source-grounded synthesis with uncertainty and retrieval limits.",
+  "layer": "skill",
+  "runtime": "docs",
+  "category": "research",
+  "author": "home23",
+  "keywords": [
+    "research",
+    "synthesis",
+    "sources",
+    "brain",
+    "contradictions",
+    "analysis"
+  ],
+  "triggers": [
+    "synthesize this research",
+    "pull these sources together",
+    "what do all these findings say",
+    "summarize the research with contradictions"
+  ],
+  "requiresTools": [],
+  "dependsOn": [],
+  "composes": [],
+  "actions": [
+    "synthesize"
+  ]
+}

@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://home23.local/contracts/sauna.schema.json",
+  "title": "Home23 Sauna Tile",
+  "$defs": {
+    "tileResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": ["boolean", "null"] },
+        "tileId": { "type": ["string", "null"] },
+        "fetchedAt": { "type": ["string", "null"] },
+        "content": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "properties": {
+            "status": { "type": ["string", "null"] },
+            "value": { "type": ["string", "null"] },
+            "subtitle": { "type": ["string", "null"] },
+            "metrics": {
+              "type": ["array", "null"],
+              "items": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "label": { "type": ["string", "null"] },
+                  "value": { "type": ["string", "null"] }
+                }
+              }
+            }
+          }
+        },
+        "actions": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": ["string", "null"] },
+              "method": { "type": ["string", "null"] },
+              "confirmationText": { "type": ["string", "null"] },
+              "fields": {
+                "type": ["array", "null"],
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "required": ["id"],
+                  "properties": {
+                    "id": { "type": "string" },
+                    "label": { "type": ["string", "null"] },
+                    "type": { "type": ["string", "null"] },
+                    "defaultValue": {
+                      "anyOf": [
+                        { "type": "integer" },
+                        { "type": "string" },
+                        { "type": "null" }
+                      ]
+                    },
+                    "required": { "type": ["boolean", "null"] }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

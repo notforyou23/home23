@@ -1,0 +1,103 @@
+{
+  "schema": "home23.host.v2",
+  "homeRoot": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-verify/.stage5-product-home",
+  "profile": {
+    "name": "stage5host",
+    "displayName": "Stage5Host",
+    "ownerName": "StageFive",
+    "homeName": "Stage5 Host TEST Home",
+    "purpose": "Isolated Stage 5 owned-embedder Host verification. No personal facts.",
+    "personalFacts": "",
+    "ingestPaths": [
+      "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-verify/.stage5-host-import"
+    ],
+    "timezone": "America/New_York",
+    "ownerTelegramId": "",
+    "provider": "ollama-local",
+    "model": "qwen2.5:7b"
+  },
+  "fingerprint": "4fb213911693068cda6f8c2ccffc151959194eae2b6d90c736af3de3be0d10d0",
+  "ports": {
+    "coordination": 32584,
+    "engine": 32585,
+    "dashboard": 32586,
+    "mcp": 32587,
+    "bridge": 32588,
+    "evobrew": 32589,
+    "observatory": 32590,
+    "embedder": 32591
+  },
+  "phase": "stopped",
+  "desiredRunning": false,
+  "encoderRequired": true,
+  "birth": {
+    "schema": "home23.create-home.v1",
+    "status": "prepared",
+    "home": {
+      "id": "home_01a08e42-8a59-7f70-a299-baad2b393517",
+      "name": "Stage5 Host TEST Home"
+    },
+    "agent": {
+      "name": "stage5host",
+      "displayName": "Stage5Host",
+      "purpose": "Isolated Stage 5 owned-embedder Host verification. No personal facts.",
+      "ports": {
+        "engine": 32585,
+        "dashboard": 32586,
+        "mcp": 32587,
+        "bridge": 32588
+      },
+      "personalFacts": [],
+      "ingestPaths": [
+        {
+          "path": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-verify/.stage5-host-import",
+          "label": ".stage5-host-import"
+        }
+      ],
+      "isPrimary": true
+    },
+    "seed": {
+      "schema": "home23.seed-birth.v1",
+      "name": "stage5host",
+      "seedId": "seed_mtwbundv_e0c0a4b8",
+      "preparedAt": "2026-09-11T02:18:41.384Z",
+      "inputDigest": "31e76f43455458699964cf57848b89be3e115ae64c4172597d56fd3524e3c6d8",
+      "genesisHash": "e533195baf8c644ad2a8de9f2f746020d90701b23bdb082a86e22898c8c15109",
+      "checkpointId": "ckpt_mtwbungp_d5ed7b55",
+      "checkpointDigest": "e50be85681e47d091c88939efdd5b318341aba106dc2d442c341a1e9ff41506a",
+      "stateDir": "substrate/seed-01",
+      "runtimeStarted": false,
+      "modelInvocations": 0
+    },
+    "coordination": {
+      "home": {
+        "id": "home_01a08e42-8a59-7f70-a299-baad2b393517",
+        "name": "Stage5 Host TEST Home"
+      },
+      "residentBinding": "stage5host",
+      "botId": "bot_01a08e42-8e17-7283-9931-bc61325cf070",
+      "channelId": "chn_01a08e42-8e19-734d-9d6d-1f35cb5edae9",
+      "conversationId": "cnv_01a08e42-8e19-734d-9d6d-1f35cb5edaea",
+      "authorityCapabilities": [
+        "messages",
+        "roster",
+        "unread",
+        "search",
+        "attachments",
+        "activity",
+        "bot_lifecycle"
+      ],
+      "replayed": false
+    },
+    "connection": {
+      "localURL": "http://127.0.0.1:32584",
+      "access": "loopback; remote devices require a trusted HTTPS or VPN transport",
+      "pairing": "owner pairing code"
+    },
+    "next": {
+      "command": "node cli/home23.js start stage5host"
+    },
+    "replayed": false
+  },
+  "startedAt": "2026-09-11T15:43:46.241Z"
+}

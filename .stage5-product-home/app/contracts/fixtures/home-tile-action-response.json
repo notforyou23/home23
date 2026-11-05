@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "action": {
+    "ok": true,
+    "actionId": "start",
+    "status": "accepted"
+  },
+  "data": {
+    "ok": true,
+    "id": "sauna-control",
+    "content": {
+      "temperature": 155,
+      "targetTemperature": 190,
+      "running": true
+    },
+    "actions": [
+      {
+        "id": "stop",
+        "label": "Stop",
+        "method": "POST"
+      }
+    ]
+  }
+}

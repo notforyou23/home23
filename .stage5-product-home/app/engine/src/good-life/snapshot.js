@@ -1,0 +1,757 @@
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const { execFileSync } = require('child_process');
+const topology = require('../system/home23-process-topology.js');
+const { isAgendaHandoffProblem } = require('../live-problems/store.js');
+
+const { classifyHome23Process } = topology;
+
+function buildGoodLifeSnapshot({
+  runtimeRoot,
+  workspacePath,
+  orchestrator,
+  memory,
+  goals,
+  includeCurrentPm2 = false,
+  currentPm2List,
+} = {}) {
+  const now = new Date().toISOString();
+  return {
+    now,
+    memory: summarizeMemory(memory),
+    liveProblems: summarizeLiveProblems(orchestrator, runtimeRoot),
+    goals: summarizeGoals(goals, runtimeRoot),
+    agenda: summarizeAgenda(runtimeRoot),
+    crystallization: summarizeJsonl(path.join(runtimeRoot || '', 'crystallization-receipts.jsonl')),
+    host: summarizeHostPressure(runtimeRoot),
+    discovery: orchestrator?.discoveryEngine?.getStats?.() || null,
+    thinkingMachine: orchestrator?.thinkingMachine?.getStats?.() || null,
+    scheduler: summarizeScheduler(runtimeRoot),
+    publish: summarizePublish(runtimeRoot),
+    goodLife: summarizeGoodLife(runtimeRoot),
+    pm2: summarizePm2(runtimeRoot, includeCurrentPm2 ? readCurrentPm2List() : currentPm2List),
+    surfaces: summarizeSurfaces(workspacePath),
+    sleep: {
+      active: Boolean(orchestrator?.sleepSession?.active),
+      startCycle: orchestrator?.sleepSession?.startCycle ?? null,
+    },
+    crashRecovery: {
+      crashDetected: Boolean(orchestrator?.crashRecovery?.crashDetected),
+    },
+    actions: summarizeActions(orchestrator),
+  };
+}
+
+function summarizeMemory(memory) {
+  const summary = {
+    nodes: sizeOf(memory?.nodes),
+    edges: sizeOf(memory?.edges),
+  };
+  const topologyPosture = summarizeMemoryTopology(memory, summary.nodes, summary.edges);
+  if (topologyPosture) summary.topology = topologyPosture;
+  return summary;
+}
+
+function summarizeMemoryTopology(memory, nodeCount, edgeCount) {
+  if (!memory || nodeCount <= 0) return null;
+  const nodes = entriesOf(memory.nodes);
+  const edges = valuesOf(memory.edges);
+  if (nodes.length === 0) return null;
+
+  const clusterSizes = clusterSizesFor(memory, nodes);
+  const degree = new Map(nodes.map(([id]) => [String(id), 0]));
+  let bridgeEdges = 0;
+  let associativeEdges = 0;
+
+  for (const edge of edges) {
+    if (!edge) continue;
+    const source = edge.source ?? edge.from ?? edge[0];
+    const target = edge.target ?? edge.to ?? edge[1];
+    if (source != null) degree.set(String(source), (degree.get(String(source)) || 0) + 1);
+    if (target != null) degree.set(String(target), (degree.get(String(target)) || 0) + 1);
+    if (edge.type === 'bridge') bridgeEdges++;
+    else associativeEdges++;
+  }
+
+  const orphanNodes = Array.from(degree.values()).filter((count) => count === 0).length;
+  const rawLargestClusterSize = clusterSizes.length ? Math.max(...clusterSizes) : nodeCount;
+  const largestClusterSize = Math.min(rawLargestClusterSize, nodeCount);
+  const clusters = clusterSizes.length || 1;
+  const orphanRatio = ratio(orphanNodes, nodeCount);
+  const largestClusterShare = ratio(largestClusterSize, nodeCount);
+  const bridgeRatio = ratio(bridgeEdges, edgeCount);
+  const averageDegree = round((edgeCount * 2) / nodeCount, 3);
+  const reasons = [];
+  let posture = 'open';
+
+  if (clusters > 1 && bridgeEdges === 0) {
+    posture = 'closed';
+    reasons.push('multiple anchor regions have no bridge edges');
+  }
+  if (largestClusterShare >= 0.85 && nodeCount >= 20) {
+    posture = posture === 'closed' ? 'closed' : 'narrowing';
+    reasons.push('one anchor region dominates the memory topology');
+  }
+  if (orphanRatio >= 0.35 && nodeCount >= 20) {
+    posture = posture === 'closed' ? 'closed' : 'narrowing';
+    reasons.push('many memory anchors are disconnected from the graph');
+  }
+  if (rawLargestClusterSize > nodeCount) {
+    posture = posture === 'closed' ? 'closed' : 'narrowing';
+    reasons.push('cluster membership count exceeds current node count');
+  }
+  if (reasons.length === 0) {
+    reasons.push(clusters > 1
+      ? 'multiple anchor regions connected by bridge edges'
+      : 'single anchor region remains connected');
+  }
+
+  return {
+    schema: 'home23.memory-topology-posture.v1',
+    sourceIssues: [72],
+    clusters,
+    bridgeEdges,
+    associativeEdges,
+    averageDegree,
+    bridgeRatio,
+    orphanNodes,
+    orphanRatio,
+    largestClusterSize,
+    largestClusterShare,
+    posture,
+    reasons,
+  };
+}
+
+function summarizeLiveProblems(orchestrator, runtimeRoot) {
+  const list = orchestrator?.liveProblems?.store?.all?.()
+    || readJson(path.join(runtimeRoot || '', 'live-problems.json'))?.problems
+    || [];
+  const out = {
+    open: 0,
+    chronic: 0,
+    resolved: 0,
+    unverifiable: 0,
+    total: 0,
+    goodLifeDiagnostics: 0,
+    agendaWorkflows: { open: 0, chronic: 0, resolved: 0, unverifiable: 0, total: 0 },
+  };
+  for (const p of Array.isArray(list) ? list : []) {
+    if (isAgendaHandoffProblem(p)) {
+      if (isGoodLifeDiagnosticProblem(p)) out.goodLifeDiagnostics++;
+      out.agendaWorkflows.total++;
+      if (p.state === 'open') out.agendaWorkflows.open++;
+      else if (p.state === 'chronic') out.agendaWorkflows.chronic++;
+      else if (p.state === 'resolved') out.agendaWorkflows.resolved++;
+      else if (p.state === 'unverifiable') out.agendaWorkflows.unverifiable++;
+      continue;
+    }
+    out.total++;
+    if (p.state === 'open') out.open++;
+    else if (p.state === 'chronic') out.chronic++;
+    else if (p.state === 'resolved') out.resolved++;
+    else if (p.state === 'unverifiable') out.unverifiable++;
+  }
+  return out;
+}
+
+function summarizeHostPressure(runtimeRoot) {
+  const channelsDir = path.join(runtimeRoot || '', 'channels');
+  const cpu = latestChannelPayload(path.join(channelsDir, 'machine.cpu.jsonl'));
+  const memory = latestChannelPayload(path.join(channelsDir, 'machine.memory.jsonl'));
+  const swap = latestChannelPayload(path.join(channelsDir, 'machine.swap.jsonl'));
+  const disk = latestChannelPayload(path.join(channelsDir, 'machine.disk.jsonl'));
+  const process = latestChannelPayload(path.join(channelsDir, 'machine.process.jsonl'));
+  const load1 = Array.isArray(cpu?.loadAvg) ? Number(cpu.loadAvg[0]) : null;
+  const cpuCount = Number(cpu?.cpuCount || 0);
+  return {
+    cpu: cpu ? {
+      at: toIsoTime(cpu.at),
+      load1: Number.isFinite(load1) ? load1 : null,
+      cpuCount: Number.isFinite(cpuCount) && cpuCount > 0 ? cpuCount : null,
+      loadRatio: Number.isFinite(load1) && cpuCount > 0 ? +(load1 / cpuCount).toFixed(2) : null,
+    } : null,
+    memory: memory ? {
+      at: toIsoTime(memory.at),
+      freePct: Number.isFinite(Number(memory.freePct)) ? Number(memory.freePct) : null,
+      freeBytes: Number.isFinite(Number(memory.free)) ? Number(memory.free) : null,
+      totalBytes: Number.isFinite(Number(memory.total)) ? Number(memory.total) : null,
+      rawFreePct: Number.isFinite(Number(memory.rawFreePct ?? memory.freePct))
+        ? Number(memory.rawFreePct ?? memory.freePct)
+        : null,
+      rawFreeBytes: Number.isFinite(Number(memory.rawFree ?? memory.free))
+        ? Number(memory.rawFree ?? memory.free)
+        : null,
+      rawTotalBytes: Number.isFinite(Number(memory.rawTotal ?? memory.total))
+        ? Number(memory.rawTotal ?? memory.total)
+        : null,
+      pressureFreePct: Number.isFinite(Number(memory.pressureFreePct ?? memory.memoryPressure?.freePct))
+        ? Number(memory.pressureFreePct ?? memory.memoryPressure?.freePct)
+        : null,
+      pressureTotalBytes: Number.isFinite(Number(memory.pressureTotalBytes ?? memory.memoryPressure?.totalBytes))
+        ? Number(memory.pressureTotalBytes ?? memory.memoryPressure?.totalBytes)
+        : null,
+      pressureSource: memory.memoryPressure?.source || null,
+    } : null,
+    swap: swap ? {
+      at: toIsoTime(swap.at),
+      usedPct: Number.isFinite(Number(swap.swap?.usedPct)) ? Number(swap.swap.usedPct) : null,
+      usedMb: Number.isFinite(Number(swap.swap?.usedMb)) ? Number(swap.swap.usedMb) : null,
+      totalMb: Number.isFinite(Number(swap.swap?.totalMb)) ? Number(swap.swap.totalMb) : null,
+    } : null,
+    disk: disk ? {
+      at: toIsoTime(disk.at),
+      mount: disk.mount || null,
+      usagePct: Number.isFinite(Number(disk.usagePct)) ? Number(disk.usagePct) : null,
+    } : null,
+    process: process ? {
+      at: toIsoTime(process.at),
+      topCpuPct: Number.isFinite(Number(process.topCpuPct)) ? Number(process.topCpuPct) : null,
+      totalCpuPctTopN: Number.isFinite(Number(process.totalCpuPctTopN)) ? Number(process.totalCpuPctTopN) : null,
+      topRssBytes: Number.isFinite(Number(process.topRssBytes)) ? Number(process.topRssBytes) : null,
+      totalRssBytesTopN: Number.isFinite(Number(process.totalRssBytesTopN)) ? Number(process.totalRssBytesTopN) : null,
+      topProcess: Array.isArray(process.processes) && process.processes[0]
+        ? {
+          command: process.processes[0].command || null,
+          pm2Name: process.processes[0].pm2Name || null,
+          cpuPct: Number.isFinite(Number(process.processes[0].cpuPct)) ? Number(process.processes[0].cpuPct) : null,
+        }
+        : null,
+      topMemoryProcess: Array.isArray(process.memoryProcesses) && process.memoryProcesses[0]
+        ? {
+          command: process.memoryProcesses[0].command || null,
+          pm2Name: process.memoryProcesses[0].pm2Name || null,
+          rssBytes: Number.isFinite(Number(process.memoryProcesses[0].rssBytes)) ? Number(process.memoryProcesses[0].rssBytes) : null,
+          memPct: Number.isFinite(Number(process.memoryProcesses[0].memPct)) ? Number(process.memoryProcesses[0].memPct) : null,
+        }
+        : null,
+    } : null,
+  };
+}
+
+function summarizePm2(runtimeRoot, currentPm2List) {
+  const rows = tailJsonl(path.join(runtimeRoot || '', 'channels', 'os.pm2.jsonl'), 80)
+    .map((row) => row?.payload)
+    .filter((payload) => payload && payload.topology?.family === 'home23');
+  const byName = new Map();
+  let invalidRestartCounters = 0;
+  for (const payload of rows) {
+    if (payload.restartCount === null && payload.rawRestartCount != null) invalidRestartCounters++;
+    const rec = byName.get(payload.name) || {
+      name: payload.name,
+      role: payload.topology?.role || null,
+      lastChangeStatus: payload.status || null,
+      changes: 0,
+      lastAt: null,
+      lastRestartCount: null,
+      rawRestartCount: null,
+    };
+    rec.changes++;
+    rec.lastChangeStatus = payload.status || rec.lastChangeStatus;
+    rec.lastAt = toIsoTime(payload.at) || rec.lastAt;
+    rec.lastRestartCount = payload.restartCount == null
+      ? null
+      : (Number.isFinite(Number(payload.restartCount)) ? Number(payload.restartCount) : null);
+    rec.rawRestartCount = payload.rawRestartCount != null ? String(payload.rawRestartCount) : rec.rawRestartCount;
+    byName.set(payload.name, rec);
+  }
+  const processes = [...byName.values()]
+    .sort((a, b) => b.changes - a.changes || String(a.name).localeCompare(String(b.name)))
+    .slice(0, 8);
+  const current = summarizeCurrentPm2(currentPm2List);
+  return {
+    recentHome23Changes: rows.length,
+    invalidRestartCounters,
+    processes,
+    ...current,
+  };
+}
+
+function summarizeCurrentPm2(list) {
+  if (!Array.isArray(list)) return {
+    currentSampledAt: null,
+    currentTotal: null,
+    offline: null,
+    invalidCurrentRestartCounters: null,
+    current: [],
+    offlineProcesses: [],
+  };
+
+  const sampledAt = new Date().toISOString();
+  let invalidCurrentRestartCounters = 0;
+  const current = [];
+  for (const p of list) {
+    const name = p?.name;
+    const status = p?.pm2_env?.status || null;
+    const script = p?.pm2_env?.pm_exec_path || null;
+    const topology = classifyHome23Process({
+      name,
+      script,
+      cwd: p?.pm2_env?.pm_cwd,
+    });
+    if (topology.family !== 'home23') continue;
+    const restartCount = normalizePm2RestartCount(p?.pm2_env?.restart_time ?? 0);
+    if (restartCount === null) invalidCurrentRestartCounters++;
+    current.push({
+      name,
+      role: topology.role || null,
+      agentName: topology.agentName || null,
+      status,
+      restartCount,
+      rawRestartCount: restartCount === null ? String(p?.pm2_env?.restart_time ?? '') : null,
+    });
+  }
+
+  current.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const offlineProcesses = current.filter((p) => p.status !== 'online');
+  return {
+    currentSampledAt: sampledAt,
+    currentTotal: current.length,
+    offline: offlineProcesses.length,
+    invalidCurrentRestartCounters,
+    current,
+    offlineProcesses,
+  };
+}
+
+function readCurrentPm2List() {
+  try {
+    const stdout = execFileSync('pm2', ['jlist'], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+}
+
+function normalizePm2RestartCount(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function latestChannelPayload(file) {
+  const row = tailJsonl(file, 1)[0];
+  return row?.payload || null;
+}
+
+function isGoodLifeDiagnosticProblem(problem) {
+  const claim = String(problem?.claim || '');
+  return isAgendaHandoffProblem(problem) && /Agenda action: Diagnose Good Life /i.test(claim);
+}
+
+function summarizeGoals(goals, runtimeRoot) {
+  const list = typeof goals?.getGoals === 'function' ? goals.getGoals() : [];
+  let open = 0;
+  let complete = 0;
+  for (const g of Array.isArray(list) ? list : []) {
+    if (isOpenGoal(g)) open++;
+    else complete++;
+  }
+  const brainSnapshot = readJson(path.join(runtimeRoot || '', 'brain-snapshot.json'));
+  const snapshotActive = snapshotActiveGoalCount(brainSnapshot);
+  if (snapshotActive != null) open = Math.max(open, snapshotActive);
+  if (Number.isFinite(Number(brainSnapshot?.goalCounts?.completed))) {
+    complete = Math.max(complete, Number(brainSnapshot.goalCounts.completed));
+  }
+  return { open, complete, total: open + complete };
+}
+
+function snapshotActiveGoalCount(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+  const activeCount = Number(snapshot.goalCounts?.active);
+  const activeSummaries = Array.isArray(snapshot.activeGoalSummaries)
+    ? snapshot.activeGoalSummaries.filter(isOpenGoal).length
+    : null;
+  if (Number.isFinite(activeCount) && activeCount >= 0 && activeSummaries != null) {
+    return Math.max(activeCount, activeSummaries);
+  }
+  if (Number.isFinite(activeCount) && activeCount >= 0) return activeCount;
+  return activeSummaries;
+}
+
+function isOpenGoal(goal) {
+  if (!goal) return false;
+  const status = String(goal.status || 'active').toLowerCase();
+  if (['completed', 'complete', 'archived', 'cancelled', 'canceled', 'resolved'].includes(status)) {
+    return false;
+  }
+  if (goal.completed || goal.completedAt || goal.completed_at) return false;
+  const progress = Number.isFinite(Number(goal.progress)) ? Number(goal.progress) : null;
+  return progress === null || progress < 1;
+}
+
+function summarizeAgenda(runtimeRoot) {
+  const file = path.join(runtimeRoot || '', 'agenda.jsonl');
+  const rows = readJsonl(file);
+  const items = new Map();
+  for (const row of rows) {
+    if (row.type === 'add' && row.id) {
+      const record = row.record || {};
+      items.set(row.id, {
+        status: record.status || row.status || 'candidate',
+      });
+    } else if (row.type === 'status' && row.id) {
+      const rec = items.get(row.id) || {};
+      rec.status = row.status || rec.status || 'candidate';
+      items.set(row.id, rec);
+    } else if (row.id && row.status) {
+      items.set(row.id, { status: row.status });
+    }
+  }
+
+  const counts = { candidate: 0, surfaced: 0, acknowledged: 0, actedOn: 0, stale: 0, discarded: 0, total: 0 };
+  for (const rec of items.values()) {
+    const status = rec.status || 'candidate';
+    if (status === 'acted_on') counts.actedOn++;
+    else if (status === 'surfaced') counts.surfaced++;
+    else if (status === 'acknowledged') counts.acknowledged++;
+    else if (status === 'stale') counts.stale++;
+    else if (status === 'discarded') counts.discarded++;
+    else counts.candidate++;
+    counts.total++;
+  }
+  return {
+    pending: counts.candidate + counts.surfaced + counts.acknowledged,
+    actedOn: counts.actedOn,
+    stale: counts.stale,
+    discarded: counts.discarded,
+    candidate: counts.candidate,
+    surfaced: counts.surfaced,
+    acknowledged: counts.acknowledged,
+    total: counts.total,
+    sampled: rows.length,
+  };
+}
+
+function summarizePublish(runtimeRoot) {
+  const file = path.join(runtimeRoot || '', 'publish-ledger.jsonl');
+  const stat = statIso(file);
+  const rows = tailJsonl(file, 200);
+  const useful = rows
+    .filter((r) => ['workspace_insights', 'dashboard', 'bridge_chat', 'dream_log', 'signals'].includes(r.target || r.kind))
+    .slice(-1)[0];
+  const agencyUseful = latestUsefulAgencyConsequence(runtimeRoot);
+  const publishUsefulAt = toIsoTime(useful?.at || useful?.timestamp || stat);
+  const agencyUsefulAt = toIsoTime(agencyUseful?.at || agencyUseful?.timestamp);
+  const lastUsefulOutputAt = latestIso([publishUsefulAt, agencyUsefulAt]);
+  return {
+    lastLedgerWriteAt: stat,
+    lastUsefulOutputAt,
+    lastUsefulOutputSource: lastUsefulOutputAt && agencyUsefulAt === lastUsefulOutputAt
+      ? 'agency_consequence'
+      : (publishUsefulAt ? 'publish_ledger' : null),
+    lastAgencyUsefulOutputAt: agencyUsefulAt,
+    sampled: rows.length,
+  };
+}
+
+function latestUsefulAgencyConsequence(runtimeRoot) {
+  const consequence = findLatestJsonl(path.join(runtimeRoot || '', 'agency', 'consequences.jsonl'), isUsefulAgencyConsequence, 5000);
+  const pursuit = findLatestJsonl(path.join(runtimeRoot || '', 'agency', 'pursuits.jsonl'), isUsefulPursuitTransitionConsequence, 5000);
+  return latestByAt([consequence, pursuit]);
+}
+
+function isUsefulAgencyConsequence(row = {}) {
+  const status = String(row.status || '').toLowerCase();
+  if (!['applied', 'closed', 'resolved', 'advanced'].includes(status)) return false;
+  const changeType = String(row.changeType || '').toLowerCase();
+  if (/(explicit_no_change|no_change|stale|duplicate|discard|killed)/.test(changeType)) return false;
+  const summary = String(row.summary || '').trim();
+  return summary.length > 0;
+}
+
+function isUsefulPursuitTransitionConsequence(row = {}) {
+  if (row.type !== 'transition') return false;
+  const status = String(row.detail?.status || row.pursuit?.status || '').toLowerCase();
+  if (!['applied', 'closed', 'resolved', 'advanced'].includes(status)) return false;
+  const changeType = String(row.detail?.changeType || '').toLowerCase();
+  if (/(explicit_no_change|no_change|stale|duplicate|discard|killed)/.test(changeType)) return false;
+  const changed = row.pursuit?.consequence?.changed !== false;
+  const summary = String(row.detail?.summary || row.pursuit?.consequence?.summary || '').trim();
+  return changed && summary.length > 0;
+}
+
+function latestByAt(rows = []) {
+  return rows
+    .filter(Boolean)
+    .sort((a, b) => String(rowAt(a)).localeCompare(String(rowAt(b))))
+    .at(-1) || null;
+}
+
+function rowAt(row = {}) {
+  return toIsoTime(row.at || row.timestamp || row.detail?.at || row.pursuit?.updatedAt) || '';
+}
+
+function summarizeScheduler(runtimeRoot) {
+  const file = schedulerJobsPath(runtimeRoot);
+  const parsed = readJson(file);
+  const jobs = Array.isArray(parsed) ? parsed : parsed?.jobs;
+  if (!Array.isArray(jobs)) {
+    return {
+      path: file,
+      totalJobs: 0,
+      enabledJobs: 0,
+      okJobs: 0,
+      failingJobs: 0,
+      maxConsecutiveErrors: 0,
+      worstJobs: [],
+    };
+  }
+
+  let enabledJobs = 0;
+  let okJobs = 0;
+  let maxConsecutiveErrors = 0;
+  const worstJobs = [];
+  for (const job of jobs) {
+    const enabled = Object.prototype.hasOwnProperty.call(job, 'enabled')
+      ? job.enabled !== false
+      : String(job.status || '').toLowerCase() !== 'disabled';
+    if (!enabled) continue;
+    enabledJobs++;
+    const state = job.state && typeof job.state === 'object' ? job.state : {};
+    const lastStatus = String(job.lastStatus || state.lastStatus || '').toLowerCase();
+    const consecutiveErrors = Number(job.consecutiveErrors ?? state.consecutiveErrors ?? 0);
+    const safeConsecutiveErrors = Number.isFinite(consecutiveErrors) ? consecutiveErrors : 0;
+    maxConsecutiveErrors = Math.max(maxConsecutiveErrors, safeConsecutiveErrors);
+    if (lastStatus === 'ok' || lastStatus === 'success' || safeConsecutiveErrors === 0) okJobs++;
+    if (lastStatus === 'error' && safeConsecutiveErrors > 0) {
+      worstJobs.push({
+        id: job.id || null,
+        name: job.name || job.id || 'unnamed scheduler job',
+        lastStatus,
+        consecutiveErrors: safeConsecutiveErrors,
+        lastRunAt: toIsoTime(job.lastRunAtMs || state.lastRunAtMs),
+        nextRunAt: toIsoTime(job.nextRunAtMs || state.nextRunAtMs),
+        lastDurationMs: Number.isFinite(Number(job.lastDurationMs ?? state.lastDurationMs))
+          ? Number(job.lastDurationMs ?? state.lastDurationMs)
+          : null,
+      });
+    }
+  }
+
+  worstJobs.sort((a, b) => b.consecutiveErrors - a.consecutiveErrors || String(a.name).localeCompare(String(b.name)));
+  return {
+    path: file,
+    totalJobs: jobs.length,
+    enabledJobs,
+    okJobs,
+    failingJobs: worstJobs.length,
+    maxConsecutiveErrors,
+    worstJobs: worstJobs.slice(0, 8),
+  };
+}
+
+function schedulerJobsPath(runtimeRoot) {
+  const root = runtimeRoot || '';
+  if (path.basename(root) === 'brain') {
+    return path.join(path.dirname(root), 'conversations', 'cron-jobs.json');
+  }
+  return path.join(root, 'conversations', 'cron-jobs.json');
+}
+
+function summarizeGoodLife(runtimeRoot) {
+  return {
+    commitments: readJson(path.join(runtimeRoot || '', 'good-life-commitments.json')),
+    trends: readJson(path.join(runtimeRoot || '', 'good-life-trends-current.json')),
+    regulator: readJson(path.join(runtimeRoot || '', 'good-life-regulator-state.json')),
+  };
+}
+
+function summarizeSurfaces(workspacePath) {
+  if (!workspacePath) return {};
+  return {
+    nowUpdatedAt: statIso(path.join(workspacePath, 'NOW.md')),
+    heartbeatUpdatedAt: statIso(path.join(workspacePath, 'HEARTBEAT.md')),
+    projectsUpdatedAt: statIso(path.join(workspacePath, 'PROJECTS.md')),
+    topologyUpdatedAt: statIso(path.join(workspacePath, 'TOPOLOGY.md')),
+  };
+}
+
+function summarizeActions(orchestrator) {
+  const journal = Array.isArray(orchestrator?.journal) ? orchestrator.journal.slice(-40) : [];
+  let maintenance = 0;
+  const structuredFailures = journal
+    .map((entry) => Number(entry?.cognitiveState?.recentFailures))
+    .filter((value) => Number.isFinite(value));
+  const structuredFailureDelta = structuredFailures.length > 0
+    ? Math.max(0, structuredFailures[structuredFailures.length - 1] - structuredFailures[0])
+    : null;
+  let textFailureMentions = 0;
+  for (const j of journal) {
+    const text = String(j?.thought || j?.reasoning || '').toLowerCase();
+    if (structuredFailureDelta == null && isActionFailureText(text)) textFailureMentions++;
+    if (text.includes('restart') || text.includes('maintenance') || text.includes('self') || text.includes('engine')) maintenance++;
+  }
+  return {
+    recentFailures: structuredFailureDelta ?? textFailureMentions,
+    maintenanceRatio: journal.length ? maintenance / journal.length : 0,
+  };
+}
+
+function isActionFailureText(text) {
+  if (!text) return false;
+  if (/(resolved|healthy|clean state|zero open|no current operational issues|no_action)/i.test(text)) {
+    return false;
+  }
+  return /(failed|error|timeout)/i.test(text);
+}
+
+function summarizeJsonl(file) {
+  const rows = tailJsonl(file, 20);
+  const last = rows[rows.length - 1] || null;
+  return {
+    countSampled: rows.length,
+    lastReceiptAt: toIsoTime(last?.at || last?.timestamp || statIso(file)),
+  };
+}
+
+function tailJsonl(file, limit) {
+  try {
+    if (!file || !fs.existsSync(file)) return [];
+    const lines = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean);
+    return lines.slice(-limit).map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function readJsonl(file) {
+  try {
+    if (!file || !fs.existsSync(file)) return [];
+    return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function findLatestJsonl(file, predicate, maxScan = 5000) {
+  try {
+    if (!file || !fs.existsSync(file)) return null;
+    const lines = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean);
+    let scanned = 0;
+    for (let i = lines.length - 1; i >= 0 && scanned < maxScan; i -= 1, scanned += 1) {
+      let row = null;
+      try { row = JSON.parse(lines[i]); } catch { continue; }
+      if (predicate(row)) return row;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function readJson(file) {
+  try {
+    if (!file || !fs.existsSync(file)) return null;
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function statIso(file) {
+  try {
+    if (!file || !fs.existsSync(file)) return null;
+    return fs.statSync(file).mtime.toISOString();
+  } catch {
+    return null;
+  }
+}
+
+function toIsoTime(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'number') {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  if (typeof value === 'string') {
+    const t = Date.parse(value);
+    if (!Number.isNaN(t)) return new Date(t).toISOString();
+  }
+  return null;
+}
+
+function latestIso(values = []) {
+  return values
+    .filter(Boolean)
+    .map(String)
+    .sort()
+    .at(-1) || null;
+}
+
+function entriesOf(collection) {
+  if (!collection) return [];
+  if (collection instanceof Map) return Array.from(collection.entries());
+  if (Array.isArray(collection)) {
+    return collection.map((value, index) => {
+      const id = value?.id ?? value?.nodeId ?? index;
+      return [id, value];
+    });
+  }
+  if (typeof collection === 'object') return Object.entries(collection);
+  return [];
+}
+
+function valuesOf(collection) {
+  if (!collection) return [];
+  if (collection instanceof Map) return Array.from(collection.values());
+  if (Array.isArray(collection)) return collection;
+  if (typeof collection === 'object') return Object.values(collection);
+  return [];
+}
+
+function clusterSizesFor(memory, nodeEntries) {
+  if (memory?.clusters instanceof Map) {
+    return Array.from(memory.clusters.values()).map((nodes) => sizeOf(nodes)).filter((size) => size > 0);
+  }
+  if (Array.isArray(memory?.clusters)) {
+    return memory.clusters.map((cluster) => sizeOf(cluster?.nodes ?? cluster)).filter((size) => size > 0);
+  }
+  if (memory?.clusters && typeof memory.clusters === 'object') {
+    return Object.values(memory.clusters).map((cluster) => sizeOf(cluster?.nodes ?? cluster)).filter((size) => size > 0);
+  }
+  const counts = new Map();
+  for (const [, node] of nodeEntries) {
+    const cluster = node?.cluster ?? node?.clusterId;
+    if (cluster == null) continue;
+    counts.set(String(cluster), (counts.get(String(cluster)) || 0) + 1);
+  }
+  return Array.from(counts.values()).filter((size) => size > 0);
+}
+
+function ratio(numerator, denominator) {
+  return denominator > 0 ? round(numerator / denominator, 3) : 0;
+}
+
+function round(value, places = 3) {
+  if (!Number.isFinite(value)) return 0;
+  const scale = 10 ** places;
+  return Math.round(value * scale) / scale;
+}
+
+function sizeOf(maybeMap) {
+  if (!maybeMap) return 0;
+  if (typeof maybeMap.size === 'number') return maybeMap.size;
+  if (Array.isArray(maybeMap)) return maybeMap.length;
+  if (typeof maybeMap === 'object') return Object.keys(maybeMap).length;
+  return 0;
+}
+
+module.exports = { buildGoodLifeSnapshot, readCurrentPm2List };

@@ -1,0 +1,29 @@
+{
+  "schema": "home23.embedder-linux-transfer.v1",
+  "createdAt": "2026-09-11T16:05:00Z",
+  "candidateSha": "be6254879fc8c22a6265e6010ac0284f70f4329b",
+  "implementationSha": "112a06e050b0d5561c8bcd35fa00345befeb9f75",
+  "resumeSha": "7066b9ad6f5d53d96f1b7b76047ad85b7d9f92e0",
+  "appleHostSha": "9cc694df",
+  "appleHostOutsideLinuxGate": true,
+  "branch": "home23-agent/owned-embedder-stage5-verify",
+  "pushed": false,
+  "github": "not available — do not git pull origin",
+  "bundle": {
+    "file": "home23-owned-embedder-be625487.bundle",
+    "sha256": "1ac7adf9972e99fe83b0ea251dd60909935fb6b41e281f62ffa0543c3f23923d",
+    "sha256NamesBasenameOnly": true,
+    "head": "be6254879fc8c22a6265e6010ac0284f70f4329b",
+    "ref": "refs/heads/home23-agent/owned-embedder-stage5-verify"
+  },
+  "linuxRoot": "/home/box/home23-owned-embedder-test",
+  "homeRootVar": "HOME_ROOT",
+  "doNotExportShellHOME": true,
+  "preserve": ["/home/box/home23-test", "Keep/GrokBot", "host Ollama :11434"],
+  "handoffDoc": "2026-09-11-owned-embedder-linux-handoff.md",
+  "baseline": "/workspace/home23-owned-embedder-prep/BASELINE-AND-RETEST.md",
+  "interrupt": "real Host-path download from empty cache; not a zero-filled .part",
+  "attention": "null-cal policy only; measured calibration unfinished; not a Linux gate",
+  "chatOAuth": "out of scope",
+  "memoryLite": "fail for this gate"
+}

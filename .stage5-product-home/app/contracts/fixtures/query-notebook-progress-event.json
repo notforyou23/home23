@@ -1,0 +1,22 @@
+{
+  "type": "progress",
+  "operationId": "brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "eventSequence": 21,
+  "progress": {
+    "version": 1,
+    "stage": "sweeping",
+    "eventSequence": 21,
+    "sourceNodes": 141900,
+    "sourceEdges": 464000,
+    "candidateWorkUnits": 12,
+    "selected": 12,
+    "completed": 7,
+    "successful": 6,
+    "failed": 1,
+    "reused": 3,
+    "pending": 5,
+    "total": 12,
+    "lastProviderActivityAt": "2026-07-13T19:05:58.000Z",
+    "lastProgressAt": "2026-07-13T19:06:00.000Z"
+  }
+}

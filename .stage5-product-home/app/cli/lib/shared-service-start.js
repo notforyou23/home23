@@ -1,0 +1,434 @@
+import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import {
+  appendFileSync,
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import yaml from 'js-yaml';
+
+export const SHARED_SERVICES = Object.freeze([
+  Object.freeze({ name: 'home23-evobrew', label: 'Evobrew' }),
+  Object.freeze({ name: 'home23-screenlogic', label: 'ScreenLogic bridge' }),
+]);
+
+export const COORDINATION_SERVICE = Object.freeze({ name: 'home23-coordination', label: 'Home23 Core' });
+export const ALL_SHARED_SERVICES = Object.freeze([COORDINATION_SERVICE, ...SHARED_SERVICES]);
+
+/** Canonical Core is a shared dependency only for homes that enabled it.
+ * Merely having a disabled shadow definition in the ecosystem is not intent
+ * to start it. Existing explicit `services` overrides retain their scope. */
+export function configuredSharedServices(home23Root) {
+  let homeConfig = {};
+  try {
+    homeConfig = yaml.load(readFileSync(join(home23Root, 'config', 'home.yaml'), 'utf8')) || {};
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  // ScreenLogic is an optional house integration. Fresh installs explicitly
+  // disable it and may not have its Python dependencies; that must not block
+  // the resident. An absent setting preserves legacy startup behavior.
+  const services = SHARED_SERVICES.filter((service) =>
+    service.name !== 'home23-screenlogic' || homeConfig.screenlogic?.enabled !== false);
+  return homeConfig.coordination?.process?.enabled === true
+    ? [COORDINATION_SERVICE, ...services]
+    : services;
+}
+
+const LOCK_SCHEMA = 'home23.shared-service-start.lock.v1';
+const RECEIPT_SCHEMA = 'home23.shared-service-start.receipt.v1';
+const PM2_ENV_BLOCKLIST = [
+  'cron_restart',
+  'watch',
+  'HOME23_AGENT',
+  'INSTANCE_ID',
+  'DASHBOARD_PORT',
+  'COSMO_DASHBOARD_PORT',
+  'REALTIME_PORT',
+  'MCP_HTTP_PORT',
+  'COSMO_RUNTIME_DIR',
+  'COSMO_WORKSPACE_PATH',
+  'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY',
+  'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY',
+];
+
+const waitDefault = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function pidAliveDefault(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readLockSnapshot(lockPath) {
+  try {
+    const raw = readFileSync(lockPath, 'utf8');
+    let owner = null;
+    try {
+      owner = JSON.parse(raw);
+    } catch {
+      // A malformed lock can be recovered only after it ages past the stale threshold.
+    }
+    return { raw, owner };
+  } catch {
+    return null;
+  }
+}
+
+function sameLock(left, right) {
+  if (!left || !right) return false;
+  if (left.owner?.token) return left.owner.token === right.owner?.token;
+  return left.raw === right.raw;
+}
+
+export async function acquireStartupLock({
+  lockPath,
+  home23Root,
+  timeoutMs,
+  pollMs,
+  staleLockAgeMs,
+  dependencies,
+}) {
+  const startedAtMs = dependencies.now();
+  const token = dependencies.randomId();
+  const owner = {
+    schema: LOCK_SCHEMA,
+    token,
+    pid: dependencies.processId,
+    createdAt: new Date(startedAtMs).toISOString(),
+    argv: dependencies.argv,
+    home23Root,
+  };
+  let staleLocksRecovered = 0;
+
+  mkdirSync(dirname(lockPath), { recursive: true });
+
+  for (;;) {
+    try {
+      const fd = openSync(lockPath, 'wx', 0o600);
+      try {
+        writeFileSync(fd, `${JSON.stringify(owner)}\n`);
+      } finally {
+        closeSync(fd);
+      }
+      return {
+        lockPath,
+        token,
+        owner,
+        waitMs: dependencies.now() - startedAtMs,
+        staleLocksRecovered,
+      };
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+
+      const current = readLockSnapshot(lockPath);
+      let ageMs = 0;
+      try {
+        ageMs = dependencies.now() - statSync(lockPath).mtimeMs;
+      } catch (statError) {
+        if (statError.code === 'ENOENT') continue;
+        throw statError;
+      }
+      const stale = current?.owner?.pid
+        ? !dependencies.pidAlive(Number(current.owner.pid))
+        : ageMs >= staleLockAgeMs;
+
+      if (stale) {
+        const latest = readLockSnapshot(lockPath);
+        if (!sameLock(current, latest)) continue;
+        try {
+          unlinkSync(lockPath);
+          staleLocksRecovered += 1;
+        } catch (unlinkError) {
+          if (unlinkError.code !== 'ENOENT') throw unlinkError;
+        }
+        continue;
+      }
+
+      if (dependencies.now() - startedAtMs >= timeoutMs) {
+        throw new Error(
+          `Timed out waiting for shared-service startup lock owned by pid ${current?.owner?.pid || 'unknown'}`,
+        );
+      }
+      await dependencies.wait(pollMs);
+    }
+  }
+}
+
+export function releaseStartupLock(lockPath, token) {
+  const current = readLockSnapshot(lockPath);
+  if (!current || current.owner?.token !== token) return false;
+  try {
+    unlinkSync(lockPath);
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+export async function coordinateSharedServiceStartup(options) {
+  const home23Root = options.home23Root;
+  const lockPath = options.lockPath || join(tmpdir(), 'home23', 'shared-service-start.lock');
+  const receiptPath = options.receiptPath || join(home23Root, 'logs', 'shared-service-startup.jsonl');
+  const dependencies = {
+    listProcesses: listProcessesDefault,
+    startService: (service) => startServiceDefault(service, home23Root),
+    restartService: (service) => restartServiceDefault(service, home23Root),
+    appendReceipt: (receipt) => appendReceiptDefault(receiptPath, receipt),
+    pidAlive: pidAliveDefault,
+    wait: waitDefault,
+    now: Date.now,
+    randomId: randomUUID,
+    processId: process.pid,
+    argv: process.argv,
+    warn: (message) => console.warn(message),
+    ...options.dependencies,
+  };
+  const receipt = {
+    schema: RECEIPT_SCHEMA,
+    recordedAt: new Date(dependencies.now()).toISOString(),
+    caller: { pid: dependencies.processId, argv: dependencies.argv },
+    services: [],
+    ok: false,
+  };
+  let lock;
+  let failure;
+
+  try {
+    lock = await acquireStartupLock({
+      lockPath,
+      home23Root,
+      timeoutMs: options.lockTimeoutMs ?? 30_000,
+      pollMs: options.pollMs ?? 100,
+      staleLockAgeMs: options.staleLockAgeMs ?? 120_000,
+      dependencies,
+    });
+    receipt.lock = {
+      waitMs: lock.waitMs,
+      staleLocksRecovered: lock.staleLocksRecovered,
+    };
+
+    for (const service of options.services || configuredSharedServices(home23Root)) {
+      const before = exactRecords(await dependencies.listProcesses(), service.name);
+      if (before.length > 1) {
+        const message = `Duplicate PM2 records for ${service.name}`;
+        receipt.services.push({
+          name: service.name,
+          before: summarizeRecords(before),
+          action: 'failed',
+          after: [],
+          error: message,
+        });
+        throw new Error(message);
+      }
+      const restartOnline = isOnline(before[0]) && options.restartOnline === true;
+      if (isOnline(before[0]) && !restartOnline) {
+        const beforeSummary = summarizeRecords(before);
+        receipt.services.push({
+          name: service.name,
+          before: beforeSummary,
+          action: 'already-online',
+          after: beforeSummary,
+        });
+        continue;
+      }
+
+      const serviceReceipt = {
+        name: service.name,
+        before: summarizeRecords(before),
+        action: restartOnline ? 'restarting' : 'starting',
+        after: [],
+      };
+      receipt.services.push(serviceReceipt);
+      try {
+        if (restartOnline) await dependencies.restartService(service);
+        else await dependencies.startService(service);
+        const after = await waitForOnline(
+          service.name,
+          dependencies,
+          options.startupTimeoutMs ?? 15_000,
+          options.pollMs ?? 100,
+        );
+        serviceReceipt.after = summarizeRecords(after);
+        serviceReceipt.action = restartOnline ? 'restarted' : 'started';
+      } catch (error) {
+        serviceReceipt.action = 'failed';
+        serviceReceipt.error = error.message;
+        throw error;
+      }
+    }
+    receipt.ok = true;
+  } catch (error) {
+    failure = error;
+    receipt.error = error.message;
+  } finally {
+    if (lock) releaseStartupLock(lockPath, lock.token);
+    try {
+      await dependencies.appendReceipt(receipt);
+    } catch (error) {
+      dependencies.warn(`[shared-service-start] receipt write failed: ${error.message}`);
+    }
+  }
+
+  if (failure) throw failure;
+  return receipt;
+}
+
+function exactRecords(processes, name) {
+  return processes.filter((entry) => entry.name === name);
+}
+
+function isOnline(entry) {
+  return entry?.pm2_env?.status === 'online' && Number(entry.pid) > 0;
+}
+
+function summarizeRecords(records) {
+  return records.map((entry) => ({
+    name: entry.name,
+    pid: Number(entry.pid) || 0,
+    pmId: entry.pm_id,
+    status: entry.pm2_env?.status || 'unknown',
+    restarts: Number(entry.pm2_env?.restart_time) || 0,
+    script: entry.pm2_env?.pm_exec_path,
+    cwd: entry.pm2_env?.pm_cwd,
+  }));
+}
+
+async function waitForOnline(name, dependencies, timeoutMs, pollMs) {
+  const deadline = dependencies.now() + timeoutMs;
+  for (;;) {
+    const records = exactRecords(await dependencies.listProcesses(), name);
+    if (records.length > 1) throw new Error(`Duplicate PM2 records for ${name}`);
+    if (isOnline(records[0])) return records;
+    if (dependencies.now() >= deadline) {
+      throw new Error(`Timed out waiting for ${name} to become online`);
+    }
+    await dependencies.wait(pollMs);
+  }
+}
+
+function parsePm2List(text) {
+  const lines = String(text || '').trim().split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const candidate = lines.slice(index).join('\n').trim();
+    if (!candidate.startsWith('[')) continue;
+    try {
+      const parsed = JSON.parse(candidate);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // Try the next suffix because PM2 can print startup chatter before JSON.
+    }
+  }
+  throw new Error('pm2 jlist did not return a JSON process list');
+}
+
+function cleanCommandEnv(source = process.env) {
+  const env = { ...source };
+  for (const key of PM2_ENV_BLOCKLIST) delete env[key];
+  return env;
+}
+
+export function startEcosystemProcesses({
+  home23Root,
+  names,
+  env = process.env,
+  execFile = execFileSync,
+  stdio = 'pipe',
+  timeoutMs = 45_000,
+}) {
+  return runEcosystemProcessCommand('start', {
+    home23Root,
+    names,
+    env,
+    execFile,
+    stdio,
+    timeoutMs,
+  });
+}
+
+export function restartEcosystemProcesses({
+  home23Root,
+  names,
+  env = process.env,
+  execFile = execFileSync,
+  stdio = 'pipe',
+  timeoutMs = 45_000,
+}) {
+  return runEcosystemProcessCommand('restart', {
+    home23Root,
+    names,
+    env,
+    execFile,
+    stdio,
+    timeoutMs,
+  });
+}
+
+function runEcosystemProcessCommand(command, {
+  home23Root,
+  names,
+  env,
+  execFile,
+  stdio,
+  timeoutMs,
+}) {
+  if (command !== 'start' && command !== 'restart') {
+    throw new Error(`Unsupported PM2 ecosystem command: ${command}`);
+  }
+  const exactNames = [...new Set(names || [])];
+  if (exactNames.length === 0) return [];
+  if (exactNames.some((name) => !/^[a-z0-9][a-z0-9-]*$/.test(name))) {
+    throw new Error('PM2 process names must be lowercase alphanumeric with hyphens');
+  }
+
+  const unsetArgs = PM2_ENV_BLOCKLIST.flatMap((key) => ['-u', key]);
+  execFile('env', [
+    ...unsetArgs,
+    'pm2',
+    command,
+    join(home23Root, 'ecosystem.config.cjs'),
+    '--only',
+    exactNames.join(','),
+    '--update-env',
+    '--silent',
+  ], {
+    cwd: home23Root,
+    env: cleanCommandEnv(env),
+    stdio,
+    timeout: timeoutMs,
+  });
+  return exactNames;
+}
+
+async function listProcessesDefault() {
+  return parsePm2List(execFileSync('pm2', ['jlist'], {
+    encoding: 'utf8',
+    env: cleanCommandEnv(),
+    maxBuffer: 20 * 1024 * 1024,
+    timeout: 8_000,
+  }));
+}
+
+async function startServiceDefault(service, home23Root) {
+  startEcosystemProcesses({ home23Root, names: [service.name] });
+}
+
+async function restartServiceDefault(service, home23Root) {
+  restartEcosystemProcesses({ home23Root, names: [service.name] });
+}
+
+async function appendReceiptDefault(receiptPath, receipt) {
+  mkdirSync(dirname(receiptPath), { recursive: true });
+  appendFileSync(receiptPath, `${JSON.stringify(receipt)}\n`);
+}

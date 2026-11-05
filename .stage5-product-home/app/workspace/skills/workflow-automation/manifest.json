@@ -1,0 +1,44 @@
+{
+  "id": "workflow-automation",
+  "version": "1.0.0",
+  "name": "Workflow Automation",
+  "description": "Break a multi-step goal into execution stages, map those stages to Home23 tools and skills, and set safe execution order.",
+  "layer": "skill",
+  "runtime": "docs",
+  "category": "automation",
+  "author": "home23",
+  "keywords": [
+    "workflow",
+    "automation",
+    "steps",
+    "plan",
+    "tools",
+    "execution",
+    "sequence"
+  ],
+  "triggers": [
+    "turn this into a workflow",
+    "map this to tools",
+    "break this into steps",
+    "how should we automate this"
+  ],
+  "requiresTools": [
+    "skills_suggest",
+    "cron_schedule",
+    "shell"
+  ],
+  "dependsOn": [
+    "knowledge-structuring"
+  ],
+  "composes": [
+    "coding-agent",
+    "source-validation",
+    "deep-research-synthesizer"
+  ],
+  "actions": [
+    "plan",
+    "map-tools",
+    "sequence"
+  ],
+  "routing": "manual"
+}

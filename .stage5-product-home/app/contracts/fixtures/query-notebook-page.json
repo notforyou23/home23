@@ -1,0 +1,201 @@
+{
+  "schemaVersion": 1,
+  "items": [
+    {
+      "schemaVersion": 1,
+      "operationId": "brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "requestKind": "pgs",
+      "requesterAgent": "jerry",
+      "brain": {
+        "id": "brain-jerry",
+        "displayName": "Jerry"
+      },
+      "question": "Map durable truth across the current brain source.",
+      "questionTitle": "Map durable truth across the current brain source.",
+      "configuration": {
+        "pgsMode": "fresh",
+        "pgsLevel": "sample",
+        "sweepModel": {
+          "provider": "minimax",
+          "model": "MiniMax-M2.1"
+        },
+        "synthesisModel": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-8"
+        }
+      },
+      "executionState": "partial",
+      "humanClassification": "finished",
+      "acceptedAt": "2026-07-13T19:00:00.000Z",
+      "startedAt": "2026-07-13T19:00:01.000Z",
+      "updatedAt": "2026-07-13T19:10:00.000Z",
+      "completedAt": "2026-07-13T19:10:00.000Z",
+      "progress": {
+        "version": 1,
+        "stage": "terminal",
+        "eventSequence": 41,
+        "selected": 12,
+        "completed": 10,
+        "successful": 9,
+        "failed": 1,
+        "reused": 3,
+        "pending": 2,
+        "retryable": 1,
+        "total": 12,
+        "lastProviderActivityAt": "2026-07-13T19:09:58.000Z",
+        "lastProgressAt": "2026-07-13T19:10:00.000Z"
+      },
+      "error": {
+        "code": "pgs_scope_incomplete",
+        "retryable": true
+      },
+      "resultAvailability": "available",
+      "expiresAt": "2026-07-20T19:10:00.000Z",
+      "answerPreviewAvailable": true,
+      "resultVersion": "qrv1_VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV",
+      "coverage": {
+        "coverageLevel": "sample",
+        "successfulSweeps": 9,
+        "selectedWorkUnits": 12,
+        "pendingWorkUnits": 2,
+        "reusedWorkUnits": 3,
+        "newWorkUnits": 7,
+        "scopeWorkUnits": 12,
+        "scopeSuccessfulWorkUnits": 9,
+        "scopePendingWorkUnits": 2,
+        "scopeComplete": false,
+        "retryablePartitions": ["c-retry-1"],
+        "retryablePartitionCount": 1
+      },
+      "continuation": {
+        "canContinue": true,
+        "continuableUntil": "2026-07-20T19:10:00.000Z",
+        "sourceOperationId": null
+      },
+      "actions": [
+        {
+          "kind": "openResult"
+        },
+        {
+          "kind": "continueSweep",
+          "token": "eyJhY3Rpb24iOiJjb250aW51ZVN3ZWVwIiwiZXhwaXJlc0F0IjoiMjAyNi0wNy0xM1QyMTowMDowMC4wMDBaIiwiaXNzdWVkQXQiOiIyMDI2LTA3LTEzVDIwOjAwOjAwLjAwMFoiLCJub25jZSI6InFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxIiwicmVxdWVzdGVyQWdlbnQiOiJqZXJyeSIsInNvdXJjZU9wZXJhdGlvbklkIjoiYnJvcF9BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInYiOjF9.gRdhRJfdS_MIP_eznb3jEy7oK6kIbvW_F_Pvz1N0bjw",
+          "expiresAt": "2026-07-13T21:00:00.000Z"
+        },
+        {
+          "kind": "targetedRetry",
+          "token": "eyJhY3Rpb24iOiJ0YXJnZXRlZFJldHJ5IiwiZXhwaXJlc0F0IjoiMjAyNi0wNy0xM1QyMTowMDowMC4wMDBaIiwiaXNzdWVkQXQiOiIyMDI2LTA3LTEzVDIwOjAwOjAwLjAwMFoiLCJub25jZSI6InFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxIiwicmVxdWVzdGVyQWdlbnQiOiJqZXJyeSIsInNvdXJjZU9wZXJhdGlvbklkIjoiYnJvcF9BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInYiOjF9.VrI_G177278XPxuWs5Ysq0tdfids8jNiXFnFGv-ILA8",
+          "expiresAt": "2026-07-13T21:00:00.000Z"
+        },
+        {
+          "kind": "export"
+        }
+      ],
+      "notification": {
+        "subscribed": false,
+        "deliveryState": null
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "operationId": "brop_FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+      "requestKind": "direct",
+      "requesterAgent": "jerry",
+      "brain": {
+        "id": "brain-jerry",
+        "displayName": "Jerry"
+      },
+      "question": "Synthesize the strongest current themes and contradictions.",
+      "questionTitle": "Synthesize the strongest current themes and contradictions.",
+      "configuration": {
+        "directMode": "dive",
+        "directModel": {
+          "provider": "openai-codex",
+          "model": "gpt-5.5"
+        }
+      },
+      "executionState": "complete",
+      "humanClassification": "finished",
+      "acceptedAt": "2026-07-13T18:30:00.000Z",
+      "startedAt": "2026-07-13T18:30:01.000Z",
+      "updatedAt": "2026-07-13T18:40:00.000Z",
+      "completedAt": "2026-07-13T18:40:00.000Z",
+      "progress": {
+        "version": 1,
+        "stage": "terminal",
+        "eventSequence": 12,
+        "sourceNodes": 142764,
+        "sourceEdges": 468230,
+        "lastProgressAt": "2026-07-13T18:40:00.000Z"
+      },
+      "error": null,
+      "resultAvailability": "available",
+      "expiresAt": "2026-07-20T18:40:00.000Z",
+      "answerPreviewAvailable": true,
+      "resultVersion": "qrv1_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+      "coverage": null,
+      "continuation": null,
+      "actions": [
+        {
+          "kind": "openResult"
+        },
+        {
+          "kind": "export"
+        }
+      ],
+      "notification": {
+        "subscribed": false,
+        "deliveryState": null
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "operationId": "brop_EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
+      "requestKind": "pgs",
+      "requesterAgent": "jerry",
+      "brain": {
+        "id": "brain-jerry",
+        "displayName": "Jerry"
+      },
+      "question": "Legacy sweep receipt retained for display.",
+      "questionTitle": "Legacy sweep receipt retained for display.",
+      "configuration": {
+        "pgsMode": "fresh",
+        "pgsLevel": "legacy",
+        "sweepModel": {
+          "provider": "minimax",
+          "model": "MiniMax-M2.1"
+        },
+        "synthesisModel": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-8"
+        },
+        "legacy": true
+      },
+      "executionState": "complete",
+      "humanClassification": "finished",
+      "acceptedAt": "2026-07-13T18:00:00.000Z",
+      "startedAt": "2026-07-13T18:00:01.000Z",
+      "updatedAt": "2026-07-13T18:05:00.000Z",
+      "completedAt": "2026-07-13T18:05:00.000Z",
+      "progress": null,
+      "error": null,
+      "resultAvailability": "absent",
+      "expiresAt": null,
+      "answerPreviewAvailable": false,
+      "resultVersion": null,
+      "coverage": null,
+      "continuation": null,
+      "actions": [
+        {
+          "kind": "none"
+        }
+      ],
+      "notification": {
+        "subscribed": false,
+        "deliveryState": null
+      }
+    }
+  ],
+  "nextCursor": null,
+  "omittedIncompatibleCount": 1
+}

@@ -1,0 +1,180 @@
+body.ui-refresh-enabled .btn:focus-visible,
+body.ui-refresh-enabled .btn-icon:focus-visible,
+body.ui-refresh-enabled .tab-btn:focus-visible,
+body.ui-refresh-enabled .overflow-item:focus-visible,
+body.ui-refresh-enabled .onboarding-action:focus-visible,
+body.ui-refresh-enabled .tablet-panel-bar button:focus-visible {
+  outline: none;
+  box-shadow: var(--ui-focus-ring);
+}
+
+body.ui-refresh-enabled .btn {
+  gap: var(--ui-space-2);
+}
+
+body.ui-refresh-enabled .brain-toggle {
+  min-height: 28px;
+  padding: 0 var(--ui-space-2);
+}
+
+body.ui-refresh-enabled .brain-toggle.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+body.ui-refresh-enabled .status-bar {
+  font-size: 12px;
+}
+
+body.ui-refresh-enabled .status-item {
+  border-radius: 4px;
+}
+
+body.ui-refresh-enabled #brainPickerModal > div,
+body.ui-refresh-enabled .keyboard-help,
+body.ui-refresh-enabled .settings-panel,
+body.ui-refresh-enabled .edit-queue-panel,
+body.ui-refresh-enabled .snapshot-history-panel,
+body.ui-refresh-enabled #folder-browser {
+  border-radius: 12px;
+}
+
+body.ui-refresh-enabled .settings-content {
+  padding-bottom: 110px;
+}
+
+body.ui-refresh-enabled .setting-group.shortcuts-group {
+  border-top: 1px dashed var(--border-color);
+  margin-top: var(--ui-space-4);
+  padding-top: var(--ui-space-4);
+}
+
+body.ui-refresh-enabled .shortcut-map-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 140px;
+  gap: var(--ui-space-2);
+  align-items: center;
+  margin-bottom: var(--ui-space-2);
+}
+
+body.ui-refresh-enabled .shortcut-map-item input {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  width: 100%;
+}
+
+body.ui-refresh-enabled .shortcut-map-help {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: var(--ui-space-2);
+}
+
+body.ui-refresh-enabled .shortcut-map-error {
+  color: var(--error-color);
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+body.ui-refresh-enabled .setting-group.live-settings-group {
+  border-top: 1px dashed var(--border-color);
+  margin-top: var(--ui-space-4);
+  padding-top: var(--ui-space-4);
+}
+
+body.ui-refresh-enabled .live-settings-section {
+  margin-bottom: var(--ui-space-4);
+}
+
+body.ui-refresh-enabled .live-settings-provider-grid {
+  display: grid;
+  gap: var(--ui-space-3);
+}
+
+body.ui-refresh-enabled .live-settings-provider-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+body.ui-refresh-enabled .live-settings-provider-title {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+body.ui-refresh-enabled .live-settings-provider-status {
+  color: var(--text-secondary);
+  font-size: 11px;
+  margin-bottom: var(--ui-space-2);
+}
+
+body.ui-refresh-enabled .live-settings-section-title {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  margin-bottom: var(--ui-space-2);
+  text-transform: uppercase;
+}
+
+body.ui-refresh-enabled .live-settings-grid {
+  display: grid;
+  gap: var(--ui-space-2);
+}
+
+body.ui-refresh-enabled .live-settings-row {
+  align-items: start;
+  display: grid;
+  gap: var(--ui-space-2);
+  grid-template-columns: minmax(0, 132px) minmax(0, 1fr);
+}
+
+body.ui-refresh-enabled .live-settings-key {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+body.ui-refresh-enabled .live-settings-value {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+body.ui-refresh-enabled .live-settings-subvalue {
+  color: var(--text-secondary);
+  font-size: 11px;
+  margin-top: 2px;
+  word-break: break-word;
+}
+
+body.ui-refresh-enabled .live-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ui-space-2);
+  margin-bottom: var(--ui-space-3);
+}
+
+body.ui-refresh-enabled .live-settings-checkbox-row {
+  font-size: 12px;
+}
+
+body.ui-refresh-enabled .live-settings-checkbox-row label {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+}
+
+body.ui-refresh-enabled .live-settings-note {
+  color: var(--text-secondary);
+  font-size: 11px;
+  margin-top: var(--ui-space-2);
+}
+
+body.ui-refresh-enabled .live-settings-note-error {
+  color: var(--error-color);
+}

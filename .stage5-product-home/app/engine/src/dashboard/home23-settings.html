@@ -1,0 +1,1220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="/home23-theme.js"></script>
+  <title>Home23 — Settings</title>
+  <link rel="icon" href="data:,">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@300..900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/home23-dashboard.css">
+  <link rel="stylesheet" href="/home23-settings.css">
+  <link rel="stylesheet" href="/home23-theme.css">
+</head>
+<body class="h23-settings-page">
+  <div id="particles-js"></div>
+  <div class="h23s-app-shell">
+    <header class="h23s-topbar">
+      <div class="h23s-title-cluster">
+        <a class="h23s-home-button" href="/home23" aria-label="Back to dashboard">
+          <span aria-hidden="true">&#8962;</span>
+        </a>
+        <div>
+          <div class="h23s-kicker">Home23</div>
+          <h1 class="h23s-page-title">Settings</h1>
+        </div>
+        <span class="h23s-mode-pill">Control Surface</span>
+      </div>
+      <div class="h23s-top-actions">
+        <button class="h23-theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark theme">Dark mode</button>
+        <a href="/home23" class="h23s-back-link">&larr; Back to Dashboard</a>
+        <div class="cosmo-status h23s-status-pill">
+          <span class="status-dot alive"></span>
+          <span>SETTINGS</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="h23s-settings-layout">
+      <aside class="h23s-config-sidebar" aria-label="Settings sections">
+        <div class="h23s-sidebar-copy">
+          <div class="h23s-sidebar-kicker">Configuration Surface</div>
+          <p>Providers, agents, model defaults, feeder controls, tile layout, and system behavior all route through this screen.</p>
+        </div>
+
+        <nav class="h23s-tabs">
+          <button class="h23s-tab" data-stab="providers" data-tab-label="Providers" data-tab-icon="&#9711;">Providers</button>
+          <button class="h23s-tab" data-stab="agents" data-tab-label="Agents" data-tab-icon="&#9783;">Agents</button>
+          <button class="h23s-tab" data-stab="workers" data-tab-label="Workers" data-tab-icon="&#9881;">Workers</button>
+          <button class="h23s-tab active" data-stab="models" data-tab-label="Models" data-tab-icon="&#9635;">Models</button>
+          <button class="h23s-tab" data-stab="query" data-tab-label="Query" data-tab-icon="&#9906;">Query</button>
+          <button class="h23s-tab" data-stab="feeder" data-tab-label="Feeder" data-tab-icon="&#8767;">Feeder</button>
+          <button class="h23s-tab" data-stab="skills" data-tab-label="Skills" data-tab-icon="&#10022;">Skills</button>
+          <button class="h23s-tab" data-stab="vibe" data-tab-label="Vibe" data-tab-icon="&#9786;">Vibe</button>
+          <button class="h23s-tab" data-stab="tiles" data-tab-label="Tiles" data-tab-icon="&#9638;">Tiles</button>
+          <button class="h23s-tab" data-stab="agency" data-tab-label="Agency" data-tab-icon="&#9783;">Agency</button>
+          <button class="h23s-tab" data-stab="system" data-tab-label="System" data-tab-icon="&#9881;">System</button>
+        </nav>
+      </aside>
+
+      <main class="h23s-main">
+    <section class="h23s-surface-hero" aria-labelledby="settings-surface-title">
+      <div class="h23s-surface-title-row">
+        <div class="h23s-surface-icon" id="settings-surface-icon" aria-hidden="true">&#9635;</div>
+        <div>
+          <div class="h23s-surface-heading">
+            <h2 id="settings-surface-title">Models</h2>
+            <span class="h23s-scope-chip scope-mixed" id="settings-surface-chip">Mixed</span>
+          </div>
+          <p id="settings-surface-desc">Configure the default chat model for agents. Advanced routing and house-wide model catalogs are still available below, but they stay out of the main path.</p>
+        </div>
+      </div>
+
+      <div class="h23s-scope-card" id="settings-agent-scope">
+        <div class="h23s-scope-copy">
+          <span class="h23s-scope-info" aria-hidden="true">i</span>
+          <div>
+            <div id="settings-scope-kicker">Mixed Scope</div>
+            <div id="settings-scope-summary">Agent-scoped tabs target the selected agent. Providers, Skills, Vibe, Tiles, and System stay house-wide.</div>
+          </div>
+        </div>
+        <div class="h23s-field" id="settings-agent-select-field">
+          <label>Selected Agent</label>
+          <select id="settings-agent-select"></select>
+        </div>
+      </div>
+    </section>
+
+    <!-- Onboarding Overlay (shown on first run when no providers + no agents) -->
+    <div id="onboarding-overlay" class="h23s-onboarding" style="display:none;">
+      <div class="h23s-onboarding-header">
+        <h1 class="h23s-onboarding-title">Welcome to Home23</h1>
+        <p class="h23s-onboarding-subtitle">Walk through the setup checklist, connect models, create your first personal agent, and launch the live system.</p>
+      </div>
+
+      <!-- Step indicator -->
+      <div class="h23s-onboarding-steps">
+        <div class="h23s-onboarding-step active" data-ob-step="1">
+          <span class="h23s-onboarding-step-num">1</span>
+          <span class="h23s-onboarding-step-label">Providers</span>
+        </div>
+        <div class="h23s-onboarding-step-line"></div>
+        <div class="h23s-onboarding-step" data-ob-step="2">
+          <span class="h23s-onboarding-step-num">2</span>
+          <span class="h23s-onboarding-step-label">Create Agent</span>
+        </div>
+        <div class="h23s-onboarding-step-line"></div>
+        <div class="h23s-onboarding-step" data-ob-step="3">
+          <span class="h23s-onboarding-step-num">3</span>
+          <span class="h23s-onboarding-step-label">Launch</span>
+        </div>
+      </div>
+
+      <div class="h23s-onboarding-checklist" id="ob-checklist" aria-label="Setup checklist">
+        <div class="h23s-ob-check" data-ob-check="system"><span></span>System prepared</div>
+        <div class="h23s-ob-check" data-ob-check="provider"><span></span>Provider connected</div>
+        <div class="h23s-ob-check" data-ob-check="identity"><span></span>Agent identity</div>
+        <div class="h23s-ob-check" data-ob-check="personal"><span></span>User context</div>
+        <div class="h23s-ob-check" data-ob-check="folders"><span></span>Project imports</div>
+        <div class="h23s-ob-check" data-ob-check="launch"><span></span>Live launch</div>
+      </div>
+
+      <!-- Onboarding Step 1: Providers -->
+      <div class="h23s-onboarding-page active" id="ob-step-1">
+        <h2 class="h23s-panel-title">Connect a Provider</h2>
+        <p class="h23s-panel-desc">Your agent needs at least one reachable AI provider. OAuth is recommended for Anthropic and OpenAI Codex. API keys are available for OpenAI, Ollama Cloud, MiniMax, xAI, and fallback Anthropic access.</p>
+        <div class="h23s-readiness-grid" id="ob-readiness">
+        </div>
+
+        <!-- OAuth cards (reference the same IDs — the existing HTML above has them) -->
+        <div class="h23s-section" id="ob-oauth-host">
+          <!-- Anthropic and Codex OAuth cards will be moved here during onboarding -->
+        </div>
+
+        <details class="h23s-onboarding-details">
+          <summary>Or enter API keys manually</summary>
+          <div class="h23s-section" id="ob-apikeys-host" style="margin-top:12px;">
+            <!-- API key inputs will be injected here -->
+          </div>
+          <div class="h23s-actions" style="border-top:none;padding-top:8px;">
+            <button class="h23s-btn-primary" id="ob-save-keys">Save API Keys</button>
+            <span class="h23s-save-status" id="ob-keys-status"></span>
+          </div>
+        </details>
+
+        <div class="h23s-onboarding-nav">
+          <div class="h23s-onboarding-gate" id="ob-provider-gate">
+            <span class="h23s-status-dot"></span>
+            <span>Configure at least one provider to continue</span>
+          </div>
+          <button class="h23s-btn-primary" id="ob-next-1" disabled>Next</button>
+        </div>
+      </div>
+
+      <!-- Onboarding Step 2: Create Agent (embeds the existing wizard) -->
+      <div class="h23s-onboarding-page" id="ob-step-2">
+        <h2 class="h23s-panel-title">Create Your Agent</h2>
+        <p class="h23s-panel-desc">This will be your initial home primary agent — the default intelligence Home23 falls back to when a surface needs the house-level default.</p>
+        <div id="ob-wizard-host">
+          <!-- The existing #agent-wizard will be moved here during onboarding step 2 -->
+        </div>
+      </div>
+
+      <!-- Onboarding Step 3: Launch -->
+      <div class="h23s-onboarding-page" id="ob-step-3">
+        <div class="h23s-onboarding-launch">
+          <h2 class="h23s-panel-title">Ready to Launch</h2>
+          <p class="h23s-panel-desc" style="margin-bottom:20px;">Here's what we set up:</p>
+
+          <div class="h23s-onboarding-summary" id="ob-summary">
+            <!-- Populated by JS -->
+          </div>
+
+          <p class="h23s-panel-desc" style="margin-top:20px;">Starting your agent launches the cognitive engine, dashboard, and harness. It takes about 10 seconds.</p>
+
+          <div class="h23s-onboarding-nav" style="justify-content:center;">
+            <button class="h23s-btn-primary h23s-btn-launch" id="ob-launch">Start Agent</button>
+          </div>
+          <div class="h23s-onboarding-launch-status" id="ob-launch-status"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Providers Panel -->
+    <div class="h23s-panel" id="panel-providers">
+      <h2 class="h23s-panel-title">Providers &amp; API Keys</h2>
+      <p class="h23s-panel-desc">OAuth is the preferred way to authenticate with Anthropic and ChatGPT. It's free with a Claude Max plan or ChatGPT Plus/Pro subscription and refreshes automatically. Use API keys below for all other providers or as a fallback.</p>
+
+      <!-- OAuth Cards (STEP 18) -->
+      <div class="h23s-section" id="oauth-section">
+        <h3 class="h23s-section-title">OAuth Sign-in <span class="h23s-oauth-badge">recommended</span></h3>
+
+        <!-- Anthropic OAuth -->
+        <div class="h23s-oauth-card" id="anthropic-oauth-card">
+          <div class="h23s-oauth-header">
+            <div>
+              <div class="h23s-oauth-title">Anthropic (claude.ai)</div>
+              <div class="h23s-oauth-desc">Sign in with your Claude account for Sonnet / Opus access.</div>
+            </div>
+            <div class="h23s-oauth-status" id="anthropic-oauth-status">checking…</div>
+          </div>
+          <div class="h23s-action-row">
+            <button class="h23s-btn-primary" id="btn-anthropic-oauth-start">Sign in with Anthropic</button>
+            <button class="h23s-btn-secondary" id="btn-anthropic-oauth-import">Import from Claude CLI</button>
+            <button class="h23s-btn-secondary h23s-oauth-logout" id="btn-anthropic-oauth-logout" hidden>Logout</button>
+          </div>
+          <div class="h23s-oauth-flow" id="anthropic-oauth-flow" hidden>
+            <p>A new tab will open to Anthropic's OAuth page. After authorizing, copy the <strong>entire callback URL</strong> from your browser's address bar and paste it below.</p>
+            <a id="anthropic-oauth-link" target="_blank" rel="noopener" class="h23s-oauth-link">Open OAuth page</a>
+            <textarea id="anthropic-oauth-callback" rows="3" placeholder="https://console.anthropic.com/oauth/code/callback?code=...&amp;state=..."></textarea>
+            <button class="h23s-btn-primary" id="btn-anthropic-oauth-complete">Complete OAuth</button>
+          </div>
+        </div>
+
+        <!-- OpenAI Codex OAuth -->
+        <div class="h23s-oauth-card" id="codex-oauth-card">
+          <div class="h23s-oauth-header">
+            <div>
+              <div class="h23s-oauth-title">OpenAI Codex (ChatGPT)</div>
+              <div class="h23s-oauth-desc">Sign in with your ChatGPT account for GPT-5 / Codex access without an API key.</div>
+            </div>
+            <div class="h23s-oauth-status" id="codex-oauth-status">checking…</div>
+          </div>
+          <div class="h23s-action-row">
+            <button class="h23s-btn-primary" id="btn-codex-oauth-start">Sign in with ChatGPT</button>
+            <button class="h23s-btn-secondary" id="btn-codex-oauth-import">Import from Codex CLI</button>
+            <button class="h23s-btn-secondary h23s-oauth-logout" id="btn-codex-oauth-logout" hidden>Logout</button>
+          </div>
+          <div class="h23s-oauth-flow" id="codex-oauth-flow" hidden>
+            <p>Authorize Home23 in the new tab. The final localhost page may say it cannot connect; copy the <strong>entire URL</strong> from the address bar and paste it below.</p>
+            <a id="codex-oauth-link" target="_blank" rel="noopener" class="h23s-oauth-link">Open ChatGPT sign-in page</a>
+            <textarea id="codex-oauth-callback" rows="3" placeholder="http://localhost:1455/auth/callback?code=...&amp;state=..."></textarea>
+            <button class="h23s-btn-primary" id="btn-codex-oauth-complete">Complete sign-in</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">API Keys</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">Stored in <code>config/secrets.yaml</code>. Use these for providers that don't offer OAuth, or as a fallback.</p>
+        <div class="h23s-provider-list" id="provider-list">
+        </div>
+      </div>
+
+      <div class="h23s-actions">
+        <button class="h23s-btn-primary" id="btn-save-providers">Save</button>
+        <span class="h23s-save-status" id="providers-status"></span>
+      </div>
+    </div>
+
+    <!-- Agents Panel -->
+    <div class="h23s-panel" id="panel-agents">
+      <div class="h23s-panel-header">
+        <div>
+          <h2 class="h23s-panel-title">Agents</h2>
+          <p class="h23s-panel-desc">Roster and runtime controls for each Home23 agent.</p>
+        </div>
+        <button class="h23s-btn-primary" id="btn-create-agent">+ Create Agent</button>
+      </div>
+
+      <!-- Agent creation wizard (hidden by default) -->
+      <div class="h23s-wizard" id="agent-wizard" style="display:none;">
+        <div class="h23s-wizard-header">
+          <div>
+            <h3 class="h23s-section-title">Create Agent</h3>
+            <p class="h23s-panel-desc">Create a new runtime with its own ports, channels, workspace, and chat default.</p>
+          </div>
+          <button class="h23s-btn-secondary" id="wiz-close" type="button">Close</button>
+        </div>
+        <div id="wiz-primary-banner" style="display:none;background:rgba(10,132,255,0.08);border:1px solid rgba(10,132,255,0.2);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--accent-blue);">
+          This will be your <strong>home primary agent</strong> &mdash; the house-level default Home23 falls back to when a surface needs a primary. Its chat model becomes this agent's first chat default.
+        </div>
+        <div class="h23s-wizard-steps">
+          <span class="h23s-wizard-step active" data-step="1">1. Purpose</span>
+          <span class="h23s-wizard-step" data-step="2">2. Channels</span>
+          <span class="h23s-wizard-step" data-step="3">3. Chat Model</span>
+        </div>
+
+        <!-- Step 1: Identity and purpose -->
+        <div class="h23s-wizard-page active" id="wizard-step-1">
+          <div class="h23s-field">
+            <label>Agent Name <span class="h23s-required">*</span></label>
+            <input type="text" id="wiz-name" placeholder="my-agent" pattern="[a-z0-9][a-z0-9-]*">
+            <span class="h23s-hint">Lowercase, alphanumeric, hyphens only</span>
+          </div>
+          <div class="h23s-field">
+            <label>Display Name</label>
+            <input type="text" id="wiz-display-name" placeholder="My Agent">
+          </div>
+          <div class="h23s-field">
+            <label>Owner Name</label>
+            <input type="text" id="wiz-owner" placeholder="owner">
+          </div>
+          <div class="h23s-field">
+            <label>Important User Facts</label>
+            <textarea id="wiz-user-facts" rows="4" placeholder="Examples: what you work on, people or projects that matter, preferred communication style, privacy boundaries, current priorities."></textarea>
+            <span class="h23s-hint">Optional. One fact per line. Saved into the agent's personal context.</span>
+          </div>
+          <div class="h23s-field">
+            <label>Purpose</label>
+            <textarea id="wiz-purpose" rows="3" placeholder="Help me organize work, remember important context, and keep projects moving."></textarea>
+          </div>
+          <div class="h23s-field">
+            <label>Project Folders to Ingest</label>
+            <textarea id="wiz-ingest-paths" rows="3" placeholder="~/Projects/my-app&#10;~/Documents/Claude Exports/project-notes"></textarea>
+            <span class="h23s-hint">Optional. One folder per line; Home23 watches these folders for supported files.</span>
+          </div>
+          <div class="h23s-field">
+            <label>Timezone</label>
+            <input type="text" id="wiz-timezone" placeholder="America/New_York">
+          </div>
+          <div class="h23s-wizard-nav">
+            <button class="h23s-btn-secondary" id="wiz-cancel">Cancel</button>
+            <button class="h23s-btn-primary" id="wiz-next-1">Next</button>
+          </div>
+        </div>
+
+        <!-- Step 2: Channels (optional) -->
+        <div class="h23s-wizard-page" id="wizard-step-2">
+          <p class="h23s-panel-desc" style="margin-bottom:16px;">
+            Channels let you talk to your agent from external apps. These are optional &mdash; you can always chat directly from the dashboard.
+          </p>
+          <div class="h23s-field">
+            <label>Telegram Bot Token</label>
+            <input type="password" id="wiz-bot-token" placeholder="123456:ABC-DEF... (optional)">
+            <span class="h23s-hint">Get one from <a href="https://t.me/BotFather" target="_blank">@BotFather</a> on Telegram. You can add this later.</span>
+          </div>
+          <div class="h23s-field">
+            <label>Owner Telegram ID</label>
+            <input type="text" id="wiz-telegram-id" placeholder="123456789">
+            <span class="h23s-hint">Your numeric Telegram user ID</span>
+          </div>
+          <div class="h23s-wizard-nav">
+            <button class="h23s-btn-secondary" id="wiz-back-2">Back</button>
+            <button class="h23s-btn-primary" id="wiz-next-2">Next</button>
+          </div>
+        </div>
+
+        <!-- Step 3: Chat model -->
+        <div class="h23s-wizard-page" id="wizard-step-3">
+          <p class="h23s-panel-desc" style="margin-bottom:16px;">
+            Choose the model this agent uses for normal conversation. Background jobs such as file ingestion, Query, and internal cognition keep their recommended defaults and can be tuned later in Settings.
+          </p>
+          <div class="h23s-field">
+            <label>Chat Provider</label>
+            <select id="wiz-provider">
+              <option value="ollama-cloud">Ollama Cloud</option>
+              <option value="minimax">MiniMax</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="openai-codex">OpenAI Codex</option>
+              <option value="openai">OpenAI</option>
+              <option value="xai">xAI</option>
+            </select>
+          </div>
+          <div class="h23s-field">
+            <label>Chat Model</label>
+            <select id="wiz-model">
+            </select>
+            <span class="h23s-hint" id="wiz-model-hint">Used for direct chat with this agent. Advanced model routing stays on recommended defaults.</span>
+            <span class="h23s-hint" id="wiz-provider-readiness"></span>
+          </div>
+          <div class="h23s-field">
+            <label>Ports</label>
+            <div class="h23s-ports-preview" id="wiz-ports">Auto-assigned on creation</div>
+          </div>
+          <div class="h23s-wizard-nav">
+            <button class="h23s-btn-secondary" id="wiz-back-3">Back</button>
+            <button class="h23s-btn-primary" id="wiz-create">Create Agent</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="h23s-agent-list" id="agent-list">
+      </div>
+    </div>
+
+    <!-- Workers Panel -->
+    <div class="h23s-panel" id="panel-workers">
+      <h2 class="h23s-panel-title">Worker Library</h2>
+      <p class="h23s-panel-desc">
+        Install reusable specialists that can diagnose, verify, summarize, and report back without running a standalone Home23 engine.
+        This is where the house learns what each worker is for.
+      </p>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">What This Unlocks</h3>
+        <div id="settings-worker-capability-guide" class="h23s-worker-guide"></div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Install Specialist</h3>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label>Name</label>
+            <input type="text" id="worker-create-name" placeholder="systems">
+          </div>
+          <div class="h23s-field">
+            <label>Worker Pack</label>
+            <select id="worker-create-template"></select>
+          </div>
+          <div class="h23s-field">
+            <label>Owner Agent</label>
+            <select id="worker-create-owner"></select>
+          </div>
+        </div>
+        <div class="h23s-action-row">
+          <button class="h23s-btn-primary" id="btn-create-worker" type="button">Install Worker</button>
+          <button class="h23s-btn-secondary" id="btn-refresh-workers" type="button">Refresh</button>
+          <span class="h23s-save-status" id="worker-create-status"></span>
+        </div>
+      </div>
+
+      <div class="h23s-workers-layout">
+        <div class="h23s-section">
+          <h3 class="h23s-section-title">Installed Specialists</h3>
+          <div id="settings-workers-roster" class="h23s-worker-list"></div>
+        </div>
+        <div class="h23s-section">
+          <h3 class="h23s-section-title">Available Worker Packs</h3>
+          <div id="settings-worker-templates" class="h23s-worker-list"></div>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Try A Worker</h3>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label>Specialist</label>
+            <select id="settings-worker-run-select"></select>
+          </div>
+          <div class="h23s-field">
+            <label>Requested By</label>
+            <select id="settings-worker-requested-by">
+              <option value="human">Human</option>
+              <option value="house-agent">House Agent</option>
+              <option value="live-problems">Live Problems</option>
+              <option value="good-life">Good Life</option>
+            </select>
+          </div>
+        </div>
+        <div class="h23s-field">
+          <label>Need</label>
+          <textarea id="settings-worker-run-prompt" rows="5" placeholder="Example: check why Home23 feels slow and tell me what evidence you found."></textarea>
+        </div>
+        <div class="h23s-action-row">
+          <button class="h23s-btn-primary" id="btn-run-worker-settings" type="button">Run Check</button>
+          <span class="h23s-save-status" id="settings-worker-run-status"></span>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Recent Proof Trail</h3>
+        <div id="settings-worker-runs" class="h23s-worker-runs"></div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Terminal Use</h3>
+        <div class="h23s-worker-commands">
+          <code>node cli/home23.js worker list</code>
+          <code>node cli/home23.js worker create systems --template systems --owner jerry</code>
+          <code>node cli/home23.js worker run systems "inspect the current live problem and produce a receipt"</code>
+        </div>
+      </div>
+    </div>
+
+    <!-- Models Panel -->
+    <div class="h23s-panel active" id="panel-models">
+      <h2 class="h23s-panel-title">Models</h2>
+      <p class="h23s-panel-desc">Pick the normal chat model for <strong data-scope-label="models">the selected agent</strong>. Advanced routing and house-wide model catalogs are still available below, but they stay out of the main path.</p>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Chat Default</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">The model this agent uses for normal chat unless a conversation explicitly picks another model.</p>
+        <div class="h23s-model-plan" id="models-plan">
+        </div>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label>Default Provider</label>
+            <select id="models-default-provider"></select>
+          </div>
+          <div class="h23s-field">
+            <label>Default Model</label>
+            <select id="models-default-model"></select>
+          </div>
+          <div class="h23s-field">
+            <label>Reasoning Effort</label>
+            <select id="models-reasoning-effort">
+              <option value="">Use inherited default</option>
+              <option value="none">None</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="xhigh">Extra high</option>
+              <option value="max">Maximum</option>
+            </select>
+            <span class="h23s-hint" id="models-reasoning-effort-help"></span>
+          </div>
+        </div>
+        <div class="h23s-actions h23s-actions-compact">
+          <button class="h23s-btn-primary" id="btn-save-models">Save Chat Default</button>
+          <span class="h23s-save-status" id="models-status" data-models-status></span>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Pulse Voice</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">Optional model override for <strong data-scope-label="models">the selected agent</strong>'s dashboard remarks. Leave it aligned with chat unless the pulse needs a different voice model.</p>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label>Provider</label>
+            <select id="pulse-voice-provider"></select>
+          </div>
+          <div class="h23s-field">
+            <label>Model</label>
+            <select id="pulse-voice-model"></select>
+          </div>
+        </div>
+        <details class="h23s-disclosure h23s-models-advanced">
+          <summary>
+            <span>
+              <strong>Voice Prompt Editor</strong>
+              <small>Dashboard remark personality for this agent.</small>
+            </span>
+          </summary>
+          <div class="h23s-disclosure-body">
+            <div class="h23s-field" style="margin-top:8px;">
+              <label>System prompt (remark voice)</label>
+              <textarea id="pulse-voice-prompt" rows="9" style="font-family:inherit;font-size:12px;line-height:1.5;width:100%;resize:vertical;"></textarea>
+              <p class="h23s-inline-note">How the dashboard voice talks. Tune this when the pulse remarks need a different personality.</p>
+            </div>
+          </div>
+        </details>
+        <div class="h23s-actions" style="border-top:none;padding-top:8px;">
+          <button class="h23s-btn-primary" id="btn-save-pulse-voice">Save</button>
+          <button class="h23s-btn-secondary" id="btn-reset-pulse-prompt" style="margin-left:8px;">Reset Prompt to Default</button>
+          <span class="h23s-save-status" id="pulse-voice-status"></span>
+        </div>
+      </div>
+
+      <details class="h23s-disclosure h23s-models-advanced">
+        <summary>
+          <span>
+            <strong>Advanced Cognitive Routing</strong>
+            <small>Internal engine slots, primary models, and fallbacks.</small>
+          </span>
+        </summary>
+        <div class="h23s-disclosure-body">
+          <p class="h23s-panel-desc" style="margin-top:0;">Per-slot routing for the thinking engine. Each row is one internal model call path, with optional fallbacks for errors or rate limits.</p>
+          <div id="model-assignments-list" style="display:flex;flex-direction:column;gap:10px;"></div>
+          <div class="h23s-actions" style="border-top:none;padding-top:8px;">
+            <button class="h23s-btn-primary" id="btn-save-assignments">Save Assignments</button>
+            <button class="h23s-btn-secondary" id="btn-reset-assignments" style="margin-left:8px;">Reset All to Base Defaults</button>
+            <span class="h23s-save-status" id="assignments-status"></span>
+          </div>
+        </div>
+      </details>
+
+      <details class="h23s-disclosure h23s-models-advanced">
+        <summary>
+          <span>
+            <strong>House-Wide Catalog and Aliases</strong>
+            <small>Shared provider model lists and shortcut names.</small>
+          </span>
+        </summary>
+        <div class="h23s-disclosure-body">
+          <div class="h23s-section">
+            <h3 class="h23s-section-title">Available Models per Provider</h3>
+            <p class="h23s-panel-desc" style="margin-top:0;">House-wide model catalog. These are the models shown in evobrew and shared pickers across Home23.</p>
+            <div id="provider-models-list"></div>
+          </div>
+
+          <div class="h23s-section">
+            <h3 class="h23s-section-title">Aliases</h3>
+            <p class="h23s-panel-desc" style="margin-top:0;">House-wide shortcuts that any agent can use when resolving model names.</p>
+            <table class="h23s-table" id="aliases-table">
+              <thead>
+                <tr><th>Alias</th><th>Provider</th><th>Model</th><th></th></tr>
+              </thead>
+              <tbody id="aliases-body">
+              </tbody>
+            </table>
+            <button class="h23s-btn-secondary" id="btn-add-alias" style="margin-top:8px;">+ Add Alias</button>
+          </div>
+
+          <div class="h23s-actions">
+            <button class="h23s-btn-primary" id="btn-save-model-catalog">Save Catalog</button>
+            <span class="h23s-save-status" data-models-status></span>
+          </div>
+        </div>
+      </details>
+    </div>
+
+    <!-- Query Panel -->
+    <div class="h23s-panel" id="panel-query">
+      <h2 class="h23s-panel-title">Query</h2>
+      <p class="h23s-panel-desc">Defaults for <strong data-scope-label="query">the selected agent</strong>'s Query tab. These seed the dropdowns when that dashboard loads; users can still override per-query.</p>
+
+      <h3 class="h23s-section-title">Default Query</h3>
+      <div class="h23s-field">
+        <label class="h23s-label">Model</label>
+        <select id="query-default-model" class="h23s-select"></select>
+      </div>
+      <div class="h23s-field">
+        <label class="h23s-label">Depth</label>
+        <select id="query-default-mode" class="h23s-select">
+          <option value="quick">Quick — fast answers</option>
+          <option value="full" selected>Full — comprehensive</option>
+          <option value="expert">Expert — maximum depth</option>
+          <option value="dive">Dive — exploratory synthesis</option>
+        </select>
+      </div>
+
+      <h3 class="h23s-section-title">PGS (Partitioned Graph Synthesis)</h3>
+      <div class="h23s-field">
+        <label class="h23s-label">
+          <input type="checkbox" id="query-pgs-default"> Enable PGS by default
+        </label>
+      </div>
+      <div class="h23s-field">
+        <label class="h23s-label">Sweep Model</label>
+        <select id="query-pgs-sweep-model" class="h23s-select" title="Runs many times across partitions — pick something cheap/fast"></select>
+      </div>
+      <div class="h23s-field">
+        <label class="h23s-label">Synthesis Model</label>
+        <select id="query-pgs-synth-model" class="h23s-select" title="Runs once over aggregated sweeps — pick something smart"></select>
+      </div>
+      <div class="h23s-field">
+        <label class="h23s-label">Default Depth</label>
+        <select id="query-pgs-depth" class="h23s-select">
+          <option value="0.10">Skim (10%)</option>
+          <option value="0.25" selected>Sample (25%)</option>
+          <option value="0.50">Deep (50%)</option>
+          <option value="1.0">Full (100%)</option>
+        </select>
+      </div>
+
+      <div class="h23s-actions">
+        <button class="h23s-btn-primary" id="btn-save-query">Save</button>
+        <span class="h23s-save-status" id="query-status"></span>
+      </div>
+    </div>
+
+    <!-- Feeder Panel -->
+    <div class="h23s-panel" id="panel-feeder">
+      <h2 class="h23s-panel-title">Document Feeder</h2>
+      <p class="h23s-panel-desc">
+        Configure what documents get ingested into your agent's brain and how they're processed.
+        These settings target the selected agent and save to its <code>instances/&lt;agent&gt;/config.yaml</code>,
+        with <code>configs/base-engine.yaml</code> acting only as the fallback default. Some changes hot-apply; others require that agent's engine to restart.
+      </p>
+
+      <!-- Live status footer (also pinned at top for visibility) -->
+      <div class="h23s-section" id="feeder-live-status-section">
+        <h3 class="h23s-section-title">Live Status</h3>
+        <div class="h23s-field-row" id="feeder-live-status">
+          <div class="h23s-field"><label>Started</label><div id="fd-live-started">—</div></div>
+          <div class="h23s-field"><label>Watchers</label><div id="fd-live-watchers">—</div></div>
+          <div class="h23s-field"><label>Files</label><div id="fd-live-files" title="Files tracked in the ingestion manifest">—</div></div>
+          <div class="h23s-field"><label>Compiled</label><div id="fd-live-compiled" title="Files passed through the LLM compiler">—</div></div>
+          <div class="h23s-field"><label>Quarantined</label><div id="fd-live-quarantined" title="Files the feeder tried to ingest but rejected (conversion failure, truncation, unsupported format)">—</div></div>
+          <div class="h23s-field"><label>Pending</label><div id="fd-live-pending" title="Files currently queued for flush to the brain (live from the engine)">—</div></div>
+          <div class="h23s-field"><label>Converter</label><div id="fd-live-converter">—</div></div>
+        </div>
+        <div class="h23s-action-row" style="margin-top:8px;">
+          <button class="h23s-btn-secondary" id="btn-feeder-refresh">Refresh</button>
+          <button class="h23s-btn-secondary" id="btn-feeder-flush">Force Flush Now</button>
+          <span class="h23s-save-status" id="feeder-action-status"></span>
+        </div>
+      </div>
+
+      <!-- Paths & Patterns -->
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Paths &amp; Patterns</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">
+          The orchestrator always watches the drop zone and the agent's workspace directory.
+          Add additional paths here to ingest files from elsewhere on your machine.
+        </p>
+
+        <div id="fd-auto-paths" style="margin-bottom:12px;"></div>
+
+        <label class="h23s-section-title" style="font-size:0.85em;">Additional Watch Paths</label>
+        <div id="fd-watch-paths"></div>
+        <button class="h23s-btn-secondary" id="btn-fd-add-path" style="margin-top:8px;">+ Add Watch Path</button>
+
+        <div class="h23s-field" style="margin-top:16px;">
+          <label>Exclude Patterns (one per line, glob syntax)</label>
+          <textarea id="fd-exclude-patterns" rows="4" placeholder="node_modules/**&#10;.git/**&#10;*.pyc"></textarea>
+        </div>
+      </div>
+
+      <!-- Frequency & Batching -->
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Frequency &amp; Batching</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">Drives when pending documents are flushed from the ingestion queue to the live brain. Interactive uploads always trigger a debounced fast flush regardless of these settings.</p>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label>Flush interval (seconds)</label>
+            <input type="number" id="fd-flush-interval" min="5" max="3600" value="30">
+          </div>
+          <div class="h23s-field">
+            <label>Batch size</label>
+            <input type="number" id="fd-batch-size" min="1" max="500" value="20">
+          </div>
+          <div class="h23s-field">
+            <label>Max chunk size (chars)</label>
+            <input type="number" id="fd-chunk-size" min="500" max="10000" value="3000">
+          </div>
+          <div class="h23s-field">
+            <label>Chunk overlap (chars)</label>
+            <input type="number" id="fd-chunk-overlap" min="0" max="2000" value="300">
+          </div>
+        </div>
+      </div>
+
+      <!-- Compiler -->
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Document Compiler</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">
+          The compiler runs raw documents through an LLM to extract concepts, relationships, and insights
+          before they enter your agent's brain. Disabling means documents go in as raw chunks — lower quality, more noise.
+        </p>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label>Enabled</label>
+            <input type="checkbox" id="fd-compiler-enabled" checked>
+          </div>
+          <div class="h23s-field" style="flex:2;">
+            <label>Compiler Model</label>
+            <select id="fd-compiler-model"></select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Converter -->
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Binary Format Converter</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">
+          Uses MarkItDown (Python) to convert PDFs, DOCX, images, audio, and other binary formats to markdown before ingestion.
+          Requires <code>pip install markitdown</code>. Vision model needs OpenAI API access.
+        </p>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label>Enabled</label>
+            <input type="checkbox" id="fd-converter-enabled" checked>
+          </div>
+          <div class="h23s-field">
+            <label>Vision Model</label>
+            <select id="fd-converter-vision"></select>
+          </div>
+          <div class="h23s-field">
+            <label>Python Path</label>
+            <input type="text" id="fd-converter-python" value="python3">
+          </div>
+          <div class="h23s-field">
+            <label>Status</label>
+            <div id="fd-converter-status">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Save actions + restart banner -->
+      <div class="h23s-actions">
+        <button class="h23s-btn-primary" id="btn-save-feeder">Save Feeder Settings</button>
+        <span class="h23s-save-status" id="feeder-status"></span>
+      </div>
+      <div class="h23s-section" id="feeder-restart-banner" style="display:none; margin-top:8px; padding:12px; background:rgba(251,146,60,0.1); border:1px solid #fb923c; border-radius:8px;">
+        <strong style="color:#fb923c;">⚠️ Engine restart required</strong>
+        <p style="margin:4px 0 8px 0; font-size:0.9em;">Some settings you changed need the selected agent's engine to restart: <span id="fd-restart-list"></span></p>
+        <button class="h23s-btn-secondary" id="btn-feeder-restart-engine">Restart Selected Agent Engine</button>
+      </div>
+
+      <!-- Drop zone -->
+      <div class="h23s-section" style="margin-top:32px;">
+        <h3 class="h23s-section-title">Drop Zone</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">
+          Drag and drop files to ingest them into your agent's brain. Files land in the watched
+          drop zone directory and are auto-processed within a second. Max 100MB per file, 20 files per upload.
+        </p>
+        <div class="h23s-field" style="max-width:300px;">
+          <label>Label (optional — groups uploads)</label>
+          <input type="text" id="fd-upload-label" value="dropzone" placeholder="dropzone">
+        </div>
+        <div class="h23s-dropzone" id="fd-dropzone">
+          <div class="h23s-dropzone-inner">
+            <div class="h23s-dropzone-icon">⬇</div>
+            <div class="h23s-dropzone-text">Drop files here or click to browse</div>
+            <div class="h23s-dropzone-subtext">Any format — text files go direct, binaries via the converter</div>
+          </div>
+          <input type="file" id="fd-file-input" multiple style="display:none;">
+        </div>
+        <div id="fd-upload-progress"></div>
+      </div>
+
+    </div>
+
+    <!-- Skills Panel -->
+    <div class="h23s-panel" id="panel-skills">
+      <h2 class="h23s-panel-title">Skills</h2>
+      <p class="h23s-panel-desc">
+        Shared skills are host-wide capabilities for all Home23 agents on this machine. Public skill settings live in
+        <code id="skills-config-path">config/home.yaml</code>; credentials live in
+        <code id="skills-secrets-path">config/secrets.yaml</code>.
+      </p>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Skill Catalog</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">Use this to see what the shared skill system currently exposes, how healthy each skill is, and which ones need credentials.</p>
+        <div id="skills-catalog"></div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">X Research</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">
+          Read-only X/Twitter research uses its own X API bearer token. This is stored host-wide so any Home23 agent can use the skill without per-user shell setup.
+        </p>
+        <div class="h23s-field-row">
+          <div class="h23s-field" style="flex:2;">
+            <label>Bearer Token</label>
+            <input type="password" id="xresearch-token" placeholder="Paste X API bearer token">
+            <span class="h23s-hint" id="xresearch-token-current">No token configured</span>
+          </div>
+          <div class="h23s-field">
+            <label>Watchlist Accounts</label>
+            <div id="xresearch-watchlist-count">0</div>
+          </div>
+        </div>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label><input type="checkbox" id="xresearch-default-quick"> Default to quick mode</label>
+            <span class="h23s-hint">Cheap pulse checks first unless a prompt explicitly asks for deeper research.</span>
+          </div>
+          <div class="h23s-field">
+            <label><input type="checkbox" id="xresearch-default-markdown"> Save markdown artifacts by default</label>
+            <span class="h23s-hint">Writes research summaries into the workspace report path automatically.</span>
+          </div>
+        </div>
+        <div class="h23s-field">
+          <label><input type="checkbox" id="xresearch-clear-token"> Clear stored bearer token on save</label>
+        </div>
+      </div>
+
+      <div class="h23s-actions">
+        <button class="h23s-btn-primary" id="btn-save-skills">Save Skill Settings</button>
+        <span class="h23s-save-status" id="skills-status"></span>
+      </div>
+    </div>
+
+    <!-- Vibe Panel -->
+    <div class="h23s-panel" id="panel-vibe">
+      <h2 class="h23s-panel-title">Vibe</h2>
+      <p class="h23s-panel-desc">Controls the dashboard Vibe tile — CHAOS MODE image generation, archive rotation, and optional dream augmentation that pulls symbolic motifs from the agent's most recent dreams.</p>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Generation &amp; Rotation</h3>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label><input type="checkbox" id="vibe-autogen"> Auto-generate</label>
+          </div>
+          <div class="h23s-field">
+            <label>Generation Interval (hours)</label>
+            <input type="number" id="vibe-gen-hours" min="1" step="1" value="12">
+          </div>
+          <div class="h23s-field">
+            <label>Rotation Interval (seconds)</label>
+            <input type="number" id="vibe-rot-seconds" min="15" step="5" value="45">
+          </div>
+          <div class="h23s-field">
+            <label>Gallery Limit</label>
+            <input type="number" id="vibe-gallery-limit" min="1" step="1" value="60">
+          </div>
+        </div>
+        <div class="h23s-field-row" style="margin-top:12px;">
+          <div class="h23s-field">
+            <label>Image Provider</label>
+            <select id="vibe-image-provider"></select>
+          </div>
+          <div class="h23s-field">
+            <label>Image Model</label>
+            <select id="vibe-image-model"></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">External Sources</h3>
+        <p class="h23s-panel-desc">Additional directories of images to mix into the Vibe cycle. One absolute path per line (use <code>~/</code> for your home directory). Images from these folders are displayed alongside CHAOS MODE generations — sorted by file modification time, newest first.</p>
+        <div class="h23s-field-row">
+          <div class="h23s-field" style="flex: 1 1 100%;">
+            <label>Source Paths</label>
+            <textarea id="vibe-source-paths" rows="4" placeholder="~/websites/cosmoimages.evobrew.com&#10;/Users/me/Pictures/wallpapers" style="width: 100%; font-family: inherit;"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Dream Augmentation</h3>
+        <p class="h23s-panel-desc">When enabled, the vibe service reads the N most recent dreams from the agent's brain and extracts symbolic motifs. Motifs are woven into CHAOS MODE prompts as texture and atmosphere, never as the literal subject.</p>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label><input type="checkbox" id="vibe-dreams-enabled"> Enable dream augmentation</label>
+          </div>
+          <div class="h23s-field">
+            <label>Dream Lookback</label>
+            <input type="number" id="vibe-dreams-lookback" min="1" max="10" step="1" value="3">
+          </div>
+          <div class="h23s-field">
+            <label>Extraction Method</label>
+            <select id="vibe-dreams-extraction">
+              <option value="heuristic">Heuristic (phrase mining)</option>
+              <option value="llm">LLM pre-pass</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <button class="h23s-btn-primary" id="vibe-save">Save Vibe Settings</button>
+        <span id="vibe-save-status" class="h23s-status"></span>
+      </div>
+    </div>
+
+    <!-- Tiles Panel -->
+    <div class="h23s-panel" id="panel-tiles">
+      <h2 class="h23s-panel-title">Tiles</h2>
+      <p class="h23s-panel-desc">
+        Compose the Home dashboard without code changes. Layout controls the full Home tab.
+        Custom tiles use reusable connections stored in <code>config/secrets.yaml</code>; tile definitions live in <code>config/home.yaml</code>.
+      </p>
+
+      <div class="h23s-section">
+        <div class="h23s-panel-header">
+          <div>
+            <h3 class="h23s-section-title">Layout</h3>
+            <p class="h23s-panel-desc" style="margin:0;">Drag rows to reorder the Home tab. Toggle visibility and set each tile's width.</p>
+          </div>
+        </div>
+        <div id="tiles-layout-list" class="h23s-layout-list"></div>
+      </div>
+
+      <div class="h23s-section">
+        <div class="h23s-panel-header">
+          <div>
+            <h3 class="h23s-section-title">Tiles</h3>
+            <p class="h23s-panel-desc" style="margin:0;">Create custom weather, sauna, or advanced HTTP/JSON tiles.</p>
+          </div>
+          <button class="h23s-btn-secondary" id="btn-new-custom-tile">+ New Tile</button>
+        </div>
+
+        <div id="custom-tiles-list" class="h23s-card-list"></div>
+
+        <div class="h23s-builder-card">
+          <div class="h23s-builder-title" id="custom-tile-builder-title">Tile Builder</div>
+          <div class="h23s-field-row">
+            <div class="h23s-field">
+              <label>Title</label>
+              <input type="text" id="tile-title" placeholder="Weather">
+            </div>
+            <div class="h23s-field">
+              <label>Tile ID</label>
+              <input type="text" id="tile-id" placeholder="weather">
+            </div>
+          </div>
+          <div class="h23s-field-row">
+            <div class="h23s-field">
+              <label>Icon</label>
+              <input type="text" id="tile-icon" placeholder="🌤">
+            </div>
+            <div class="h23s-field">
+              <label>Mode</label>
+              <select id="tile-mode"></select>
+            </div>
+          </div>
+          <div class="h23s-field-row">
+            <div class="h23s-field">
+              <label>Connection</label>
+              <select id="tile-connection"></select>
+            </div>
+            <div class="h23s-field">
+              <label>Refresh (ms)</label>
+              <input type="number" id="tile-refresh-ms" min="5000" step="1000" value="30000">
+            </div>
+          </div>
+          <div class="h23s-field-row">
+            <div class="h23s-field">
+              <label>Default Width</label>
+              <select id="tile-size-default">
+                <option value="third">third</option>
+                <option value="half">half</option>
+                <option value="full">full</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="tile-mode-fields"></div>
+
+          <div class="h23s-action-row">
+            <button class="h23s-btn-primary" id="btn-stage-custom-tile">Save Tile Draft</button>
+            <button class="h23s-btn-secondary" id="btn-reset-custom-tile">Clear</button>
+            <span class="h23s-save-status" id="custom-tile-form-status"></span>
+          </div>
+        </div>
+
+        <div class="h23s-actions">
+          <button class="h23s-btn-primary" id="btn-save-tiles">Save Tile Settings</button>
+          <span class="h23s-save-status" id="tiles-status"></span>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <div class="h23s-panel-header">
+          <div>
+            <h3 class="h23s-section-title">Connections</h3>
+            <p class="h23s-panel-desc" style="margin:0;">Reusable secret-backed connections for all custom tiles.</p>
+          </div>
+          <button class="h23s-btn-secondary" id="btn-new-tile-connection">+ New Connection</button>
+        </div>
+
+        <div id="tile-connections-list" class="h23s-card-list"></div>
+
+        <div class="h23s-builder-card">
+          <div class="h23s-builder-title" id="tile-connection-builder-title">Connection Builder</div>
+          <div class="h23s-field-row">
+            <div class="h23s-field">
+              <label>Name</label>
+              <input type="text" id="tile-connection-name" placeholder="House Weather">
+            </div>
+            <div class="h23s-field">
+              <label>Connection ID</label>
+              <input type="text" id="tile-connection-id" placeholder="house-weather">
+            </div>
+          </div>
+          <div class="h23s-field-row">
+            <div class="h23s-field">
+              <label>Type</label>
+              <select id="tile-connection-type"></select>
+            </div>
+          </div>
+
+          <div id="tile-connection-fields"></div>
+
+          <div class="h23s-action-row">
+            <button class="h23s-btn-primary" id="btn-stage-tile-connection">Save Connection Draft</button>
+            <button class="h23s-btn-secondary" id="btn-reset-tile-connection">Clear</button>
+            <span class="h23s-save-status" id="tile-connection-form-status"></span>
+          </div>
+        </div>
+
+        <div class="h23s-actions">
+          <button class="h23s-btn-primary" id="btn-save-tile-connections">Save Connections</button>
+          <span class="h23s-save-status" id="tile-connections-status"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Agency Panel -->
+    <div class="h23s-panel" id="panel-agency">
+      <h2 class="h23s-panel-title">Agency — Autonomous Actions</h2>
+      <p class="h23s-panel-desc">The allow-list below is house-wide. The audit trails at the bottom show what <strong data-scope-label="agency">the selected agent</strong> actually tried and executed.</p>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Global</h3>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label>
+              <input type="checkbox" id="agency-global-enabled" />
+              <span>Allow autonomous actions (master switch)</span>
+            </label>
+          </div>
+          <div class="h23s-field">
+            <label>Global max/hour (safety cap)</label>
+            <input type="number" id="agency-global-rate" min="0" step="10" style="width:120px;" />
+          </div>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Actions</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">Toggle actions on/off, flip into dry-run (logs intent only, no side effect), adjust per-action rate limits. Changes hot-apply — no restart.</p>
+        <div id="agency-actions-list" style="display:flex;flex-direction:column;gap:10px;"></div>
+        <div class="h23s-actions" style="border-top:none;padding-top:8px;">
+          <button class="h23s-btn-primary" id="btn-save-agency">Save</button>
+          <span class="h23s-save-status" id="agency-status"></span>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Integrations</h3>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label>
+              <input type="checkbox" id="agency-bridge-enabled" />
+              <span>iOS Shortcut bridge enabled</span>
+            </label>
+          </div>
+          <div class="h23s-field">
+            <label>Shortcut bridge URL</label>
+            <input type="text" id="agency-bridge-url" placeholder="http://localhost:9876/shortcut" />
+          </div>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Recent Actions</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">Live audit trail for <strong data-scope-label="agency">the selected agent</strong>. Intent is logged before the handler runs; outcome after. Refreshes every 5s.</p>
+        <div id="agency-recent-list" style="max-height:420px;overflow-y:auto;border:1px solid var(--glass-border);border-radius:8px;padding:6px;background:rgba(0,0,0,0.15);"></div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Rejected Requests</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">Actions <strong data-scope-label="agency">the selected agent</strong> tried but weren't in the allow-list. Worth watching — these are requests for new capabilities.</p>
+        <div id="agency-requested-list" style="max-height:240px;overflow-y:auto;border:1px solid var(--glass-border);border-radius:8px;padding:6px;background:rgba(0,0,0,0.15);"></div>
+      </div>
+    </div>
+
+    <!-- System Panel -->
+    <div class="h23s-panel" id="panel-system">
+      <h2 class="h23s-panel-title">System</h2>
+      <p class="h23s-panel-desc">Ports, embeddings, chat defaults, and maintenance actions.</p>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Ports</h3>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label>Evobrew Port</label>
+            <input type="number" id="sys-evobrew-port" value="3415">
+          </div>
+          <div class="h23s-field">
+            <label>COSMO App Port</label>
+            <input type="number" id="sys-cosmo-app" value="43210">
+          </div>
+          <div class="h23s-field">
+            <label>COSMO WebSocket</label>
+            <input type="number" id="sys-cosmo-ws" value="43240">
+          </div>
+          <div class="h23s-field">
+            <label>COSMO Dashboard</label>
+            <input type="number" id="sys-cosmo-dash" value="43244">
+          </div>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Chat Defaults</h3>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label>Max Tokens</label>
+            <input type="number" id="sys-max-tokens" value="4096">
+          </div>
+          <div class="h23s-field">
+            <label>Temperature</label>
+            <input type="number" id="sys-temperature" step="0.1" min="0" max="2" value="0.7">
+          </div>
+          <div class="h23s-field">
+            <label>History Budget</label>
+            <input type="number" id="sys-history-budget" value="400000">
+          </div>
+          <div class="h23s-field">
+            <label>Session Gap (ms)</label>
+            <input type="number" id="sys-session-gap" value="1800000">
+          </div>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Embeddings</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;color:#fb923c;">Changing the embedding model or dimensions requires re-ingesting all documents. Existing brain embeddings become incompatible with the new model.</p>
+        <div class="h23s-memory-readiness" id="memory-readiness">
+        </div>
+        <div class="h23s-embed-list" id="embeddings-list">
+        </div>
+        <button class="h23s-btn-secondary" id="btn-add-embedding" style="margin-top:8px;">+ Add Embedding Provider</button>
+        <button class="h23s-btn-secondary" id="btn-backfill-embeddings" style="margin-top:8px;margin-left:8px;">Backfill Semantic Memory</button>
+      </div>
+
+      <div class="h23s-actions">
+        <button class="h23s-btn-primary" id="btn-save-system">Save</button>
+        <span class="h23s-save-status" id="system-status"></span>
+      </div>
+
+      <div class="h23s-section" style="margin-top:32px;">
+        <h3 class="h23s-section-title">Maintenance</h3>
+        <div class="h23s-action-row">
+          <button class="h23s-btn-secondary" id="btn-install-deps">Install Dependencies</button>
+          <button class="h23s-btn-secondary" id="btn-build-ts">Build TypeScript</button>
+        </div>
+        <pre class="h23s-action-output" id="action-output" style="display:none;"></pre>
+      </div>
+    </div>
+
+      </main>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
+  <script src="/home23-settings.js?v=20260526-settings-routing"></script>
+  <script>
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (!reduceMotion && typeof particlesJS !== 'undefined') {
+      particlesJS('particles-js', {
+        particles: {
+          number: { value: 40, density: { enable: true, value_area: 1000 } },
+          color: { value: ['#ffffff', '#007AFF', '#00C7BE', '#30D158'] },
+          shape: { type: 'circle' },
+          opacity: { value: 0.3, random: true, anim: { enable: true, speed: 1, opacity_min: 0.1, sync: false } },
+          size: { value: 3, random: true, anim: { enable: true, speed: 2, size_min: 1, sync: false } },
+          line_linked: { enable: true, distance: 200, color: '#ffffff', opacity: 0.15, width: 1 },
+          move: { enable: true, speed: 0.8, direction: 'none', random: true, straight: false, out_mode: 'out', bounce: false }
+        },
+        interactivity: {
+          detect_on: 'canvas',
+          events: { onhover: { enable: true, mode: 'bubble' }, onclick: { enable: false }, resize: true },
+          modes: { bubble: { distance: 200, size: 6, duration: 2, opacity: 0.6, speed: 3 } }
+        },
+        retina_detect: true
+      });
+    }
+  </script>
+</body>
+</html>

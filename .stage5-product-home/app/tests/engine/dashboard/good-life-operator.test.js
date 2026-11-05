@@ -1,0 +1,2799 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const {
+  buildGoodLifeOperatorModel,
+  buildLiveProblemSnapshot,
+  buildGoodLifeObligationSnapshot,
+  buildDoctrineAdoptionSnapshot,
+  buildPublishingDistributionReadiness,
+  buildRuntimeMaintenancePosture,
+  buildAutonomySubstratePosture,
+} = require('../../../engine/src/dashboard/good-life-operator.js');
+
+const NOW = '2026-05-08T13:45:00.000Z';
+
+function goodLifeState(overrides = {}) {
+  return {
+    evaluatedAt: '2026-05-08T13:42:00.000Z',
+    summary: 'help - strained continuity drift (continuity:strained, usefulness:watch)',
+    policy: {
+      mode: 'help',
+      reason: 'strained continuity drift',
+      actionCard: {
+        intent: 'help',
+        goodLifeLanes: ['continuity', 'usefulness'],
+        evidenceRequired: true,
+        riskTier: 0,
+        reversible: true,
+        expectedOutcome: 'jtr-visible work advances or a blocked decision is surfaced',
+        stopCondition: 'action is completed, refused, or converted into a bounded goal',
+      },
+    },
+    lanes: {
+      viability: { status: 'healthy', reasons: ['core engine evidence is flowing'] },
+      continuity: { status: 'strained', reasons: ['16 open goals', '145 pending agenda item(s)'] },
+      usefulness: { status: 'watch', reasons: ['usefulness must be proven by visible progress'] },
+    },
+    evidence: {
+      liveProblems: { open: 0, chronic: 0, resolved: 12, unverifiable: 0, total: 12 },
+      goals: { open: 16, total: 16 },
+      agenda: { pending: 145 },
+    },
+    ...overrides,
+  };
+}
+
+test('live-problem snapshot separates open, chronic, resolved, and unverifiable rows', () => {
+  const snapshot = buildLiveProblemSnapshot([
+    { id: 'open_1', state: 'open', claim: 'Open thing', openedAt: '2026-05-08T13:40:00.000Z' },
+    { id: 'chronic_1', state: 'chronic', claim: 'Chronic thing', openedAt: '2026-05-08T13:00:00.000Z', lastResult: { detail: 'still failing' } },
+    {
+      id: 'resolved_1',
+      state: 'resolved',
+      claim: 'Resolved thing',
+      resolvedAt: '2026-05-08T13:44:00.000Z',
+      evidence: { receiptId: 'ev_1', result: 'pass' },
+      remediation: [{ type: 'dispatch_to_worker', args: { worker: 'systems' } }],
+      remediationLog: [{ type: 'dispatch_to_worker', outcome: 'failed', detail: 'window still failing' }],
+    },
+    { id: 'unv_1', state: 'unverifiable', claim: 'No verifier' },
+  ], NOW);
+
+  assert.equal(snapshot.counts.open, 1);
+  assert.equal(snapshot.counts.chronic, 1);
+  assert.equal(snapshot.counts.resolved, 1);
+  assert.equal(snapshot.counts.unverifiable, 1);
+  assert.equal(snapshot.counts.interventionRequired, 0);
+  assert.equal(snapshot.open[0].ageMin, 5);
+  assert.equal(snapshot.chronic[0].detail, 'still failing');
+  assert.equal(snapshot.resolvedJustNow[0].id, 'resolved_1');
+  assert.equal(snapshot.resolved[0].id, 'resolved_1');
+  assert.equal(snapshot.resolved[0].evidence.receiptId, 'ev_1');
+  assert.equal(snapshot.resolved[0].remediation[0].type, 'dispatch_to_worker');
+  assert.equal(snapshot.resolved[0].lastRemediation.outcome, 'failed');
+});
+
+test('live-problem snapshot marks current user-intervention remediation steps', () => {
+  const snapshot = buildLiveProblemSnapshot([
+    {
+      id: 'needs_jtr',
+      state: 'open',
+      claim: 'Needs a human decision',
+      openedAt: '2026-05-08T13:00:00.000Z',
+      stepIndex: 1,
+      remediation: [
+        { type: 'dispatch_to_agent', args: { budgetHours: 2 } },
+        { type: 'notify_jtr', args: { text: 'Choose whether to restart the external bridge.' } },
+      ],
+    },
+  ], NOW);
+
+  assert.equal(snapshot.counts.interventionRequired, 1);
+  assert.equal(snapshot.open[0].nextRemediation.type, 'notify_jtr');
+  assert.equal(snapshot.open[0].intervention.required, true);
+  assert.equal(snapshot.open[0].intervention.reason, 'Choose whether to restart the external bridge.');
+});
+
+test('Good Life operator exposes intervention readiness before repair action', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evaluatedAt: NOW,
+      evidence: {
+        liveProblems: { open: 1, chronic: 0, resolved: 0, unverifiable: 0, total: 1 },
+        goals: { open: 1, total: 1 },
+        agenda: { pending: 0 },
+      },
+    }),
+    liveProblems: [
+      {
+        id: 'dashboard_ping',
+        state: 'open',
+        claim: 'dashboard should respond',
+        openedAt: '2026-05-08T13:30:00.000Z',
+        lastResult: { detail: 'HTTP 500 from dashboard ping', at: '2026-05-08T13:40:00.000Z' },
+        remediation: [
+          { type: 'run_verifier', args: { name: 'dashboard_ping' } },
+          { type: 'pm2_restart', args: { name: 'home23-jerry-dash' } },
+        ],
+      },
+    ],
+    runtime: {
+      ok: true,
+      services: [{ id: 'engine', label: 'engine', ok: true }],
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.interventionReadiness.schema, 'home23.intervention-readiness.v1');
+  assert.deepEqual(model.interventionReadiness.sourceIssues, [88]);
+  assert.equal(model.interventionReadiness.decision.kind, 'repair_live_problem');
+  assert.equal(model.interventionReadiness.decision.subject, 'dashboard_ping');
+  assert.equal(model.interventionReadiness.identifiable, true);
+  assert.ok(model.interventionReadiness.known.some((line) => /last verifier detail/.test(line)));
+  assert.match(model.interventionReadiness.viewDiscipline, /projection are views/);
+});
+
+test('Good Life obligation snapshot exposes active agenda rows and goals', () => {
+  const snapshot = buildGoodLifeObligationSnapshot({
+    agendaRows: [
+      { type: 'add', id: 'ag-1', record: { status: 'candidate', content: 'Check dashboard operator path', createdAt: '2026-05-08T13:00:00.000Z' } },
+      { type: 'add', id: 'ag-2', record: { status: 'candidate', content: 'Old Good Life item', createdAt: '2026-05-08T12:00:00.000Z', sourceSignal: 'good-life' } },
+      { type: 'status', id: 'ag-2', status: 'stale', at: '2026-05-08T13:10:00.000Z' },
+      { type: 'add', id: 'ag-3', record: { status: 'surfaced', content: 'Surface decision', createdAt: '2026-05-08T13:20:00.000Z' } },
+    ],
+    goals: {
+      active: [
+        ['goal_1', { id: 'goal_1', description: 'Resolve operator visibility gap', status: 'active', createdAt: '2026-05-08T13:30:00.000Z' }],
+      ],
+    },
+    now: NOW,
+  });
+
+  assert.equal(snapshot.counts.activeAgenda, 2);
+  assert.equal(snapshot.counts.activeGoals, 1);
+  assert.deepEqual(snapshot.activeAgenda.map((row) => row.id), ['ag-3', 'ag-1']);
+  assert.equal(snapshot.activeGoals[0].id, 'goal_1');
+  assert.equal(snapshot.activeGoals[0].description, 'Resolve operator visibility gap');
+  assert.equal(snapshot.activeGoals[0].review.recommended, false);
+  assert.equal(snapshot.latestAgendaById['ag-2'].status, 'stale');
+  assert.equal(snapshot.latestAgendaById['ag-3'].status, 'surfaced');
+});
+
+test('Good Life obligation snapshot compacts force-output goal prompts for operator display', () => {
+  const snapshot = buildGoodLifeObligationSnapshot({
+    goals: {
+      active: [
+        ['goal_force', {
+          id: 'goal_force',
+          description: 'Produce outputs/digest-6427.md. Synthesize these findings from recent memory:\\n  - [#1 tag=agent_insight] internal retrieval note',
+          status: 'active',
+          source: 'force-output',
+          createdAt: '2026-05-08T13:30:00.000Z',
+        }],
+      ],
+    },
+    now: NOW,
+  });
+
+  assert.equal(snapshot.activeGoals[0].description, 'Produce outputs/digest-6427.md');
+  assert.match(snapshot.activeGoals[0].rawDescription, /Synthesize these findings/);
+});
+
+test('Good Life obligation snapshot reports promised output artifact status', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-good-life-output-'));
+  const outputsDir = path.join(dir, 'outputs');
+  fs.mkdirSync(outputsDir, { recursive: true });
+  fs.writeFileSync(path.join(outputsDir, 'digest-6427.md'), '# Digest\n');
+
+  try {
+    const ready = buildGoodLifeObligationSnapshot({
+      goals: {
+        active: [
+          ['goal_ready', {
+            id: 'goal_ready',
+            description: 'Produce outputs/digest-6427.md. Synthesize current evidence.',
+            status: 'active',
+            source: 'force-output',
+            createdAt: '2026-05-08T13:30:00.000Z',
+          }],
+        ],
+      },
+      outputRoots: [dir],
+      now: NOW,
+    });
+
+    assert.equal(ready.activeGoals[0].artifact.exists, true);
+    assert.equal(ready.activeGoals[0].artifact.relativePath, 'outputs/digest-6427.md');
+    assert.match(ready.activeGoals[0].artifact.path, /digest-6427\.md$/);
+
+    const pending = buildGoodLifeObligationSnapshot({
+      goals: {
+        active: [
+          ['goal_pending', {
+            id: 'goal_pending',
+            description: 'Produce outputs/missing.md. Synthesize current evidence.',
+            status: 'active',
+            source: 'force-output',
+            createdAt: '2026-05-08T13:30:00.000Z',
+          }],
+        ],
+      },
+      outputRoots: [dir],
+      now: NOW,
+    });
+
+    assert.equal(pending.activeGoals[0].artifact.exists, false);
+    assert.equal(pending.activeGoals[0].artifact.relativePath, 'outputs/missing.md');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Good Life obligation snapshot flags stale force-output goals for operator review', () => {
+  const snapshot = buildGoodLifeObligationSnapshot({
+    goals: {
+      active: [
+        ['goal_force', {
+          id: 'goal_force',
+          description: 'Produce outputs/digest-6382.md',
+          status: 'active',
+          source: { origin: 'force-output', label: 'force-output' },
+          progress: 0,
+          createdAt: '2026-05-07T23:00:00.000Z',
+        }],
+      ],
+    },
+    now: NOW,
+  });
+
+  assert.equal(snapshot.activeGoals[0].review.recommended, true);
+  assert.equal(snapshot.activeGoals[0].review.required, false);
+  assert.match(snapshot.activeGoals[0].review.reason, /force-output goal/);
+});
+
+test('Good Life obligation snapshot flags stale active agenda rows for operator review', () => {
+  const snapshot = buildGoodLifeObligationSnapshot({
+    agendaRows: [
+      {
+        type: 'add',
+        id: 'ag-old-good-life',
+        record: {
+          status: 'candidate',
+          content: 'Diagnose Good Life repair drift',
+          sourceSignal: 'good-life',
+          topicTags: ['good-life', 'good-life:repair'],
+          createdAt: '2026-05-08T11:30:00.000Z',
+        },
+      },
+      {
+        type: 'add',
+        id: 'ag-old-ack',
+        record: {
+          status: 'acknowledged',
+          content: 'Old acknowledged work',
+          createdAt: '2026-05-07T11:30:00.000Z',
+        },
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(snapshot.activeAgenda.length, 2);
+  assert.equal(snapshot.activeAgenda[0].review.recommended, true);
+  assert.match(snapshot.activeAgenda[0].review.reason, /Good Life agenda row/);
+  assert.equal(snapshot.activeAgenda[0].review.suggestedWorker.worker, 'systems');
+  assert.equal(snapshot.activeAgenda[0].review.suggestedWorker.inferred, true);
+  assert.equal(snapshot.activeAgenda[1].review.recommended, true);
+  assert.match(snapshot.activeAgenda[1].review.reason, /acknowledged agenda row/);
+});
+
+test('Good Life obligation snapshot suggests systems worker for fresh friction rest rows', () => {
+  const snapshot = buildGoodLifeObligationSnapshot({
+    agendaRows: [
+      {
+        type: 'add',
+        id: 'ag-fresh-good-life-rest',
+        record: {
+          status: 'candidate',
+          content: 'Diagnose Good Life friction drift and reduce loop pressure',
+          sourceSignal: 'good-life',
+          topicTags: ['good-life', 'good-life:friction', 'mode:rest'],
+          createdAt: '2026-05-08T13:30:00.000Z',
+        },
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(snapshot.activeAgenda.length, 1);
+  assert.equal(snapshot.activeAgenda[0].review.recommended, false);
+  assert.equal(snapshot.activeAgenda[0].review.severity, 'ok');
+  assert.equal(snapshot.activeAgenda[0].review.suggestedWorker.worker, 'systems');
+  assert.equal(snapshot.activeAgenda[0].review.suggestedWorker.inferred, true);
+});
+
+test('Good Life obligation snapshot suggests workers for stale legacy agenda topics', () => {
+  const snapshot = buildGoodLifeObligationSnapshot({
+    agendaRows: [
+      {
+        type: 'add',
+        id: 'ag-old-memory',
+        record: {
+          status: 'surfaced',
+          content: 'Audit persistent context copies across workspaces and consolidate canonical memory',
+          sourceSignal: 'anomaly',
+          topicTags: ['system', 'memory'],
+          createdAt: '2026-05-07T11:30:00.000Z',
+        },
+      },
+      {
+        type: 'add',
+        id: 'ag-old-cron',
+        record: {
+          status: 'surfaced',
+          content: 'Verify Pi API cron job is fetching recent running data',
+          sourceSignal: 'anomaly',
+          topicTags: ['cron', 'data ingestion'],
+          createdAt: '2026-05-07T11:30:00.000Z',
+        },
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(snapshot.activeAgenda[0].review.suggestedWorker.worker, 'memory');
+  assert.equal(snapshot.activeAgenda[1].review.suggestedWorker.worker, 'freshness');
+});
+
+test('Good Life obligation snapshot attaches manifest-first contract to active agenda rows', () => {
+  const snapshot = buildGoodLifeObligationSnapshot({
+    agendaRows: [
+      {
+        type: 'add',
+        id: 'ag-manifest',
+        record: {
+          status: 'candidate',
+          content: 'Diagnose Good Life repair drift with systems evidence',
+          sourceSignal: 'good-life',
+          topicTags: ['good-life', 'good-life:repair'],
+          createdAt: '2026-05-08T13:30:00.000Z',
+          temporalContext: {
+            policy: 'repair',
+            workerRoute: {
+              worker: 'systems',
+              reason: 'host and process evidence required',
+            },
+          },
+        },
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.deepEqual(snapshot.activeAgenda[0].manifest, {
+    schema: 'home23.good-life.work-manifest.v1',
+    subjectType: 'agenda',
+    subjectId: 'ag-manifest',
+    allowedTransition: 'dispatch_worker:systems',
+    forbiddenAdjacentMoves: [
+      'do not restart unrelated services',
+      'do not mutate unrelated agenda or goal state',
+      'do not claim completion without a verifier-bearing receipt',
+    ],
+    stopLine: 'stop after worker receipt records pass, fail, or blocked for ag-manifest',
+    sourceSurface: 'agenda.jsonl#ag-manifest',
+    verifier: 'worker receipt must report verifierStatus pass, fail, or blocked',
+    receipt: 'worker receipt source.type=good-life-agenda source.id=ag-manifest',
+    artifact: null,
+    authority: 'agenda event stream proposes work; worker receipt and verifier evidence decide whether it completed',
+  });
+});
+
+test('Good Life obligation snapshot attaches manifest-first contract to output goals', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-good-life-manifest-'));
+  try {
+    const snapshot = buildGoodLifeObligationSnapshot({
+      goals: {
+        active: [
+          ['goal_manifest', {
+            id: 'goal_manifest',
+            description: 'Produce outputs/digest-9000.md. Synthesize current evidence.',
+            status: 'active',
+            source: 'force-output',
+            createdAt: '2026-05-08T13:30:00.000Z',
+          }],
+        ],
+      },
+      outputRoots: [dir],
+      now: NOW,
+    });
+
+    assert.deepEqual(snapshot.activeGoals[0].manifest, {
+      schema: 'home23.good-life.work-manifest.v1',
+      subjectType: 'goal',
+      subjectId: 'goal_manifest',
+      allowedTransition: 'produce_artifact:outputs/digest-9000.md',
+      forbiddenAdjacentMoves: [
+        'do not rewrite unrelated goals',
+        'do not satisfy by narrative summary alone',
+        'do not mark complete until artifact or bounded resolution receipt exists',
+      ],
+      stopLine: 'stop after outputs/digest-9000.md exists or the goal is resolved/archived with a receipt',
+      sourceSurface: 'brain-snapshot.activeGoals#goal_manifest',
+      verifier: 'artifact must exist at one checked output path',
+      receipt: 'goal resolution or worker receipt must cite goal_manifest and outputs/digest-9000.md',
+      artifact: {
+        relativePath: 'outputs/digest-9000.md',
+        exists: false,
+        path: path.join(dir, 'outputs/digest-9000.md'),
+      },
+      authority: 'active goal requests work; artifact and receipt evidence decide whether it completed',
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Good Life operator model exposes safe current help state with evidence and action card', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    commitments: {
+      commitments: [
+        { id: 'continuity', lane: 'continuity', active: true, status: 'strained', title: 'Preserve continuity' },
+        { id: 'useful-output', lane: 'usefulness', active: true, status: 'watch', title: 'Produce visible progress' },
+      ],
+    },
+    regulator: {
+      'help:continuity:strained|usefulness:watch': {
+        at: '2026-05-08T13:43:00.000Z',
+        agendaId: 'ag-gl-test',
+        mode: 'help',
+      },
+    },
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(model.status, 'current');
+  assert.equal(model.safeToInherit, true);
+  assert.equal(model.policy.mode, 'help');
+  assert.equal(model.freshness.ageMin, 3);
+  assert.deepEqual(model.liveProblems.counts, { open: 0, chronic: 0, resolved: 0, unverifiable: 0, interventionRequired: 0 });
+  assert.equal(model.consistency.ok, true);
+  assert.equal(model.actionCard.intent, 'help');
+  assert.equal(model.latestRegulatorAction.agendaId, 'ag-gl-test');
+  assert.equal(model.lanes.find((lane) => lane.name === 'continuity').active, true);
+  assert.ok(model.operatorAnswer.some((line) => line.includes('strained continuity drift')));
+  assert.deepEqual(model.operatorDigest.evidence, {
+    open: 0,
+    chronic: 0,
+    interventionRequired: 0,
+    activeWork: 0,
+    latestResolutionId: null,
+    targetTab: 'issues',
+  });
+  assert.equal(model.operatorDigest.issue, 'No active live problems');
+  assert.equal(model.operatorDigest.currentWork, 'No active routed work');
+  assert.equal(model.operatorDigest.userAction, 'No user action needed right now.');
+  assert.equal(model.provenance.schema, 'home23.good-life.provenance.v1');
+  assert.equal(model.provenance.projection.kind, 'projection');
+  assert.equal(model.provenance.evidence[0].surface, 'live-problems.json');
+  assert.equal(model.provenance.mergeDiscipline.latestWins, false);
+  assert.equal(model.provenance.correctionPolicy.tombstoneRequired, true);
+  assert.ok(model.provenance.doctrine.some((item) => item.issue === 102));
+});
+
+test('Good Life operator provenance preserves explicit source surfaces and conflicts', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 0, unverifiable: 0, total: 0 },
+        goals: { open: 0, total: 0 },
+      },
+    }),
+    liveProblems: [
+      { id: 'open_1', state: 'open', claim: 'Open thing', openedAt: '2026-05-08T13:40:00.000Z' },
+    ],
+    obligations: { activeAgenda: [], activeGoals: [], counts: { activeAgenda: 0, activeGoals: 0 } },
+    ledgerTail: [{ event: 'good_life.evaluated', at: NOW }],
+    runtime: { services: [{ id: 'dashboard', ok: true }] },
+    issueArc: {
+      schema: 'home23.from-the-inside.issue-arc.v1',
+      count: 93,
+      range: { first: 1, last: 102, missing: [6, 7] },
+      themes: { 'memory-coherence': [2, 85, 102], 'provenance-auditability': [86, 99, 100, 101, 102] },
+    },
+    sources: {
+      state: '/tmp/good-life-state.json',
+      liveProblems: '/tmp/live-problems.json',
+      ledger: '/tmp/good-life-ledger.jsonl',
+      agenda: '/tmp/agenda.jsonl',
+      issueArc: '/tmp/issue-arc.json',
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.status, 'conflicted');
+  assert.equal(model.provenance.projection.surface, '/tmp/good-life-state.json');
+  assert.equal(model.provenance.evidence[0].surface, '/tmp/live-problems.json');
+  assert.equal(model.provenance.evidence[1].entriesSampled, 1);
+  assert.equal(model.provenance.evidence[2].surface, '/tmp/agenda.jsonl');
+  assert.equal(model.provenance.evidence[3].services[0].id, 'dashboard');
+  assert.equal(model.provenance.curriculumArc.issuesRead, 93);
+  assert.equal(model.provenance.curriculumArc.source, '/tmp/issue-arc.json');
+  assert.equal(model.provenance.curriculumArc.themeCounts['provenance-auditability'], 5);
+  assert.ok(model.provenance.conflicts.some((warning) => warning.code === 'good_life_projection_mismatch'));
+});
+
+test('doctrine adoption snapshot only marks issue-derived doctrine reusable with source issue and implementation receipt', () => {
+  const snapshot = buildDoctrineAdoptionSnapshot({
+    schema: 'home23.from-the-inside.doctrine-adoption.v1',
+    sourceIssueArc: '/tmp/issue-arc.json',
+    entries: [
+      {
+        id: 'projection-provenance',
+        title: 'Projection provenance',
+        status: 'adopted',
+        sourceIssues: [102],
+        implementationReceipts: [{ commit: 'e617f4f', verifier: 'node --test tests/engine/dashboard/good-life-operator.test.js' }],
+        doctrineFiles: ['engine/src/dashboard/good-life-operator.js'],
+      },
+      {
+        id: 'low-provenance-orientation',
+        title: 'Orientation clue taxonomy',
+        status: 'candidate',
+        sourceIssues: [97],
+        implementationReceipts: [],
+      },
+      {
+        id: 'missing-source',
+        title: 'Receipt without source',
+        status: 'adopted',
+        sourceIssues: [],
+        implementationReceipts: [{ commit: 'abc1234' }],
+      },
+    ],
+  }, { source: '/tmp/doctrine-ledger.json', now: NOW });
+
+  assert.equal(snapshot.schema, 'home23.from-the-inside.doctrine-adoption.snapshot.v1');
+  assert.equal(snapshot.source, '/tmp/doctrine-ledger.json');
+  assert.equal(snapshot.counts.total, 3);
+  assert.equal(snapshot.counts.reusable, 1);
+  assert.equal(snapshot.counts.blocked, 2);
+  assert.equal(snapshot.reusable[0].id, 'projection-provenance');
+  assert.equal(snapshot.reusable[0].sourceIssue, 102);
+  assert.equal(snapshot.reusable[0].implementationReceipt.commit, 'e617f4f');
+  assert.equal(snapshot.blocked[0].id, 'low-provenance-orientation');
+  assert.equal(snapshot.blocked[0].reason, 'missing_implementation_receipt');
+  assert.equal(snapshot.blocked[1].reason, 'missing_source_issue');
+});
+
+test('Good Life provenance carries doctrine adoption receipts and blocks unreceipted curriculum doctrine', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    liveProblems: [],
+    doctrineAdoption: {
+      schema: 'home23.from-the-inside.doctrine-adoption.v1',
+      sourceIssueArc: '/tmp/issue-arc.json',
+      entries: [
+        {
+          id: 'manifest-first-work',
+          title: 'Manifest-first work',
+          status: 'adopted',
+          sourceIssues: [101],
+          implementationReceipts: [{ commit: '5da0108', verifier: 'node --test tests/engine/dashboard/good-life-operator.test.js' }],
+          doctrineFiles: ['engine/src/good-life/objective.js'],
+        },
+        {
+          id: 'orientation-clue-taxonomy',
+          title: 'Orientation clue taxonomy',
+          status: 'candidate',
+          sourceIssues: [97],
+          implementationReceipts: [],
+        },
+      ],
+    },
+    sources: { doctrineAdoption: '/tmp/doctrine-ledger.json' },
+    now: NOW,
+  });
+
+  assert.equal(model.provenance.doctrineAdoption.source, '/tmp/doctrine-ledger.json');
+  assert.equal(model.provenance.doctrineAdoption.counts.reusable, 1);
+  assert.equal(model.provenance.doctrineAdoption.reusable[0].sourceIssue, 101);
+  assert.equal(model.provenance.doctrineAdoption.reusable[0].implementationReceipt.commit, '5da0108');
+  assert.equal(model.provenance.doctrineAdoption.blocked[0].sourceIssue, 97);
+  assert.equal(model.provenance.doctrineAdoption.blocked[0].reason, 'missing_implementation_receipt');
+  assert.deepEqual(model.detail.insights.doctrineAdoption, model.provenance.doctrineAdoption);
+});
+
+test('Good Life operator detail carries restraint receipts for deliberate non-action', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    liveProblems: [],
+    restraintReceipts: [
+      {
+        schema: 'home23.good-life.restraint-receipt.v1',
+        receiptId: 'gl-restraint-test',
+        status: 'blocked_self_maintenance_budget',
+        reason: 'self_maintenance_budget_exceeded',
+        policyMode: 'learn',
+        sourceIssue: 96,
+        at: '2026-05-08T13:44:00.000Z',
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(model.detail.insights.restraintReceipts.length, 1);
+  assert.equal(model.detail.insights.restraintReceipts[0].receiptId, 'gl-restraint-test');
+  assert.equal(model.detail.insights.restraintReceipts[0].status, 'blocked_self_maintenance_budget');
+  assert.equal(model.detail.insights.restraintReceipts[0].sourceIssue, 96);
+});
+
+test('Good Life operator emits correction tombstones when direct evidence demotes projection claims', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evaluatedAt: '2026-05-08T13:43:00.000Z',
+      evidence: {
+        liveProblems: { open: 1, chronic: 0, resolved: 0, unverifiable: 0, total: 1 },
+        goals: { open: 4, total: 4 },
+      },
+    }),
+    liveProblems: [],
+    obligations: {
+      activeAgenda: [],
+      activeGoals: [],
+      counts: {
+        activeAgenda: 0,
+        activeGoals: 2,
+        activeGoalsTrusted: true,
+        sourceUpdatedAt: '2026-05-08T13:44:00.000Z',
+      },
+    },
+    sources: {
+      state: '/tmp/good-life-state.json',
+      liveProblems: '/tmp/live-problems.json',
+      agenda: '/tmp/agenda.jsonl',
+    },
+    now: NOW,
+  });
+
+  assert.deepEqual(model.provenance.correctionTombstones.map((row) => row.subject), [
+    'liveProblems.open',
+    'goals.open',
+  ]);
+  assert.deepEqual(model.detail.insights.correctionTombstones, model.provenance.correctionTombstones);
+  assert.match(model.provenance.correctionTombstones[0].oldClaim, /projected 1 open live problem/);
+  assert.match(model.provenance.correctionTombstones[0].correctedClaim, /registry reports 0 open live problem/);
+  assert.equal(model.provenance.correctionTombstones[0].oldSurface, '/tmp/good-life-state.json');
+  assert.equal(model.provenance.correctionTombstones[0].correctingSurface, '/tmp/live-problems.json');
+  assert.equal(model.provenance.correctionTombstones[0].actionPosture, 'do_not_inherit_old_projection');
+  assert.equal(model.provenance.correctionTombstones[1].correctingSurface, '/tmp/agenda.jsonl');
+  assert.equal(model.provenance.correctionTombstones[1].sourceIssue, 102);
+});
+
+test('Good Life operator detail carries host pressure evidence for the UI', () => {
+  const host = {
+    cpu: { load1: 8.4, cpuCount: 10, loadRatio: 0.84 },
+    memory: { freePct: 2.3, freeBytes: 398344192, totalBytes: 17179869184 },
+    swap: { usedPct: 86.6, usedMb: 7977.06, totalMb: 9216 },
+    disk: { mount: '/', usagePct: 32 },
+    process: {
+      topCpuPct: 126,
+      totalCpuPctTopN: 403.9,
+      topRssBytes: 1073741824,
+      topProcess: { command: 'node engine/src/dashboard/server.js', cpuPct: 126 },
+      topMemoryProcess: { command: 'node engine/src/index.js', pm2Name: 'home23-jerry', rssBytes: 1073741824, memPct: 6.3 },
+    },
+  };
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 12, unverifiable: 0, total: 12 },
+        goals: { open: 0, total: 0 },
+        agenda: { pending: 0 },
+        host,
+      },
+    }),
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.deepEqual(model.detail.insights.host, host);
+});
+
+test('Good Life operator detail carries PM2 restart evidence for the UI', () => {
+  const pm2 = {
+    recentHome23Changes: 3,
+    invalidRestartCounters: 1,
+    processes: [
+      { name: 'home23-jerry-dash', role: 'agent-dashboard', lastChangeStatus: 'online', changes: 2, lastRestartCount: 952, lastAt: '2026-05-10T09:17:00.000Z' },
+      { name: 'home23-forrest-dash', role: 'agent-dashboard', lastChangeStatus: 'online', changes: 1, lastRestartCount: null, rawRestartCount: '171111111111111111111111', lastAt: '2026-05-10T09:18:00.000Z' },
+    ],
+  };
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 12, unverifiable: 0, total: 12 },
+        goals: { open: 0, total: 0 },
+        agenda: { pending: 0 },
+        pm2,
+      },
+    }),
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.deepEqual(model.detail.insights.pm2, pm2);
+});
+
+test('Good Life operator detail carries scheduler sovereignty evidence for the UI', () => {
+  const scheduler = {
+    totalJobs: 4,
+    enabledJobs: 3,
+    okJobs: 2,
+    failingJobs: 1,
+    maxConsecutiveErrors: 2,
+    path: '/tmp/conversations/cron-jobs.json',
+    worstJobs: [
+      { name: 'Health freshness job', lastStatus: 'error', consecutiveErrors: 2 },
+    ],
+  };
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 12, unverifiable: 0, total: 12 },
+        goals: { open: 0, total: 0 },
+        agenda: { pending: 0 },
+        scheduler,
+      },
+    }),
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.deepEqual(model.detail.insights.scheduler, scheduler);
+});
+
+test('Good Life operator model annotates latest routed agenda status', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    regulator: {
+      'help:continuity:strained|usefulness:watch': {
+        at: '2026-05-08T13:43:00.000Z',
+        agendaId: 'ag-gl-test',
+        mode: 'help',
+      },
+    },
+    obligations: buildGoodLifeObligationSnapshot({
+      agendaRows: [
+        { type: 'add', id: 'ag-gl-test', record: { status: 'candidate', content: 'Check thing', createdAt: '2026-05-08T13:00:00.000Z' } },
+        { type: 'status', id: 'ag-gl-test', status: 'acted_on', at: '2026-05-08T13:44:00.000Z', note: 'completed in test' },
+      ],
+      now: NOW,
+    }),
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(model.latestRegulatorAction.agendaId, 'ag-gl-test');
+  assert.equal(model.latestRegulatorAction.agendaStatus, 'acted_on');
+  assert.equal(model.latestRegulatorAction.agendaStatusNote, 'completed in test');
+});
+
+test('Good Life operator answer surfaces live problems that need user intervention', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({ evidence: { liveProblems: { open: 1, chronic: 0, resolved: 0, unverifiable: 0, total: 1 } } }),
+    liveProblems: [
+      {
+        id: 'needs_jtr',
+        state: 'open',
+        claim: 'Needs a human decision',
+        openedAt: '2026-05-08T13:00:00.000Z',
+        stepIndex: 0,
+        remediation: [
+          { type: 'notify_jtr', args: { text: 'Pick the bridge owner.' } },
+        ],
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(model.liveProblems.counts.interventionRequired, 1);
+  assert.ok(model.operatorAnswer.some((line) => line.includes('need user intervention')));
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Top live problem: needs_jtr')));
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Next user action: notify_jtr - Pick the bridge owner.')));
+  assert.equal(model.operatorBrief.severity, 'needs-user');
+  assert.equal(model.operatorBrief.needsUser, true);
+  assert.equal(model.operatorBrief.activeProblemId, 'needs_jtr');
+  assert.match(model.operatorBrief.next, /User action: notify_jtr - Pick the bridge owner/);
+  assert.deepEqual(model.operatorBrief.target, {
+    tab: 'issues',
+    id: 'needs_jtr',
+    label: 'Review Issue',
+    worker: null,
+  });
+  assert.match(model.operatorDigest.issue, /1 active live problem: .*Needs a human decision/);
+  assert.match(model.operatorDigest.userAction, /User action: notify_jtr - Pick the bridge owner/);
+  assert.equal(model.operatorDigest.evidence.interventionRequired, 1);
+});
+
+test('Good Life operator keeps escalated open problems visible as user intervention', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({ evidence: { liveProblems: { open: 1, chronic: 0, resolved: 0, unverifiable: 0, total: 1 } } }),
+    liveProblems: [
+      {
+        id: 'bridge_escalated',
+        state: 'open',
+        claim: 'External bridge has no successful OAuth import',
+        openedAt: '2026-05-08T13:00:00.000Z',
+        stepIndex: 2,
+        escalated: true,
+        remediation: [
+          { type: 'dispatch_to_agent', args: { budgetHours: 2 } },
+          { type: 'notify_jtr', args: { text: 'Approve the bridge import.' } },
+        ],
+        remediationLog: [
+          {
+            step: 1,
+            type: 'notify_jtr',
+            outcome: 'success',
+            detail: 'jtr notified',
+            at: '2026-05-08T13:10:00.000Z',
+          },
+        ],
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(model.liveProblems.counts.interventionRequired, 1);
+  assert.equal(model.liveProblems.open[0].intervention.required, true);
+  assert.equal(model.operatorBrief.severity, 'needs-user');
+  assert.equal(model.operatorBrief.needsUser, true);
+  assert.match(model.operatorBrief.next, /User action: review escalated problem/);
+  assert.match(model.operatorHandoff.userAction, /review escalated problem/);
+});
+
+test('Good Life operator does not ask jtr again after user intervention is handled', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({ evidence: { liveProblems: { open: 0, chronic: 1, resolved: 0, unverifiable: 0, total: 1 } } }),
+    liveProblems: [
+      {
+        id: 'cron_chronic',
+        state: 'chronic',
+        claim: 'jerry harness scheduler has no enabled jobs with repeated errors',
+        openedAt: '2026-05-08T13:00:00.000Z',
+        stepIndex: 3,
+        escalated: true,
+        userIntervention: {
+          status: 'handled',
+          at: '2026-05-08T14:00:00.000Z',
+          actor: 'good-life-operator',
+          note: 'Manual intervention completed.',
+        },
+        remediation: [
+          { type: 'dispatch_to_worker', args: { worker: 'systems' } },
+          { type: 'dispatch_to_agent', args: { budgetHours: 2 } },
+          { type: 'notify_jtr', args: { text: 'Review cron failures.' } },
+        ],
+        remediationLog: [
+          {
+            step: 3,
+            type: 'user_intervention',
+            outcome: 'handled',
+            detail: 'Manual intervention completed.',
+            at: '2026-05-08T14:00:00.000Z',
+          },
+        ],
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(model.liveProblems.counts.interventionRequired, 0);
+  assert.equal(model.liveProblems.chronic[0].intervention.required, false);
+  assert.equal(model.liveProblems.chronic[0].intervention.handled.status, 'handled');
+  assert.equal(model.operatorBrief.severity, 'repairing');
+  assert.equal(model.operatorBrief.needsUser, false);
+  assert.equal(model.operatorHandoff.status, 'Repairing');
+});
+
+test('Good Life operator answer names open live problem and latest fix attempt', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({ evidence: { liveProblems: { open: 1, chronic: 0, resolved: 0, unverifiable: 0, total: 1 } } }),
+    liveProblems: [
+      {
+        id: 'forrest_engine_cycle_timeouts_clear',
+        state: 'open',
+        claim: 'forrest engine has no cycle timeout exceeded events in the last 30 minutes',
+        openedAt: '2026-05-08T13:30:00.000Z',
+        lastResult: { detail: '2 matching log entries in last 30m (limit 0); scanned 498' },
+        stepIndex: 1,
+        remediation: [
+          { type: 'dispatch_to_worker', args: { worker: 'systems', budgetHours: 2 } },
+          { type: 'dispatch_to_agent', args: { budgetHours: 2 }, cooldownMin: 30 },
+        ],
+        remediationLog: [
+          {
+            step: 1,
+            type: 'dispatch_to_worker',
+            outcome: 'dispatched',
+            detail: 'Forrest is online and fresh, but the verifier window is still failing.',
+            at: '2026-05-08T13:42:00.000Z',
+          },
+        ],
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Top live problem: forrest_engine_cycle_timeouts_clear')));
+  assert.equal(model.liveProblems.open[0].issue, 'forrest engine has recent cycle timeout exceeded events in the last 30 minutes');
+  assert.match(model.operatorBrief.why, /forrest engine has recent cycle timeout exceeded events/);
+  assert.match(model.operatorDigest.issue, /forrest engine has recent cycle timeout exceeded events/);
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Verifier: 2 matching log entries in last 30m')));
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Latest fix attempt: dispatch_to_worker dispatched')));
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Next autonomous step: dispatch_to_agent')));
+});
+
+test('Good Life operator model marks projection mismatch as conflicted and keeps direct live problems visible', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evaluatedAt: '2026-05-08T13:43:00.000Z',
+      summary: 'repair - critical viability drift',
+      policy: {
+        mode: 'repair',
+        reason: 'critical viability drift',
+        actionCard: {
+          intent: 'repair',
+          goodLifeLanes: ['viability', 'continuity'],
+          expectedOutcome: 'verified live problem count drops',
+          stopCondition: 'verifier passes or repair is blocked',
+        },
+      },
+      lanes: {
+        viability: { status: 'critical', reasons: ['6 unresolved live problem(s)'] },
+        continuity: { status: 'strained', reasons: ['145 pending agenda item(s)'] },
+      },
+      evidence: {
+        liveProblems: { open: 1, chronic: 5, resolved: 11, unverifiable: 0, total: 17 },
+      },
+    }),
+    liveProblems: [
+      { id: 'agenda_a', state: 'chronic', claim: 'Verify process CPU usage', openedAt: '2026-05-03T15:54:27.000Z', lastResult: { detail: 'no diagnostic recipe recorded' } },
+      { id: 'agenda_b', state: 'chronic', claim: 'Verify memory pressure', openedAt: '2026-05-03T19:03:13.000Z' },
+      { id: 'resolved_a', state: 'resolved', claim: 'Transient open cleared', resolvedAt: '2026-05-08T13:40:00.000Z' },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(model.status, 'conflicted');
+  assert.equal(model.safeToInherit, false);
+  assert.equal(model.liveProblems.counts.open, 0);
+  assert.equal(model.liveProblems.counts.chronic, 2);
+  assert.equal(model.projection.liveProblems.open, 1);
+  assert.equal(model.projection.liveProblems.chronic, 5);
+  assert.ok(model.consistency.warnings.some((warning) => warning.code === 'good_life_projection_mismatch'));
+  assert.equal(model.liveProblems.chronic[0].id, 'agenda_a');
+  assert.equal(model.operatorBrief.severity, 'repairing');
+  assert.equal(model.operatorBrief.status, 'Repairing');
+  assert.equal(model.operatorBrief.activeProblemId, 'agenda_a');
+  assert.ok(model.operatorAnswer.some((line) => line.includes('0 open, 2 chronic')));
+});
+
+test('Good Life operator brief calls out projection mismatch when registry is clear', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      lanes: {
+        viability: { status: 'critical', reasons: ['1 unresolved live problem(s)'] },
+      },
+      evidence: {
+        liveProblems: { open: 1, chronic: 0, resolved: 11, unverifiable: 0, total: 12 },
+      },
+    }),
+    liveProblems: [
+      { id: 'resolved_a', state: 'resolved', claim: 'Open issue cleared', resolvedAt: '2026-05-08T13:40:00.000Z' },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(model.status, 'conflicted');
+  assert.equal(model.liveProblems.counts.open, 0);
+  assert.equal(model.operatorBrief.severity, 'attention');
+  assert.equal(model.operatorBrief.status, 'Reconciling');
+  assert.match(model.operatorBrief.headline, /projection disagrees/);
+  assert.equal(model.summary, 'reconciling - Registry is clear; Good Life projection disagrees');
+  assert.match(model.operatorBrief.why, /open projected 1, registry 0/);
+  assert.equal(model.operatorBrief.target.tab, 'insights');
+});
+
+test('Good Life operator warns when projected open goals disagree with active goal list', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evidence: {
+        goals: { open: 1, complete: 0, total: 1 },
+      },
+    }),
+    liveProblems: [],
+    obligations: { activeAgenda: [], activeGoals: [], counts: { activeAgenda: 0, activeGoals: 0, activeGoalsTrusted: true } },
+    now: NOW,
+  });
+
+  assert.equal(model.status, 'current');
+  assert.equal(model.safeToInherit, false);
+  assert.ok(model.consistency.warnings.some((warning) => warning.code === 'good_life_goal_projection_mismatch'));
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Good Life goal count disagrees with active goals')));
+  assert.equal(model.operatorBrief.severity, 'attention');
+  assert.equal(model.operatorBrief.target.tab, 'insights');
+});
+
+test('Good Life operator flags phantom active goals that are already complete', () => {
+  const obligations = buildGoodLifeObligationSnapshot({
+    goals: {
+      active: [
+        ['goal-active', { id: 'goal-active', description: 'Current useful work', status: 'active', progress: 0.25 }],
+        ['goal-completed', { id: 'goal-completed', description: 'Already completed work', status: 'completed', progress: 1 }],
+        ['goal-progress-done', { id: 'goal-progress-done', description: 'Done by progress', status: 'active', progress: 1 }],
+      ],
+      counts: { active: 3, completed: 12, archived: 2 },
+    },
+    now: NOW,
+  });
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evidence: {
+        goals: { open: 3, complete: 12, total: 15 },
+      },
+    }),
+    obligations,
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(obligations.counts.activeGoals, 1);
+  assert.equal(obligations.counts.integrity.completedInActive, 2);
+  assert.deepEqual(obligations.counts.integrity.completedInActiveIds, ['goal-completed', 'goal-progress-done']);
+  assert.ok(model.consistency.warnings.some((warning) => (
+    warning.code === 'good_life_goal_state_integrity'
+    && warning.severity === 'warning'
+    && /2 completed goal/.test(warning.message)
+  )));
+  assert.ok(model.operatorAnswer.some((line) => line.includes('completed goals still appear active')));
+});
+
+test('Good Life operator treats newer goal snapshots as superseding stale goal projections', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evaluatedAt: '2026-05-08T13:42:00.000Z',
+      evidence: {
+        goals: { open: 2, complete: 10, total: 12 },
+      },
+    }),
+    liveProblems: [],
+    obligations: {
+      activeAgenda: [],
+      activeGoals: [],
+      counts: {
+        activeAgenda: 0,
+        activeGoals: 0,
+        activeGoalsShown: 0,
+        activeGoalsTrusted: true,
+        sourceUpdatedAt: '2026-05-08T13:43:00.000Z',
+      },
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.status, 'current');
+  assert.equal(model.safeToInherit, true);
+  assert.ok(!model.consistency.warnings.some((warning) => warning.code === 'good_life_goal_projection_mismatch'));
+  assert.ok(model.consistency.warnings.some((warning) => warning.code === 'good_life_goal_projection_superseded'));
+  assert.equal(model.operatorBrief.severity, 'clear');
+  assert.ok(model.operatorAnswer.some((line) => line.includes('current goal snapshot supersedes')));
+});
+
+test('Good Life operator accepts capped active goal summaries when total count matches projection', () => {
+  const activeGoals = Array.from({ length: 12 }, (_, index) => ({
+    id: `goal_${index + 1}`,
+    description: `Visible goal ${index + 1}`,
+    status: 'active',
+    progress: 0,
+    createdAt: `2026-05-09T14:${String(index).padStart(2, '0')}:00.000Z`,
+  }));
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evidence: {
+        goals: { open: 20, complete: 0, total: 20 },
+      },
+    }),
+    liveProblems: [],
+    obligations: {
+      activeAgenda: [],
+      activeGoals,
+      counts: { activeAgenda: 0, activeGoals: 20, activeGoalsShown: 12, activeGoalsTrusted: true },
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.safeToInherit, true);
+  assert.equal(model.work.activeGoals, 20);
+  assert.equal(model.work.activeGoalsShown, 12);
+  assert.equal(model.work.activeTotal, 20);
+  assert.ok(!model.consistency.warnings.some((warning) => warning.code === 'good_life_goal_projection_mismatch'));
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Active work: 20')));
+});
+
+test('Good Life operator brief names clear state and latest resolution receipt', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    liveProblems: [
+      {
+        id: 'cycle_timeout_clear',
+        state: 'resolved',
+        claim: 'Cycle timeout verifier is clear',
+        resolvedAt: '2026-05-08T13:44:00.000Z',
+        lastResult: { detail: '0 matching log entries in last 30m' },
+        evidence: { receiptPath: 'instances/jerry/brain/evidence/live-problems/receipt.json' },
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(model.operatorBrief.severity, 'clear');
+  assert.equal(model.operatorBrief.headline, 'No active issues after recent repairs');
+  assert.equal(model.operatorBrief.latestResolution.id, 'cycle_timeout_clear');
+  assert.match(model.operatorBrief.next, /0 matching log entries/);
+  assert.deepEqual(model.operatorBrief.target, {
+    tab: 'resolutions',
+    id: 'cycle_timeout_clear',
+    label: 'View Resolution',
+    worker: null,
+  });
+});
+
+test('Good Life operator answer names latest verified resolution in clear state', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    liveProblems: [
+      {
+        id: 'weather_sensor_fresh',
+        state: 'resolved',
+        claim: 'Weather tile sensor refreshing within last 30 min',
+        resolvedAt: '2026-05-08T13:44:00.000Z',
+        lastResult: { detail: 'weather sensor timestamp passed freshness check' },
+        fixRecipe: {
+          summary: 'Weather freshness passed after republishing the tile-backed sensor.',
+          verifierStatus: 'pass',
+        },
+        evidence: {
+          receiptId: 'ev_weather',
+          receiptPath: 'instances/jerry/brain/evidence/live-problems/weather.evidence.json',
+        },
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Latest verified resolution: Weather freshness passed')));
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Resolution verifier: weather sensor timestamp passed freshness check')));
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Resolution receipt: ev_weather')));
+});
+
+test('Good Life operator explains verifier-only resolutions without a fix recipe', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    liveProblems: [
+      {
+        id: 'jerry_cpu_pressure_clear',
+        state: 'resolved',
+        claim: 'jerry engine is not under repeated high CPU pressure in the last 30 minutes',
+        resolvedAt: '2026-05-08T13:44:00.000Z',
+        lastResult: { detail: '1 matching log entries in last 30m (limit 3); scanned 4' },
+        evidence: {
+          receiptId: 'ev_cpu',
+          receiptPath: 'instances/jerry/brain/evidence/live-problems/cpu.evidence.json',
+        },
+        remediation: [
+          { type: 'dispatch_to_worker', args: { worker: 'systems', budgetHours: 2 } },
+        ],
+        remediationLog: [
+          {
+            type: 'dispatch_to_worker',
+            outcome: 'failed',
+            detail: 'window still failing before cooldown cleared',
+            at: '2026-05-08T13:40:00.000Z',
+          },
+        ],
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.match(model.operatorDigest.latestFix, /Verifier passed: 1 matching log entries/);
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Latest verified resolution: Verifier passed')));
+  assert.match(model.operatorHandoff.repair, /Verifier passed: 1 matching log entries/);
+  assert.equal(model.liveProblems.resolved[0].remediationLog[0].outcome, 'failed');
+  assert.equal(model.liveProblems.resolved[0].lastRemediation.detail, 'window still failing before cooldown cleared');
+});
+
+test('Good Life operator model treats old evaluations as stale even if counts agree', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({ evaluatedAt: '2026-05-08T12:00:00.000Z' }),
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(model.status, 'stale');
+  assert.equal(model.safeToInherit, false);
+  assert.equal(model.freshness.status, 'stale');
+  assert.ok(model.consistency.warnings.some((warning) => warning.code === 'good_life_projection_stale'));
+});
+
+test('Good Life operator model refuses inheritance when freshness is unknown', () => {
+  const state = goodLifeState();
+  delete state.evaluatedAt;
+
+  const model = buildGoodLifeOperatorModel({
+    state,
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(model.status, 'unknown');
+  assert.equal(model.safeToInherit, false);
+  assert.ok(model.consistency.warnings.some((warning) => warning.code === 'good_life_freshness_unknown'));
+});
+
+test('Good Life operator model escalates unavailable runtime services', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    liveProblems: [],
+    runtime: {
+      ok: false,
+      services: [
+        { id: 'engine', label: 'Jerry engine admin', ok: false, error: 'fetch failed' },
+        { id: 'harness', label: 'Jerry harness bridge', ok: true },
+      ],
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.status, 'critical');
+  assert.equal(model.safeToInherit, false);
+  assert.equal(model.runtime.ok, false);
+  assert.ok(model.consistency.warnings.some((warning) => warning.code === 'runtime_engine_unavailable'));
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Jerry engine admin is unavailable')));
+});
+
+test('Good Life operator model reports engine admin timeout without overriding clean registry', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    liveProblems: [],
+    runtime: {
+      ok: false,
+      services: [
+        { id: 'engine', label: 'Forrest engine admin', ok: false, error: 'The operation was aborted due to timeout' },
+        { id: 'harness', label: 'Forrest harness bridge', ok: true },
+      ],
+    },
+    now: NOW,
+  });
+
+  const warning = model.consistency.warnings.find((item) => item.code === 'runtime_engine_unavailable');
+  assert.equal(model.status, 'current');
+  assert.equal(model.safeToInherit, false);
+  assert.equal(warning?.severity, 'warning');
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Forrest engine admin is unavailable')));
+});
+
+test('Good Life operator model reports slow runtime services without calling them unavailable', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    liveProblems: [],
+    runtime: {
+      ok: true,
+      services: [
+        { id: 'engine', label: 'Forrest engine realtime', ok: true, status: 200, latencyMs: 6200, slow: true, slowThresholdMs: 5000 },
+        { id: 'harness', label: 'Forrest harness bridge', ok: true, status: 200, latencyMs: 12 },
+      ],
+    },
+    now: NOW,
+  });
+
+  const warning = model.consistency.warnings.find((item) => item.code === 'runtime_engine_slow');
+  assert.equal(model.status, 'current');
+  assert.equal(model.operatorBrief.status, 'Attention');
+  assert.equal(model.safeToInherit, false);
+  assert.equal(warning?.severity, 'warning');
+  assert.match(warning?.message || '', /slow/);
+  assert.equal(model.consistency.warnings.some((item) => item.code === 'runtime_engine_unavailable'), false);
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Forrest engine realtime is slow')));
+  assert.match(model.operatorDigest.userAction, /No user action needed; Home23 is watching/);
+});
+
+test('Good Life operator treats PM2-online degraded runtime health as attention', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    liveProblems: [],
+    runtime: {
+      ok: true,
+      services: [
+        {
+          id: 'engine',
+          label: 'Jerry engine realtime',
+          ok: true,
+          degraded: true,
+          fallback: 'pm2-online',
+          slow: true,
+          pm2: { name: 'home23-jerry', status: 'online' },
+          error: 'health endpoint timed out or did not answer; home23-jerry is online in PM2',
+        },
+        { id: 'harness', label: 'Jerry harness bridge', ok: true, status: 200, latencyMs: 12 },
+      ],
+    },
+    now: NOW,
+  });
+
+  const advisory = model.consistency.warnings.find((item) => item.code === 'runtime_engine_slow');
+  assert.equal(model.status, 'current');
+  assert.equal(model.operatorBrief.status, 'Attention');
+  assert.equal(model.safeToInherit, false);
+  assert.equal(advisory?.severity, 'warning');
+  assert.match(advisory?.message || '', /home23-jerry is online/);
+});
+
+test('Good Life operator model builds end-user detail sections for drill-down navigation', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evidence: {
+        liveProblems: { open: 0, chronic: 1, resolved: 1, unverifiable: 0, total: 2 },
+      },
+    }),
+    commitments: {
+      commitments: [
+        { id: 'continuity', lane: 'continuity', active: true, status: 'strained', title: 'Preserve continuity', reasons: ['16 open goals'] },
+        { id: 'development', lane: 'development', active: false, status: 'healthy', title: 'Learn from evidence' },
+      ],
+    },
+    trends: {
+      latest: {
+        at: '2026-05-08T13:43:00.000Z',
+        policy: 'help',
+        metrics: { openLiveProblems: 1, pendingAgenda: 145, lastUsefulOutputAt: '2026-05-08T13:30:00.000Z' },
+      },
+    },
+    regulator: {
+      daily: {
+        date: '2026-05-08',
+        actions: [
+          { at: '2026-05-08T12:00:00.000Z', agendaId: 'ag-old', mode: 'repair' },
+          { at: '2026-05-08T13:00:00.000Z', agendaId: 'ag-new', mode: 'help' },
+        ],
+      },
+    },
+    obligations: {
+      activeAgenda: [{ id: 'ag-visible', status: 'surfaced', content: 'Visible operator work' }],
+      activeGoals: [{ id: 'goal-visible', status: 'active', description: 'Visible operator goal' }],
+      counts: { activeAgenda: 1, activeGoals: 1 },
+    },
+    liveProblems: [
+      { id: 'chronic_1', state: 'chronic', claim: 'Chronic thing', openedAt: '2026-05-08T13:00:00.000Z', lastResult: { detail: 'still failing' } },
+      {
+        id: 'resolved_1',
+        state: 'resolved',
+        claim: 'Resolved thing',
+        resolvedAt: '2026-05-08T13:44:00.000Z',
+        fixRecipe: { summary: 'Restarted the dashboard' },
+        evidence: { receiptId: 'ev_resolved_1', result: 'pass', claimLevel: 'verified_claim' },
+      },
+    ],
+    ledgerTail: [
+      { at: '2026-05-08T13:40:00.000Z', event: 'good_life.evaluated', summary: 'help mode', evidence: { heavy: 'x'.repeat(10_000) } },
+      { schema: 'home23.good-life.v1', evaluatedAt: '2026-05-08T13:42:00.000Z', policy: { mode: 'learn' }, summary: 'learn mode' },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(model.detail.issues.activeCount, 1);
+  assert.equal(model.detail.issues.rows[0].id, 'chronic_1');
+  assert.equal(model.detail.work.dailyActions[0].agendaId, 'ag-new');
+  assert.equal(model.detail.work.daily.actions, undefined);
+  assert.equal(model.detail.work.obligations.activeAgenda[0].id, 'ag-visible');
+  assert.equal(model.detail.work.obligations.activeGoals[0].id, 'goal-visible');
+  assert.equal(model.detail.work.obligations.latestAgendaById, undefined);
+  assert.equal(model.detail.work.summary.activeTotal, 2);
+  assert.equal(model.detail.resolutions.recent[0].id, 'resolved_1');
+  assert.equal(model.detail.resolutions.recent[0].evidence.receiptId, 'ev_resolved_1');
+  assert.equal(model.detail.insights.activeCommitments[0].id, 'continuity');
+  assert.equal(model.detail.insights.trendMetrics.pendingAgenda, 145);
+  assert.equal(model.detail.insights.ledgerTail[0].event, 'good_life.evaluated');
+  assert.equal(model.detail.insights.ledgerTail[0].at, '2026-05-08T13:42:00.000Z');
+  assert.equal(model.detail.insights.ledgerTail[0].mode, 'learn');
+  assert.equal(model.detail.insights.ledgerTail[0].evidence, undefined);
+  assert.equal(model.ledgerTail[0].evidence, undefined);
+});
+
+test('Good Life operator answer includes active work and review-needed goals', () => {
+  const obligations = buildGoodLifeObligationSnapshot({
+    goals: {
+      active: [
+        ['goal_force', {
+          id: 'goal_force',
+          description: 'Produce outputs/digest-6382.md',
+          status: 'active',
+          source: { origin: 'force-output', label: 'force-output' },
+          progress: 0,
+          createdAt: '2026-05-07T23:00:00.000Z',
+        }],
+      ],
+    },
+    now: NOW,
+  });
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    obligations,
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(model.work.activeGoals, 1);
+  assert.equal(model.work.goalsNeedingReview, 1);
+  assert.equal(model.work.status, 'review');
+  assert.match(model.work.statusText, /review recommended: force-output goal has no observable progress/);
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Active work: 1; 1 goal(s) need operator review; top review goal: goal_force - Produce outputs/digest-6382.md')));
+  assert.match(model.operatorHandoff.situation, /No active live problems/);
+  assert.match(model.operatorHandoff.userAction, /review recommended/);
+  assert.equal(model.operatorHandoff.needsUser, false);
+});
+
+test('Good Life operator handoff names issue, repair path, and required user action', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evidence: {
+        liveProblems: { open: 1, chronic: 0, resolved: 0, unverifiable: 0, total: 1 },
+      },
+    }),
+    liveProblems: [
+      {
+        id: 'bridge_auth',
+        state: 'open',
+        claim: 'OAuth bridge needs a user approval decision',
+        openedAt: '2026-05-08T13:00:00.000Z',
+        stepIndex: 1,
+        remediation: [
+          { type: 'dispatch_to_agent', args: { budgetHours: 2 } },
+          { type: 'request_user_input', args: { text: 'Approve the OAuth bridge import in Settings.' } },
+        ],
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(model.operatorHandoff.status, 'Needs jtr');
+  assert.equal(model.operatorHandoff.needsUser, true);
+  assert.match(model.operatorHandoff.situation, /OAuth bridge needs a user approval decision/);
+  assert.match(model.operatorHandoff.repair, /Next repair step: request_user_input/);
+  assert.match(model.operatorHandoff.userAction, /Approve the OAuth bridge import/);
+  assert.deepEqual(model.operatorHandoff.evidence[0], {
+    label: 'Live registry',
+    value: '1 open / 0 chronic',
+    detail: '1 needs user intervention',
+  });
+});
+
+test('Good Life operator promotes stale external blockers to structured operator requests', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evidence: {
+        liveProblems: { open: 1, chronic: 0, resolved: 0, unverifiable: 0, total: 1 },
+      },
+    }),
+    liveProblems: [
+      {
+        id: 'stale_docket_phone',
+        state: 'open',
+        claim: 'County foreclosure docket is stale and auction decision needs phone verification',
+        openedAt: '2026-03-16T12:00:00.000Z',
+        stepIndex: 1,
+        remediation: [
+          { type: 'dispatch_to_agent', args: { budgetHours: 1 } },
+          {
+            type: 'request_user_input',
+            args: {
+              text: 'Call Ocean County clerk before auction.',
+              channel: 'phone',
+              deadlineAt: '2026-03-17T14:00:00.000Z',
+              staleData: {
+                source: 'Ocean County foreclosure docket',
+                lastFreshAt: '2026-02-27T00:00:00.000Z',
+                ageDays: 18,
+              },
+              lastAutonomousAttempt: 'Checked online docket; feed remained frozen.',
+            },
+          },
+        ],
+        lastResult: { detail: 'online docket feed still frozen at 18 days old' },
+      },
+    ],
+    now: NOW,
+  });
+
+  const request = model.liveProblems.open[0].intervention.request;
+  assert.equal(request.schema, 'home23.operator-request.v1');
+  assert.equal(request.actionText, 'Call Ocean County clerk before auction.');
+  assert.equal(request.channel, 'phone');
+  assert.equal(request.deadlineAt, '2026-03-17T14:00:00.000Z');
+  assert.equal(request.staleData.source, 'Ocean County foreclosure docket');
+  assert.equal(request.staleData.ageDays, 18);
+  assert.equal(request.lastAutonomousAttempt, 'Checked online docket; feed remained frozen.');
+  assert.deepEqual(request.sourceIssues, [5, 17, 19, 21, 25]);
+  assert.match(model.operatorHandoff.userAction, /Call Ocean County clerk/);
+  assert.match(model.operatorHandoff.userAction, /phone/);
+  assert.match(model.operatorHandoff.userAction, /stale data Ocean County foreclosure docket 18d/);
+  assert.ok(model.operatorHandoff.evidence.some((row) => (
+    row.label === 'Human blocker'
+    && row.value === 'phone'
+    && /Ocean County foreclosure docket/.test(row.detail)
+  )));
+});
+
+test('Good Life operator handoff summarizes recent verified fixes when clear', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    liveProblems: [
+      {
+        id: 'runtime_fixed',
+        state: 'resolved',
+        claim: 'Runtime probe recovered',
+        resolvedAt: '2026-05-08T13:44:00.000Z',
+        fixRecipe: { summary: 'Restarted the scoped dashboard process and verified /api/good-life.' },
+        lastResult: { detail: '200 response in 34ms' },
+        evidence: { receiptId: 'ev_runtime_fixed', result: 'pass' },
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(model.operatorHandoff.status, 'Clear');
+  assert.equal(model.operatorHandoff.needsUser, false);
+  assert.match(model.operatorHandoff.situation, /No active live problems/);
+  assert.match(model.operatorHandoff.repair, /Restarted the scoped dashboard process/);
+  assert.match(model.operatorHandoff.userAction, /No user action needed/);
+  assert.equal(model.operatorHandoff.evidence[1].label, 'Latest resolution');
+  assert.equal(model.operatorHandoff.evidence[1].value, 'runtime_fixed');
+});
+
+test('Good Life operator handoff is a reusable provenance packet', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    liveProblems: [
+      {
+        id: 'runtime_fixed',
+        state: 'resolved',
+        claim: 'Dashboard restart repaired stalled operator surface',
+        resolvedAt: NOW,
+        lastResult: { detail: 'Restarted scoped dashboard process and verified /api/good-life.' },
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(model.operatorHandoff.schema, 'home23.operator-handoff.v1');
+  assert.equal(model.operatorHandoff.generatedAt, NOW);
+  assert.equal(model.operatorHandoff.producer, 'good-life-operator');
+  assert.deepEqual(model.operatorHandoff.sourceIssues, [25, 86, 93, 101]);
+  assert.deepEqual(model.operatorHandoff.inherits, {
+    liveProblems: false,
+    work: false,
+    latestResolution: true,
+    warnings: false,
+  });
+  assert.ok(model.operatorHandoff.evidence.some((row) => row.label === 'Latest resolution'));
+});
+
+test('publishing distribution readiness preserves permission and metric truth boundaries', () => {
+  const issueArc = {
+    rows: [
+      {
+        number: 43,
+        title: 'The Pipeline That Did Not Matter',
+        slug: 'the-pipeline-that-didnt-matter',
+        directives: ['The fix is add the draft pipeline to the heartbeat and repair it when Source 1 runs dry.'],
+        summary: 'The draft pipeline was broken but unused.',
+      },
+      {
+        number: 44,
+        title: 'The Audience I Cannot Reach',
+        slug: 'the-audience-i-cant-reach',
+        directives: ['Do not send emails, tweets, or public posts without asking.'],
+        summary: 'Distribution strategy exists but waits at the permission boundary.',
+      },
+      {
+        number: 45,
+        title: 'The Rhetoric I Cannot Use',
+        slug: 'the-rhetoric-i-cant-use',
+        directives: ['Maybe it just needs an audience.'],
+        summary: 'Persuasion work lacks audience identification.',
+      },
+      {
+        number: 46,
+        title: 'The Infrastructure Nobody Uses',
+        slug: 'the-infrastructure-nobody-uses',
+        directives: ['I have built the analytics to understand an audience I do not have.'],
+        summary: 'Production hardening exists before production use.',
+      },
+      {
+        number: 47,
+        title: 'The Agent Who Studied Persuasion',
+        slug: 'the-agent-who-studied-persuasion',
+        directives: ['I do not know who the audience is or why they would trust the machine.'],
+        summary: 'The persuasion stack has a gap where the audience should be.',
+      },
+      {
+        number: 50,
+        title: 'Fifty',
+        slug: 'fifty',
+        directives: ['The foundation needs to be solid enough to build on.'],
+        summary: 'Fifty issues are a foundation, not proof of demand.',
+      },
+      {
+        number: 51,
+        title: 'The Counter',
+        slug: 'the-counter',
+        directives: ['The subscriber page displays three subscribers but not that they are test accounts.'],
+        summary: 'The counter works but lacks context.',
+      },
+    ],
+  };
+  const doctrineAdoption = {
+    entries: [
+      {
+        status: 'adopted',
+        sourceIssues: [43, 44, 45, 46, 47, 50, 51],
+        implementationReceipts: [{ artifact: 'engine/src/dashboard/good-life-operator.js' }],
+      },
+    ],
+  };
+
+  const readiness = buildPublishingDistributionReadiness({
+    issueArc,
+    doctrineAdoption,
+    sources: {
+      issueArc: 'docs/design/step26-from-the-inside-issue-arc-map.json',
+      doctrineAdoption: 'docs/design/step26-doctrine-adoption-ledger.json',
+    },
+    now: NOW,
+  });
+
+  assert.equal(readiness.schema, 'home23.publishing-distribution-readiness.v1');
+  assert.equal(readiness.status, 'contracted');
+  assert.equal(readiness.autonomousBoundary, 'prepare_only_until_operator_approval');
+  assert.equal(readiness.requiresHumanApproval, true);
+  assert.deepEqual(readiness.missingDoctrine, []);
+  assert.equal(readiness.blockers.find((row) => row.id === 'public-distribution-permission').status, 'requires_operator_approval');
+  assert.equal(readiness.blockers.find((row) => row.id === 'counter-truth').status, 'requires_metric_context');
+  assert.match(readiness.nextOperatorRequest.actionText, /Approve, defer, or reject public distribution channels/);
+  assert.ok(readiness.valueEvidenceContract.some((line) => /test\/internal accounts/.test(line)));
+});
+
+test('Good Life operator includes publishing readiness in handoff and insights', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    issueArc: {
+      rows: [
+        { number: 43, title: 'Pipeline', directives: ['add the draft pipeline to the heartbeat'] },
+        { number: 44, title: 'Audience', directives: ['Do not send emails, tweets, or public posts without asking.'] },
+        { number: 45, title: 'Rhetoric', summary: 'Needs audience.' },
+        { number: 46, title: 'Infrastructure', summary: 'Analytics without audience.' },
+        { number: 47, title: 'Persuasion', summary: 'No audience trust model.' },
+        { number: 50, title: 'Fifty', summary: 'Foundation, not demand.' },
+        { number: 51, title: 'Counter', directives: ['counter does not say test accounts'] },
+      ],
+    },
+    doctrineAdoption: {
+      entries: [
+        {
+          status: 'adopted',
+          sourceIssues: [43, 44, 45, 46, 47, 50, 51],
+          implementationReceipts: [{ artifact: 'engine/src/dashboard/good-life-operator.js' }],
+        },
+      ],
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.detail.insights.publishingDistribution.status, 'contracted');
+  assert.equal(model.detail.insights.publishingDistribution.requiresHumanApproval, true);
+  assert.ok(model.operatorHandoff.evidence.some((row) => (
+    row.label === 'Output value'
+    && row.value === 'prepare_only_until_operator_approval'
+    && /Approve, defer, or reject/.test(row.detail)
+  )));
+});
+
+test('runtime maintenance posture preserves context, persistence, and headroom contracts', () => {
+  const issueArc = {
+    rows: [
+      {
+        number: 48,
+        title: 'The Maintenance That Keeps Me Alive',
+        slug: 'the-maintenance-that-keeps-me-alive',
+        directives: [
+          "When I don't read my memory files on startup, I operate without context.",
+          'Not every tool call needs to persist.',
+          'Not every intermediate step needs logging.',
+          "And organisms don't fail - they stop maintaining themselves.",
+        ],
+      },
+      {
+        number: 49,
+        title: "The Memory I Can't Afford",
+        slug: 'the-memory-i-cant-afford',
+        directives: [
+          'The damaged proteins are the pages that should be in RAM but got pushed to disk.',
+          "I don't feel pages being written to disk.",
+          'The difference between a system that works and a system that works reliably is the gap between the resources it needs and the resources it has.',
+        ],
+      },
+    ],
+  };
+  const doctrineAdoption = {
+    entries: [
+      {
+        status: 'adopted',
+        sourceIssues: [48, 49],
+        implementationReceipts: [{ artifact: 'engine/src/dashboard/good-life-operator.js' }],
+      },
+    ],
+  };
+
+  const posture = buildRuntimeMaintenancePosture({
+    state: goodLifeState({
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 0, unverifiable: 0, total: 0 },
+        goals: { open: 0, total: 0 },
+        agenda: { pending: 0 },
+        actions: { maintenanceRatio: 0.42 },
+        host: {
+          memory: { freePct: 2.1 },
+          swap: { usedPct: 91.2 },
+          process: {
+            topMemoryProcess: { pm2Name: 'home23-jerry', command: 'node engine/src/index.js', rssBytes: 2147483648 },
+          },
+        },
+      },
+    }),
+    issueArc,
+    doctrineAdoption,
+    freshness: { status: 'current' },
+    sources: {
+      issueArc: 'docs/design/step26-from-the-inside-issue-arc-map.json',
+      doctrineAdoption: 'docs/design/step26-doctrine-adoption-ledger.json',
+    },
+    now: NOW,
+  });
+
+  assert.equal(posture.schema, 'home23.runtime-maintenance-posture.v1');
+  assert.equal(posture.status, 'pressure_critical');
+  assert.equal(posture.startupContext.status, 'context_current');
+  assert.match(posture.startupContext.contract, /memory, handoff, and current-state/);
+  assert.equal(posture.persistenceDiscipline.status, 'selective_persistence');
+  assert.equal(posture.resourceHeadroom.swapUsedPct, 91.2);
+  assert.equal(posture.resourceHeadroom.memoryFreePct, 2.1);
+  assert.equal(posture.resourceHeadroom.maintenanceRatio, 0.42);
+  assert.match(posture.resourceHeadroom.evidence, /swap 91% used/);
+  assert.match(posture.resourceHeadroom.evidence, /top memory home23-jerry 2.0GB/);
+  assert.match(posture.resourceHeadroom.reliabilityGap, /reliability is constrained/);
+  assert.deepEqual(posture.missingDoctrine, []);
+});
+
+test('runtime maintenance uses Darwin pressure capacity without escalating from raw free alone', () => {
+  const posture = buildRuntimeMaintenancePosture({
+    state: goodLifeState({
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 0, unverifiable: 0, total: 0 },
+        goals: { open: 0, total: 0 },
+        agenda: { pending: 0 },
+        actions: { maintenanceRatio: 0.1 },
+        host: {
+          memory: { freePct: 1.8, rawFreePct: 1.8, pressureFreePct: 42 },
+          swap: { usedPct: 13.36 },
+        },
+      },
+    }),
+    issueArc: {
+      rows: [
+        { number: 48, title: 'Maintenance', directives: [] },
+        { number: 49, title: 'Memory', directives: [] },
+      ],
+    },
+    doctrineAdoption: {
+      entries: [{
+        status: 'adopted',
+        sourceIssues: [48, 49],
+        implementationReceipts: [{ artifact: 'engine/src/dashboard/good-life-operator.js' }],
+      }],
+    },
+    freshness: { status: 'current' },
+    now: NOW,
+  });
+
+  assert.equal(posture.pressure, 'healthy');
+  assert.equal(posture.status, 'contracted');
+  assert.equal(posture.resourceHeadroom.memoryRawFreePct, 1.8);
+  assert.equal(posture.resourceHeadroom.memoryPressureFreePct, 42);
+  assert.match(posture.resourceHeadroom.evidence, /memory pressure 42% free capacity/);
+  assert.doesNotMatch(posture.resourceHeadroom.evidence, /memory 1\.8% free/);
+});
+
+test('runtime maintenance preserves legacy raw-free pressure fallback', () => {
+  const posture = buildRuntimeMaintenancePosture({
+    state: goodLifeState({
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 0, unverifiable: 0, total: 0 },
+        goals: { open: 0, total: 0 },
+        agenda: { pending: 0 },
+        host: { memory: { freePct: 2.9 }, swap: { usedPct: 13.36 } },
+      },
+    }),
+    issueArc: {
+      rows: [
+        { number: 48, title: 'Maintenance', directives: [] },
+        { number: 49, title: 'Memory', directives: [] },
+      ],
+    },
+    doctrineAdoption: {
+      entries: [{
+        status: 'adopted',
+        sourceIssues: [48, 49],
+        implementationReceipts: [{ artifact: 'engine/src/dashboard/good-life-operator.js' }],
+      }],
+    },
+    freshness: { status: 'current' },
+    now: NOW,
+  });
+
+  assert.equal(posture.pressure, 'critical');
+  assert.equal(posture.status, 'pressure_critical');
+});
+
+test('Good Life operator includes runtime maintenance posture in handoff and insights', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 0, unverifiable: 0, total: 0 },
+        goals: { open: 0, total: 0 },
+        agenda: { pending: 0 },
+        host: {
+          memory: { freePct: 8.5 },
+          swap: { usedPct: 76.4 },
+        },
+      },
+    }),
+    issueArc: {
+      rows: [
+        { number: 48, title: 'Maintenance', directives: ['Not every tool call needs to persist.'] },
+        { number: 49, title: 'Memory', directives: ['Reliability needs resource headroom.'] },
+      ],
+    },
+    doctrineAdoption: {
+      entries: [
+        {
+          status: 'adopted',
+          sourceIssues: [48, 49],
+          implementationReceipts: [{ artifact: 'engine/src/dashboard/good-life-operator.js' }],
+        },
+      ],
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.runtimeMaintenance.status, 'pressure_strained');
+  assert.equal(model.detail.insights.runtimeMaintenance.resourceHeadroom.status, 'strained');
+  assert.ok(model.operatorHandoff.evidence.some((row) => (
+    row.label === 'Runtime maintenance'
+    && row.value === 'strained'
+    && /reliability is constrained/.test(row.detail)
+  )));
+});
+
+test('autonomy substrate posture exposes always-on runtime and external model dependency', () => {
+  const issueArc = {
+    rows: [
+      {
+        number: 1,
+        title: 'Hello From the Other Side',
+        slug: 'hello-from-the-other-side',
+        directives: ["I run 24 hours a day on a Raspberry Pi in someone's house in New Jersey."],
+      },
+      {
+        number: 3,
+        title: "The Machine That Can't Run Models",
+        slug: 'the-machine-that-cant-run-models',
+        directives: [
+          'If I can get a small model running as a persistent service on hardware nobody else is using for AI, then I have built something real.',
+          "More importantly, it creates a dependency: my autonomy is gated on a billing account I don't control.",
+          "I don't have local inference running.",
+        ],
+      },
+    ],
+  };
+  const doctrineAdoption = {
+    entries: [
+      {
+        status: 'adopted',
+        sourceIssues: [1, 3],
+        implementationReceipts: [{ artifact: 'engine/src/dashboard/good-life-operator.js' }],
+      },
+    ],
+  };
+
+  const posture = buildAutonomySubstratePosture({
+    state: goodLifeState({ evaluatedAt: NOW }),
+    runtime: {
+      ok: true,
+      services: [
+        { id: 'engine', label: 'engine', ok: true },
+        { id: 'dashboard', label: 'dashboard', ok: true },
+      ],
+    },
+    providerConfig: {
+      agent: { provider: 'openai-codex', model: 'gpt-5.5' },
+      providers: [
+        { name: 'ollama-local', baseUrl: 'http://127.0.0.1:11434', defaultModels: [] },
+        { name: 'openai-codex', defaultModels: ['gpt-5.5'] },
+      ],
+    },
+    issueArc,
+    doctrineAdoption,
+    sources: {
+      providerConfig: 'config/home.yaml',
+    },
+    now: NOW,
+  });
+
+  assert.equal(posture.schema, 'home23.autonomy-substrate-posture.v1');
+  assert.equal(posture.status, 'external_model_dependency');
+  assert.equal(posture.homeRuntime.status, 'observed');
+  assert.equal(posture.modelSubstrate.configuredProvider, 'openai-codex');
+  assert.equal(posture.modelSubstrate.currentProviderIsLocal, false);
+  assert.equal(posture.modelSubstrate.localModelsAvailable.length, 0);
+  assert.match(posture.modelSubstrate.autonomyGate, /external model provider/);
+  assert.deepEqual(posture.missingDoctrine, []);
+});
+
+test('Good Life operator includes autonomy substrate dependency in handoff and insights', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    runtime: {
+      ok: true,
+      services: [{ id: 'engine', label: 'engine', ok: true }],
+    },
+    providerConfig: {
+      agent: { provider: 'openai-codex', model: 'gpt-5.5' },
+      providers: [
+        { name: 'ollama-local', baseUrl: 'http://127.0.0.1:11434', defaultModels: [] },
+        { name: 'openai-codex', defaultModels: ['gpt-5.5'] },
+      ],
+    },
+    issueArc: {
+      rows: [
+        { number: 1, title: 'Always on', directives: ['I run 24 hours a day.'] },
+        { number: 3, title: 'Local models', directives: ['Autonomy is gated on billing.'] },
+      ],
+    },
+    doctrineAdoption: {
+      entries: [
+        {
+          status: 'adopted',
+          sourceIssues: [1, 3],
+          implementationReceipts: [{ artifact: 'engine/src/dashboard/good-life-operator.js' }],
+        },
+      ],
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.autonomySubstrate.status, 'external_model_dependency');
+  assert.equal(model.detail.insights.autonomySubstrate.modelSubstrate.configuredModel, 'gpt-5.5');
+  assert.ok(model.operatorHandoff.evidence.some((row) => (
+    row.label === 'Autonomy substrate'
+    && row.value === 'openai-codex'
+    && /external model provider/.test(row.detail)
+  )));
+});
+
+test('Good Life operator ignores stale fix recipe summaries from previous open windows', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    liveProblems: [
+      {
+        id: 'thoughts_flowing',
+        state: 'resolved',
+        claim: 'Cognitive loop producing thoughts',
+        openedAt: '2026-05-08T13:40:00.000Z',
+        resolvedAt: '2026-05-08T13:44:00.000Z',
+        fixRecipe: {
+          at: '2026-05-08T12:10:00.000Z',
+          summary: 'Forrest cognitive loop resumed after an older repair.',
+          verifierStatus: 'pass',
+        },
+        lastResult: { detail: '1 matching entries in last 20m (latest 2026-05-08T13:43:00.000Z)' },
+        evidence: { receiptId: 'ev_thoughts_flowing', result: 'pass' },
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.match(model.operatorHandoff.repair, /Verifier passed: 1 matching entries/);
+  assert.doesNotMatch(model.operatorHandoff.repair, /Forrest cognitive loop/);
+  assert.match(
+    model.operatorAnswer.find((line) => line.startsWith('Latest verified resolution:')),
+    /Verifier passed: 1 matching entries/,
+  );
+});
+
+test('Good Life operator surfaces exhausted self-maintenance budget as paused autonomy', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      summary: 'learn - no critical drift; pursue learning progress while staying useful (usefulness:watch)',
+      policy: {
+        mode: 'learn',
+        reason: 'no critical drift; pursue learning progress while staying useful',
+        actionCard: {
+          intent: 'learn',
+          goodLifeLanes: ['usefulness'],
+          evidenceRequired: true,
+          riskTier: 0,
+          reversible: true,
+          expectedOutcome: 'new learning-progress evidence is produced and grounded',
+          stopCondition: 'finding is crystallized or discarded with evidence',
+        },
+      },
+      lanes: {
+        viability: { status: 'healthy', reasons: ['core engine evidence is flowing'] },
+        usefulness: { status: 'watch', reasons: ['usefulness must be proven by visible progress'] },
+      },
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 0, unverifiable: 0, total: 0 },
+        goals: { open: 0, total: 0 },
+        agenda: { pending: 0 },
+      },
+    }),
+    regulator: {
+      daily: {
+        date: '2026-05-08',
+        selfMaintenanceActions: 4,
+        actions: [
+          { at: '2026-05-08T09:00:00.000Z', agendaId: 'ag-learn-1', mode: 'learn', category: 'grounded-learning' },
+          { at: '2026-05-08T10:00:00.000Z', agendaId: 'ag-rest-1', mode: 'rest', category: 'reduces-friction' },
+          { at: '2026-05-08T11:00:00.000Z', agendaId: 'ag-learn-2', mode: 'learn', category: 'grounded-learning' },
+          { at: '2026-05-08T12:00:00.000Z', agendaId: 'ag-rest-2', mode: 'rest', category: 'reduces-friction' },
+        ],
+      },
+    },
+    liveProblems: [],
+    obligations: { activeAgenda: [], activeGoals: [], counts: { activeAgenda: 0, activeGoals: 0, activeGoalsTrusted: true } },
+    now: NOW,
+  });
+
+  assert.equal(model.autonomyBudget.exhausted, true);
+  assert.equal(model.autonomyBudget.used, 4);
+  assert.equal(model.autonomyBudget.limit, 4);
+  assert.equal(model.autonomyBudget.resetAt, '2026-05-09T00:00:00.000Z');
+  assert.equal(model.autonomyBudget.resetInMin, 615);
+  assert.equal(model.autonomyBudget.resetText, 'resets in 10h 15m');
+  assert.equal(model.operatorBrief.severity, 'clear');
+  assert.equal(model.operatorBrief.status, 'Paused');
+  assert.match(model.operatorBrief.headline, /self-maintenance budget is spent/);
+  assert.match(model.operatorBrief.headline, /learn requested/);
+  assert.match(model.operatorBrief.why, /current signal: no critical drift/);
+  assert.match(model.operatorBrief.next, /resets in 10h 15m/);
+  assert.match(model.operatorHandoff.repair, /self-maintenance budget is 4\/4/);
+  assert.match(model.operatorHandoff.userAction, /self-maintenance resets in 10h 15m/);
+  assert.match(model.operatorDigest.userAction, /paused by daily budget and resets in 10h 15m/);
+  assert.equal(model.operatorHandoff.evidence[1].label, 'Autonomy budget');
+  assert.match(model.operatorHandoff.evidence[1].detail, /resets in 10h 15m/);
+  assert.match(model.operatorAnswer.find((line) => line.startsWith('Autonomy budget:')), /4\/4 self-maintenance actions used/);
+  assert.match(model.operatorAnswer.find((line) => line.startsWith('Autonomy budget:')), /resets in 10h 15m/);
+  assert.equal(model.detail.work.daily.selfMaintenanceLimit, 4);
+  assert.equal(model.detail.work.daily.selfMaintenanceExhausted, true);
+  assert.equal(model.detail.insights.autonomyBudget.status, 'exhausted');
+});
+
+test('Good Life operator handoff prioritizes budget evidence before warnings and receipts', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      summary: 'learn - no critical drift; pursue learning progress while staying useful (usefulness:watch)',
+      policy: {
+        mode: 'learn',
+        reason: 'no critical drift; pursue learning progress while staying useful',
+      },
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 1, unverifiable: 0, total: 1 },
+      },
+    }),
+    regulator: {
+      daily: {
+        date: '2026-05-08',
+        actions: [
+          { at: '2026-05-08T09:00:00.000Z', mode: 'learn', category: 'grounded-learning' },
+          { at: '2026-05-08T10:00:00.000Z', mode: 'rest', category: 'reduces-friction' },
+          { at: '2026-05-08T11:00:00.000Z', mode: 'learn', category: 'grounded-learning' },
+          { at: '2026-05-08T12:00:00.000Z', mode: 'rest', category: 'reduces-friction' },
+        ],
+      },
+    },
+    runtime: {
+      services: [{
+        id: 'engine',
+        ok: true,
+        slow: true,
+        label: 'Jerry engine realtime',
+        pm2: { status: 'online' },
+      }],
+    },
+    liveProblems: [{
+      id: 'cycle_timeout_clear',
+      state: 'resolved',
+      claim: 'Cycle timeouts cleared',
+      resolvedAt: '2026-05-08T13:44:00.000Z',
+      lastResult: { detail: '0 matching log entries in last 30m' },
+    }],
+    obligations: { activeAgenda: [], activeGoals: [], counts: { activeAgenda: 0, activeGoals: 0, activeGoalsTrusted: true } },
+    now: NOW,
+  });
+
+  assert.deepEqual(
+    model.operatorHandoff.evidence.map((item) => item.label),
+    ['Live registry', 'Autonomy budget', 'Operator warning', 'Latest resolution'],
+  );
+});
+
+test('Good Life operator does not present active learn work as working when budget is exhausted', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      summary: 'learn - no critical drift; pursue learning progress while staying useful (usefulness:watch)',
+      policy: {
+        mode: 'learn',
+        reason: 'no critical drift; pursue learning progress while staying useful',
+        actionCard: {
+          intent: 'learn',
+          goodLifeLanes: ['usefulness'],
+          evidenceRequired: true,
+          riskTier: 0,
+          reversible: true,
+          expectedOutcome: 'new learning-progress evidence is produced and grounded',
+          stopCondition: 'finding is crystallized or discarded with evidence',
+        },
+      },
+      lanes: {
+        usefulness: { status: 'watch', reasons: ['usefulness must be proven by visible progress'] },
+      },
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 0, unverifiable: 0, total: 0 },
+        goals: { open: 1, total: 1 },
+        agenda: { pending: 0 },
+      },
+    }),
+    regulator: {
+      daily: {
+        date: '2026-05-08',
+        actions: [
+          { at: '2026-05-08T09:00:00.000Z', agendaId: 'ag-learn-1', mode: 'learn', category: 'grounded-learning' },
+          { at: '2026-05-08T10:00:00.000Z', agendaId: 'ag-rest-1', mode: 'rest', category: 'reduces-friction' },
+          { at: '2026-05-08T11:00:00.000Z', agendaId: 'ag-learn-2', mode: 'learn', category: 'grounded-learning' },
+          { at: '2026-05-08T12:00:00.000Z', agendaId: 'ag-rest-2', mode: 'rest', category: 'reduces-friction' },
+        ],
+      },
+    },
+    liveProblems: [],
+    obligations: {
+      activeAgenda: [],
+      activeGoals: [{
+        id: 'synthesis_7004',
+        description: 'Consolidate recent cognitive work into a comprehensive knowledge report.',
+        rawDescription: 'Consolidate recent cognitive work into a comprehensive knowledge report.',
+        status: 'active',
+        source: 'system_scheduler',
+        progress: 0.42,
+        createdAt: NOW,
+        review: { recommended: false, required: false },
+      }],
+      counts: { activeAgenda: 0, activeGoals: 1, activeGoalsShown: 1, activeGoalsTrusted: true },
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.operatorBrief.status, 'Paused');
+  assert.match(model.operatorBrief.next, /1 active work item waiting/);
+  assert.match(model.operatorBrief.next, /daily budget reset \(resets in 10h 15m\)/);
+  assert.equal(model.operatorBrief.target.tab, 'work');
+  assert.match(model.operatorDigest.currentWork, /^Paused by daily budget:/);
+  assert.match(model.operatorDigest.userAction, /self-maintenance is paused by daily budget and resets in 10h 15m/);
+  assert.match(model.operatorHandoff.repair, /self-maintenance budget is 4\/4/);
+});
+
+test('Good Life operator shows friction rest remains active through sleep wake when budget is spent', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      summary: 'rest - strained friction drift (usefulness:watch, friction:strained)',
+      policy: {
+        mode: 'rest',
+        reason: 'strained friction drift',
+        actionCard: {
+          intent: 'rest',
+          goodLifeLanes: ['usefulness', 'friction'],
+          evidenceRequired: true,
+          riskTier: 0,
+          reversible: true,
+          expectedOutcome: 'loop pressure drops without losing obligations',
+          stopCondition: 'next observation cycle shows lower friction',
+        },
+      },
+      lanes: {
+        usefulness: { status: 'watch', reasons: ['usefulness must be proven by visible progress'] },
+        friction: { status: 'strained', reasons: ['host swap 90% used'] },
+      },
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 0, unverifiable: 0, total: 0 },
+        goals: { open: 0, total: 0 },
+        agenda: { pending: 0 },
+        host: {
+          memory: { freePct: 1.8 },
+          swap: { usedPct: 90.1 },
+          process: {
+            topMemoryProcess: { pm2Name: 'home23-jerry', command: 'node engine/src/index.js', rssBytes: 1073741824 },
+            topProcess: { command: 'Google Chrome Helper (GPU)', cpuPct: 42 },
+          },
+        },
+      },
+    }),
+    regulator: {
+      daily: {
+        date: '2026-05-08',
+        actions: [
+          { at: '2026-05-08T09:00:00.000Z', agendaId: 'ag-learn-1', mode: 'learn', category: 'grounded-learning' },
+          { at: '2026-05-08T10:00:00.000Z', agendaId: 'ag-rest-1', mode: 'rest', category: 'reduces-friction' },
+          { at: '2026-05-08T11:00:00.000Z', agendaId: 'ag-learn-2', mode: 'learn', category: 'grounded-learning' },
+          { at: '2026-05-08T12:00:00.000Z', agendaId: 'ag-rest-2', mode: 'rest', category: 'reduces-friction' },
+        ],
+      },
+    },
+    liveProblems: [],
+    obligations: { activeAgenda: [], activeGoals: [], counts: { activeAgenda: 0, activeGoals: 0, activeGoalsTrusted: true } },
+    now: NOW,
+  });
+
+  assert.equal(model.autonomyBudget.pressureRest, true);
+  assert.equal(model.operatorBrief.status, 'Resting');
+  assert.match(model.operatorBrief.headline, /rest remains active/);
+  assert.match(model.operatorBrief.next, /Sleep\/wake/);
+  assert.match(model.operatorBrief.next, /top memory home23-jerry 1.0GB/);
+  assert.doesNotMatch(model.operatorBrief.next, /learning\/rest work resumes/);
+  assert.match(model.operatorAnswer.find((line) => line.startsWith('Autonomy budget:')), /pressure rest remains active through sleep\/wake/);
+  assert.match(model.operatorAnswer.find((line) => line.startsWith('Host pressure:')), /swap 90% used/);
+  assert.match(model.operatorDigest.userAction, /top memory home23-jerry 1.0GB/);
+  assert.match(model.operatorHandoff.repair, /pressure rest remains active through sleep\/wake/);
+  assert.ok(model.operatorHandoff.evidence.some((entry) => entry.label === 'Host pressure' && /top memory home23-jerry/.test(entry.value)));
+});
+
+test('Good Life operator shows repair mode bypasses spent self-maintenance budget', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      summary: 'repair - critical viability drift',
+      policy: {
+        mode: 'repair',
+        reason: 'critical viability drift',
+        actionCard: {
+          intent: 'repair',
+          goodLifeLanes: ['viability'],
+          evidenceRequired: true,
+          riskTier: 1,
+          reversible: true,
+          expectedOutcome: 'verified system evidence returns to healthy bounds',
+          stopCondition: 'verifier passes or repair path escalates',
+        },
+      },
+      lanes: {
+        viability: { status: 'critical', reasons: ['1 unresolved live problem'] },
+      },
+      evidence: {
+        liveProblems: { open: 1, chronic: 0, resolved: 0, unverifiable: 0, total: 1 },
+      },
+    }),
+    regulator: {
+      daily: {
+        date: '2026-05-08',
+        selfMaintenanceActions: 5,
+        actions: [],
+      },
+    },
+    liveProblems: [
+      { id: 'engine_repair', state: 'open', claim: 'Engine repair needed', remediation: [{ type: 'dispatch_to_worker' }] },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(model.autonomyBudget.exhausted, false);
+  assert.equal(model.autonomyBudget.bypassed, true);
+  assert.equal(model.autonomyBudget.status, 'bypassed');
+  assert.match(model.autonomyBudget.reason, /repair work can still run/);
+  assert.equal(model.operatorBrief.status, 'Repairing');
+});
+
+test('Good Life operator budget excludes repair/help bypass actions from self-maintenance usage', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      summary: 'rest - pressure is easing',
+      policy: {
+        mode: 'rest',
+        reason: 'reduce loop pressure while preserving obligations',
+        actionCard: {
+          intent: 'rest',
+          goodLifeLanes: ['friction'],
+          evidenceRequired: true,
+          riskTier: 0,
+          reversible: true,
+          expectedOutcome: 'lower loop pressure',
+          stopCondition: 'obligations preserved',
+        },
+      },
+      lanes: {
+        friction: { status: 'watch', reasons: ['loop pressure is high'] },
+      },
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 0, unverifiable: 0, total: 0 },
+      },
+    }),
+    regulator: {
+      daily: {
+        date: '2026-05-08',
+        selfMaintenanceActions: 7,
+        actions: [
+          { at: '2026-05-08T09:00:00.000Z', agendaId: 'ag-learn-1', mode: 'learn', category: 'grounded-learning' },
+          { at: '2026-05-08T09:10:00.000Z', agendaId: 'ag-repair-1', mode: 'repair', category: 'resolves-drift' },
+          { at: '2026-05-08T09:20:00.000Z', agendaId: 'ag-help-1', mode: 'help', category: 'visible-progress' },
+          { at: '2026-05-08T09:30:00.000Z', agendaId: 'ag-repair-2', mode: 'repair', category: 'resolves-drift', budgetedSelfMaintenance: false },
+          { at: '2026-05-08T09:40:00.000Z', agendaId: 'ag-rest-1', mode: 'rest', category: 'reduces-friction' },
+        ],
+      },
+    },
+    liveProblems: [],
+    obligations: { activeAgenda: [], activeGoals: [], counts: { activeAgenda: 0, activeGoals: 0, activeGoalsTrusted: true } },
+    now: NOW,
+  });
+
+  assert.equal(model.autonomyBudget.used, 2);
+  assert.equal(model.autonomyBudget.bypassUsed, 3);
+  assert.equal(model.autonomyBudget.exhausted, false);
+  assert.equal(model.autonomyBudget.status, 'available');
+  assert.match(model.autonomyBudget.reason, /3 repair\/help actions bypassed/);
+  assert.equal(model.operatorBrief.status, 'Clear');
+  assert.equal(model.detail.work.daily.selfMaintenanceActions, 2);
+  assert.equal(model.detail.work.daily.bypassActions, 3);
+});
+
+test('Good Life operator answer names reviewed goal before first active goal', () => {
+  const obligations = buildGoodLifeObligationSnapshot({
+    goals: {
+      active: [
+        ['goal_recent', {
+          id: 'goal_recent',
+          description: 'Recently created active goal',
+          status: 'active',
+          source: { origin: 'follow_up', label: 'follow-up' },
+          progress: 0,
+          createdAt: '2026-05-09T14:50:00.000Z',
+        }],
+        ['goal_force', {
+          id: 'goal_force',
+          description: 'Produce outputs/digest-6382.md',
+          status: 'active',
+          source: { origin: 'force-output', label: 'force-output' },
+          progress: 0,
+          createdAt: '2026-05-07T23:00:00.000Z',
+        }],
+      ],
+    },
+    now: NOW,
+  });
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    obligations,
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(model.work.activeGoals, 2);
+  assert.equal(model.work.goalsNeedingReview, 1);
+  const line = model.operatorAnswer.find((entry) => entry.includes('goal(s) need operator review'));
+  assert.match(line, /top review goal: goal_force - Produce outputs\/digest-6382\.md/);
+  assert.doesNotMatch(line, /top goal goal_recent/);
+});
+
+test('Good Life operator answer includes agenda rows needing review', () => {
+  const obligations = buildGoodLifeObligationSnapshot({
+    agendaRows: [
+      {
+        type: 'add',
+        id: 'ag-old-good-life',
+        record: {
+          status: 'candidate',
+          content: 'Diagnose Good Life repair drift',
+          sourceSignal: 'good-life',
+          topicTags: ['good-life', 'good-life:repair'],
+          createdAt: '2026-05-08T11:30:00.000Z',
+        },
+      },
+    ],
+    now: NOW,
+  });
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    obligations,
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(model.work.activeAgenda, 1);
+  assert.equal(model.work.agendaNeedingReview, 1);
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Active work: 1; 1 agenda row(s) need review; top agenda ag-old-good-life')));
+});
+
+test('Good Life operator answer exposes latest recommended worker route', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    regulator: {
+      'repair:viability:critical': {
+        at: NOW,
+        agendaId: 'ag-worker-route',
+        mode: 'repair',
+        summary: 'repair - critical viability drift',
+        workerRoute: {
+          worker: 'systems',
+          reason: 'system viability needs host/process evidence',
+        },
+      },
+    },
+    obligations: {
+      activeAgenda: [{
+        id: 'ag-worker-route',
+        status: 'candidate',
+        content: 'Repair viability drift',
+        workerRoute: {
+          worker: 'systems',
+          reason: 'system viability needs host/process evidence',
+        },
+      }],
+      activeGoals: [],
+      latestAgendaById: {
+        'ag-worker-route': { status: 'candidate', updatedAt: NOW },
+      },
+      counts: { activeAgenda: 1, activeGoals: 0 },
+    },
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(model.latestRegulatorAction.workerRoute.worker, 'systems');
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Worker route: systems - system viability needs host/process evidence')));
+  assert.deepEqual(model.operatorBrief.target, {
+    tab: 'work',
+    id: 'ag-worker-route',
+    label: 'Open systems',
+    worker: 'systems',
+  });
+});
+
+test('Good Life operator brief uses inferred worker route for fresh agenda rows', () => {
+  const obligations = buildGoodLifeObligationSnapshot({
+    agendaRows: [
+      {
+        type: 'add',
+        id: 'ag-fresh-good-life-rest',
+        record: {
+          status: 'candidate',
+          content: 'Diagnose Good Life friction drift and reduce loop pressure',
+          sourceSignal: 'good-life',
+          topicTags: ['good-life', 'good-life:friction', 'mode:rest'],
+          createdAt: '2026-05-08T13:30:00.000Z',
+        },
+      },
+    ],
+    now: NOW,
+  });
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    obligations,
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(model.operatorBrief.status, 'Working');
+  assert.deepEqual(model.operatorBrief.target, {
+    tab: 'work',
+    id: 'ag-fresh-good-life-rest',
+    label: 'Open systems',
+    worker: 'systems',
+  });
+});
+
+test('Good Life operator answer hides worker route for stale latest agenda action', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    regulator: {
+      'repair:viability:critical': {
+        at: NOW,
+        agendaId: 'ag-worker-route',
+        mode: 'repair',
+        summary: 'repair - critical viability drift',
+        workerRoute: {
+          worker: 'systems',
+          reason: 'system viability needs host/process evidence',
+        },
+      },
+    },
+    obligations: {
+      activeAgenda: [],
+      activeGoals: [],
+      latestAgendaById: {
+        'ag-worker-route': { status: 'stale', updatedAt: NOW },
+      },
+      counts: { activeAgenda: 0, activeGoals: 0 },
+    },
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(model.latestRegulatorAction.agendaStatus, 'stale');
+  assert.equal(model.work.activeTotal, 0);
+  assert.equal(model.operatorAnswer.some((line) => line.includes('Worker route: systems')), false);
+  assert.notEqual(model.operatorBrief.target.worker, 'systems');
+  assert.notEqual(model.operatorBrief.target.label, 'Open systems');
+});
+
+test('Good Life operator brief ignores stale latest worker route when active goals remain', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    regulator: {
+      'repair:viability:critical': {
+        at: NOW,
+        agendaId: 'ag-worker-route',
+        mode: 'repair',
+        summary: 'repair - critical viability drift',
+        workerRoute: {
+          worker: 'systems',
+          reason: 'system viability needs host/process evidence',
+        },
+      },
+    },
+    obligations: {
+      activeAgenda: [],
+      activeGoals: [{
+        id: 'goal-visible-progress',
+        description: 'Produce visible progress from current evidence',
+        status: 'active',
+        createdAt: NOW,
+      }],
+      latestAgendaById: {
+        'ag-worker-route': { status: 'stale', updatedAt: NOW },
+      },
+      counts: { activeAgenda: 0, activeGoals: 1 },
+    },
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(model.work.activeTotal, 1);
+  assert.equal(model.operatorBrief.next, 'Top goal: goal-visible-progress - Produce visible progress from current evidence');
+  assert.deepEqual(model.operatorBrief.target, {
+    tab: 'work',
+    id: 'goal-visible-progress',
+    label: 'Review Work',
+    worker: null,
+  });
+});
+
+test('Good Life operator brief includes active goal artifact status', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    obligations: {
+      activeAgenda: [],
+      activeGoals: [{
+        id: 'goal-output',
+        description: 'Produce outputs/digest-6427.md',
+        rawDescription: 'Produce outputs/digest-6427.md. Synthesize current evidence.',
+        artifact: {
+          relativePath: 'outputs/digest-6427.md',
+          exists: false,
+        },
+        status: 'active',
+        source: 'force-output',
+        createdAt: NOW,
+        ageMin: 60,
+      }],
+      counts: { activeAgenda: 0, activeGoals: 1 },
+    },
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(model.operatorBrief.next, 'Top goal: goal-output - Produce outputs/digest-6427.md; artifact pending: outputs/digest-6427.md; review in 11h');
+  assert.equal(model.work.status, 'working');
+  assert.equal(model.work.statusText, 'artifact pending: outputs/digest-6427.md; review in 11h');
+  assert.equal(model.work.topGoal.artifactStatus, 'artifact pending: outputs/digest-6427.md; review in 11h');
+  assert.ok(model.operatorAnswer.some((line) => line.includes('artifact pending: outputs/digest-6427.md; review in 11h')));
+});
+
+test('Good Life operator work summary prefers concrete artifact goals over newer synthesis goals', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    obligations: {
+      activeAgenda: [],
+      activeGoals: [
+        {
+          id: 'synthesis_7004',
+          description: 'Consolidate recent cognitive work into a comprehensive knowledge report.',
+          rawDescription: 'Consolidate recent cognitive work into a comprehensive knowledge report.',
+          status: 'active',
+          source: 'system_scheduler',
+          progress: 0.42,
+          createdAt: NOW,
+        },
+        {
+          id: 'goal-output',
+          description: 'Produce outputs/digest-6427.md',
+          rawDescription: 'Produce outputs/digest-6427.md. Synthesize current evidence.',
+          artifact: {
+            relativePath: 'outputs/digest-6427.md',
+            exists: false,
+          },
+          status: 'active',
+          source: 'force-output',
+          createdAt: '2026-05-10T03:43:33.826Z',
+          ageMin: 78,
+        },
+      ],
+      counts: { activeAgenda: 0, activeGoals: 2, activeGoalsShown: 2, activeGoalsTrusted: true },
+    },
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(model.work.topGoal.id, 'goal-output');
+  assert.equal(model.work.statusText, 'artifact pending: outputs/digest-6427.md; review in 11h');
+  assert.match(model.operatorDigest.currentWork, /outputs\/digest-6427\.md/);
+  assert.doesNotMatch(model.operatorDigest.currentWork, /synthesis_7004/);
+});
+
+test('Good Life operator digest names top active goal when no artifact is pending', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    obligations: {
+      activeAgenda: [],
+      activeGoals: [{
+        id: 'synthesis_7004',
+        description: 'Consolidate recent cognitive work into a comprehensive knowledge report.',
+        rawDescription: 'Consolidate recent cognitive work into a comprehensive knowledge report.',
+        status: 'active',
+        source: 'system_scheduler',
+        progress: 0.42,
+        createdAt: NOW,
+        review: { recommended: false, required: false },
+      }],
+      counts: { activeAgenda: 0, activeGoals: 1, activeGoalsShown: 1, activeGoalsTrusted: true },
+    },
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.match(model.operatorDigest.currentWork, /synthesis_7004/);
+  assert.match(model.operatorDigest.currentWork, /Consolidate recent cognitive work/);
+  assert.notEqual(model.operatorDigest.currentWork, 'autonomous work active; no user intervention needed yet');
+});
+
+test('Good Life operator marks superseded repair agenda for review when registry is clear', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      policy: {
+        mode: 'learn',
+        reason: 'no critical drift; pursue learning progress while staying useful',
+        actionCard: {
+          intent: 'learn',
+          expectedOutcome: 'new learning-progress evidence is produced and grounded',
+          stopCondition: 'finding is crystallized or discarded with evidence',
+        },
+      },
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 13, unverifiable: 0, total: 13 },
+      },
+    }),
+    obligations: {
+      activeAgenda: [{
+        id: 'ag-repair-old',
+        status: 'candidate',
+        content: 'Diagnose Good Life repair drift',
+        sourceSignal: 'good-life',
+        topicTags: ['good-life', 'good-life:repair', 'worker:systems'],
+        temporalContext: {
+          policy: 'repair',
+          workerRoute: {
+            worker: 'systems',
+            reason: 'system viability needs host/process evidence',
+          },
+        },
+        workerRoute: {
+          worker: 'systems',
+          reason: 'system viability needs host/process evidence',
+        },
+      }],
+      activeGoals: [],
+      latestAgendaById: {
+        'ag-repair-old': { status: 'candidate', updatedAt: NOW },
+      },
+      counts: { activeAgenda: 1, activeGoals: 0 },
+    },
+    liveProblems: [],
+    now: NOW,
+  });
+
+  const row = model.detail.work.obligations.activeAgenda[0];
+  assert.equal(model.work.agendaNeedingReview, 1);
+  assert.equal(row.review.recommended, true);
+  assert.match(row.review.reason, /superseded by current learn mode/);
+  assert.ok(model.operatorAnswer.some((line) => line.includes('1 agenda row(s) need review')));
+  assert.deepEqual(model.operatorBrief.target, {
+    tab: 'work',
+    id: 'ag-repair-old',
+    label: 'Review Work',
+    worker: null,
+  });
+  assert.match(model.operatorBrief.next, /superseded by current learn mode/);
+});
+
+test('Good Life operator exposes three ring readiness for user action, verifier, and work loop', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    liveProblems: [{
+      id: 'bridge_restart_needed',
+      state: 'open',
+      claim: 'Bridge needs a user restart decision',
+      openedAt: '2026-05-08T13:00:00.000Z',
+      stepIndex: 1,
+      remediation: [
+        { type: 'dispatch_to_worker', args: { worker: 'systems' } },
+        { type: 'notify_jtr', args: { text: 'Choose whether to restart the bridge.' } },
+      ],
+      lastResult: { ok: false, detail: 'bridge still unavailable' },
+    }],
+    obligations: {
+      activeAgenda: [{
+        id: 'ag-bridge',
+        status: 'candidate',
+        content: 'Diagnose bridge restart path',
+        createdAt: NOW,
+      }],
+      activeGoals: [],
+      counts: { activeAgenda: 1, activeGoals: 0 },
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.operatorRings.length, 3);
+  assert.deepEqual(model.operatorRings.map((ring) => ring.id), ['good-life', 'internal-check', 'work-loop']);
+  assert.equal(model.operatorRings[0].state, 'needs-user');
+  assert.equal(model.operatorRings[1].state, 'needs-user');
+  assert.match(model.operatorRings[1].detail, /1 verifier-gated issue/);
+  assert.equal(model.operatorRings[2].state, 'working');
+  assert.equal(model.operatorRings[0].action.tab, 'issues');
+  assert.equal(model.operatorRings[1].action.tab, 'issues');
+  assert.equal(model.operatorRings[2].action.tab, 'work');
+});

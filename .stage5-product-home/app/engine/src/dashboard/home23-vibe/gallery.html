@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Home23 Vibe Gallery</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@300..900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/home23-dashboard.css">
+  <style>
+    .h23-vg-shell {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 24px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .h23-vg-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+
+    .h23-vg-title {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .h23-vg-title h1 {
+      font-size: 1.8rem;
+      color: #fff;
+      letter-spacing: -0.03em;
+    }
+
+    .h23-vg-title p {
+      color: var(--text-secondary);
+      font-size: 0.95rem;
+    }
+
+    .h23-vg-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .h23-vg-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 40px;
+      padding: 0 16px;
+      border-radius: 999px;
+      border: 1px solid var(--glass-border);
+      background: var(--glass-primary);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      color: var(--text-primary);
+      text-decoration: none;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .h23-vg-btn:hover {
+      border-color: rgba(10, 132, 255, 0.48);
+      background: var(--glass-border);
+    }
+
+    .h23-vg-btn.primary {
+      background: linear-gradient(135deg, rgba(37, 99, 235, 0.95), rgba(56, 189, 248, 0.95));
+      color: #fff;
+      border: none;
+    }
+
+    .h23-vg-meta {
+      margin-bottom: 20px;
+      padding: 14px 16px;
+      border-radius: var(--radius-md);
+      background: var(--glass-primary);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--glass-border);
+      color: var(--text-secondary);
+      box-shadow: var(--shadow-glass);
+    }
+
+    .h23-vg-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 18px;
+    }
+
+    .h23-vg-card {
+      background: var(--glass-primary);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      cursor: pointer;
+      transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+      box-shadow: var(--shadow-glass);
+    }
+
+    .h23-vg-card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(10, 132, 255, 0.35);
+      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
+    }
+
+    .h23-vg-card img {
+      display: block;
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      object-fit: cover;
+      background: rgba(0, 0, 0, 0.3);
+    }
+
+    .h23-vg-card-body {
+      padding: 14px;
+    }
+
+    .h23-vg-caption {
+      color: var(--text-primary);
+      font-size: 0.96rem;
+      line-height: 1.5;
+      margin-bottom: 10px;
+    }
+
+    .h23-vg-seed {
+      color: var(--text-secondary);
+      font-size: 0.82rem;
+      line-height: 1.45;
+      margin-bottom: 10px;
+    }
+
+    .h23-vg-date {
+      color: var(--text-muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .h23-vg-source {
+      display: inline-flex;
+      width: fit-content;
+      margin-bottom: 8px;
+      padding: 3px 7px;
+      border-radius: 6px;
+      background: rgba(90, 200, 250, 0.12);
+      color: rgba(150, 226, 255, 0.86);
+      font-size: 0.7rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .h23-vg-empty {
+      padding: 60px 24px;
+      text-align: center;
+      color: var(--text-secondary);
+      background: var(--glass-primary);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px dashed var(--glass-border);
+      border-radius: var(--radius-md);
+    }
+
+    .h23-vg-lightbox {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: rgba(4, 10, 20, 0.9);
+      backdrop-filter: blur(10px);
+      z-index: 9999;
+    }
+
+    .h23-vg-lightbox.open {
+      display: flex;
+    }
+
+    .h23-vg-lightbox-panel {
+      width: min(1100px, 100%);
+      max-height: 92vh;
+      overflow: auto;
+      background: var(--glass-primary);
+      backdrop-filter: blur(30px);
+      -webkit-backdrop-filter: blur(30px);
+      border: 1px solid var(--glass-border);
+      border-radius: 20px;
+      padding: 18px;
+      box-shadow: var(--shadow-glass);
+    }
+
+    .h23-vg-lightbox-top {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+      gap: 18px;
+    }
+
+    .h23-vg-lightbox img {
+      width: 100%;
+      max-height: calc(92vh - 96px);
+      object-fit: contain;
+      border-radius: 14px;
+      background: rgba(0, 0, 0, 0.3);
+    }
+
+    .h23-vg-lightbox-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .h23-vg-lightbox-copy h2 {
+      font-size: 1.1rem;
+      color: #fff;
+    }
+
+    .h23-vg-lightbox-copy p {
+      color: var(--text-secondary);
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+
+    .h23-vg-close {
+      margin-left: auto;
+      margin-bottom: 12px;
+    }
+
+    @media (max-width: 720px) {
+      .h23-vg-lightbox-top {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .h23-vg-shell {
+        padding: 16px;
+      }
+
+      .h23-vg-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Glass Light Vibe gallery surface */
+    body.h23-vibe-page {
+      --glass-primary: var(--h23-glass-card);
+      --glass-secondary: var(--h23-glass-input);
+      --glass-border: var(--h23-glass-border);
+      --text-primary: var(--h23-text-primary);
+      --text-secondary: var(--h23-text-secondary);
+      --text-muted: var(--h23-text-muted-aa);
+      --accent-blue: var(--h23-accent);
+      --shadow-glass: var(--h23-shadow-card);
+      min-height: 100vh;
+      color: var(--h23-text-body);
+      font-family: var(--h23-font-ui);
+      background: var(--h23-bg-wash-1), var(--h23-bg-wash-2), var(--h23-bg);
+      background-attachment: fixed;
+    }
+
+    body.h23-vibe-page::before {
+      background: none;
+    }
+
+    body.h23-vibe-page #particles-js {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0.1;
+      pointer-events: none;
+    }
+
+    body.h23-vibe-page #particles-js canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    body.h23-vibe-page .h23-vg-shell {
+      position: relative;
+      z-index: 1;
+      max-width: 1360px;
+      padding: 36px 28px 52px;
+      margin: 0 auto;
+    }
+
+    body.h23-vibe-page .h23-vg-header {
+      margin-bottom: 20px;
+    }
+
+    body.h23-vibe-page .h23-vg-title h1 {
+      color: var(--h23-text-heading);
+      font-size: clamp(2rem, 3vw, 2.8rem);
+      font-weight: 600;
+      letter-spacing: -0.045em;
+    }
+
+    body.h23-vibe-page .h23-vg-title p {
+      color: var(--h23-text-secondary);
+      font-size: 1rem;
+    }
+
+    body.h23-vibe-page .h23-vg-btn {
+      min-height: 42px;
+      color: var(--h23-text-secondary);
+      border-color: var(--h23-input-border);
+      border-radius: var(--h23-radius-pill);
+      background: rgba(255, 255, 255, 0.62);
+      box-shadow: var(--h23-shadow-pill);
+      font-family: var(--h23-font-ui);
+    }
+
+    body.h23-vibe-page .h23-vg-btn:hover {
+      color: var(--h23-accent);
+      border-color: var(--h23-accent-tint-border);
+      background: var(--h23-hover-card);
+    }
+
+    body.h23-vibe-page .h23-vg-btn.primary {
+      color: #fff;
+      border-color: var(--h23-accent);
+      background: var(--h23-accent);
+      box-shadow: var(--h23-shadow-accent-btn);
+    }
+
+    body.h23-vibe-page :is(.h23-vg-btn, .h23-vg-card):focus-visible {
+      outline: 3px solid var(--h23-accent-tint-border);
+      outline-offset: 3px;
+    }
+
+    body.h23-vibe-page .h23-vg-meta {
+      margin-bottom: 22px;
+      padding: 13px 16px;
+      color: var(--h23-text-secondary);
+      border-color: var(--h23-glass-border);
+      border-radius: var(--h23-radius-card);
+      background: var(--h23-glass-panel);
+      box-shadow: var(--h23-shadow-card);
+      font-family: var(--h23-font-mono);
+      font-size: 0.8rem;
+      line-height: 1.65;
+    }
+
+    body.h23-vibe-page .h23-vg-grid {
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: var(--h23-gap);
+    }
+
+    body.h23-vibe-page .h23-vg-card {
+      width: 100%;
+      padding: 0;
+      background: var(--h23-glass-card);
+      border: 1px solid var(--h23-glass-border);
+      border-radius: var(--h23-radius-card);
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      appearance: none;
+      box-shadow: var(--h23-shadow-card);
+      backdrop-filter: blur(var(--h23-glass-blur-card));
+      -webkit-backdrop-filter: blur(var(--h23-glass-blur-card));
+    }
+
+    body.h23-vibe-page .h23-vg-card:hover {
+      border-color: var(--h23-accent-tint-border);
+      background: var(--h23-hover-card);
+      box-shadow: var(--h23-shadow-panel);
+    }
+
+    body.h23-vibe-page .h23-vg-card img {
+      background: #d8dee7;
+    }
+
+    body.h23-vibe-page .h23-vg-card-body {
+      padding: 15px 16px 17px;
+    }
+
+    body.h23-vibe-page .h23-vg-caption {
+      color: var(--h23-text-body);
+    }
+
+    body.h23-vibe-page :is(.h23-vg-seed, .h23-vg-date) {
+      color: var(--h23-text-muted-aa);
+    }
+
+    body.h23-vibe-page .h23-vg-date,
+    body.h23-vibe-page .h23-vg-source {
+      font-family: var(--h23-font-mono);
+    }
+
+    body.h23-vibe-page .h23-vg-source {
+      color: var(--h23-accent);
+      border-radius: var(--h23-radius-pill);
+      background: var(--h23-accent-tint);
+    }
+
+    body.h23-vibe-page .h23-vg-empty {
+      color: var(--h23-text-secondary);
+      border-color: var(--h23-accent-tint-border);
+      border-radius: var(--h23-radius-card);
+      background: var(--h23-glass-card);
+      box-shadow: var(--h23-shadow-card);
+    }
+
+    body.h23-vibe-page .h23-vg-lightbox {
+      background: var(--h23-overlay-backdrop);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+
+    body.h23-vibe-page .h23-vg-lightbox-panel {
+      color: var(--h23-text-body);
+      border-color: var(--h23-glass-border);
+      border-radius: var(--h23-radius-overlay);
+      background: var(--h23-glass-overlay);
+      box-shadow: var(--h23-shadow-overlay);
+      backdrop-filter: blur(var(--h23-glass-blur-overlay));
+      -webkit-backdrop-filter: blur(var(--h23-glass-blur-overlay));
+    }
+
+    body.h23-vibe-page .h23-vg-lightbox img {
+      background: #d8dee7;
+    }
+
+    body.h23-vibe-page .h23-vg-lightbox-copy h2 {
+      color: var(--h23-text-heading);
+      font-weight: 600;
+    }
+
+    body.h23-vibe-page .h23-vg-lightbox-copy p {
+      color: var(--h23-text-secondary);
+    }
+
+    @media (max-width: 640px) {
+      body.h23-vibe-page .h23-vg-shell {
+        padding: 22px 14px 36px;
+      }
+
+      body.h23-vibe-page .h23-vg-actions,
+      body.h23-vibe-page .h23-vg-btn {
+        width: 100%;
+      }
+
+      body.h23-vibe-page .h23-vg-lightbox {
+        padding: 10px;
+      }
+
+      body.h23-vibe-page .h23-vg-lightbox-panel {
+        padding: 12px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      body.h23-vibe-page #particles-js {
+        display: none;
+      }
+
+      body.h23-vibe-page *,
+      body.h23-vibe-page *::before,
+      body.h23-vibe-page *::after {
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+      }
+    }
+  </style>
+</head>
+<body class="h23-vibe-page">
+  <div id="particles-js"></div>
+  <div class="h23-vg-shell">
+    <div class="h23-vg-header">
+      <div class="h23-vg-title">
+        <h1>Vibe Gallery</h1>
+        <p>CHAOS MODE image history across generated images and configured source folders.</p>
+      </div>
+      <div class="h23-vg-actions">
+        <a class="h23-vg-btn" href="/home23">&larr; Dashboard</a>
+      </div>
+    </div>
+
+    <div class="h23-vg-meta" id="meta-bar">Loading vibe history...</div>
+    <div class="h23-vg-grid" id="gallery-grid"></div>
+  </div>
+
+  <div class="h23-vg-lightbox" id="lightbox">
+    <div class="h23-vg-lightbox-panel">
+      <button class="h23-vg-btn h23-vg-close" id="lightbox-close">Close</button>
+      <div class="h23-vg-lightbox-top">
+        <img id="lightbox-image" alt="Vibe image">
+        <div class="h23-vg-lightbox-copy">
+          <h2 id="lightbox-caption"></h2>
+          <p id="lightbox-seed"></p>
+          <p id="lightbox-prompt"></p>
+          <p id="lightbox-meta"></p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
+  <script>
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (!reduceMotion && typeof particlesJS !== 'undefined') {
+      particlesJS('particles-js', {
+        particles: {
+          number: { value: 40, density: { enable: true, value_area: 1000 } },
+          color: { value: ['#ffffff', '#007AFF', '#00C7BE', '#30D158'] },
+          shape: { type: 'circle' },
+          opacity: { value: 0.3, random: true, anim: { enable: true, speed: 1, opacity_min: 0.1, sync: false } },
+          size: { value: 3, random: true, anim: { enable: true, speed: 2, size_min: 1, sync: false } },
+          line_linked: { enable: true, distance: 200, color: '#ffffff', opacity: 0.15, width: 1 },
+          move: { enable: true, speed: 0.8, direction: 'none', random: true, straight: false, out_mode: 'out', bounce: false }
+        },
+        interactivity: {
+          detect_on: 'canvas',
+          events: { onhover: { enable: true, mode: 'bubble' }, onclick: { enable: false }, resize: true },
+          modes: { bubble: { distance: 200, size: 6, duration: 2, opacity: 0.6, speed: 3 } }
+        },
+        retina_detect: true
+      });
+    }
+
+    const grid = document.getElementById('gallery-grid');
+    const metaBar = document.getElementById('meta-bar');
+    const lightbox = document.getElementById('lightbox');
+    const lightboxImage = document.getElementById('lightbox-image');
+    const lightboxCaption = document.getElementById('lightbox-caption');
+    const lightboxSeed = document.getElementById('lightbox-seed');
+    const lightboxPrompt = document.getElementById('lightbox-prompt');
+    const lightboxMeta = document.getElementById('lightbox-meta');
+
+    function describeHours(hours) {
+      if (!Number.isFinite(hours) || hours <= 0) return '';
+      return `${hours}h`;
+    }
+
+    function formatDate(iso) {
+      try {
+        return new Date(iso).toLocaleString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit'
+        });
+      } catch {
+        return iso || '';
+      }
+    }
+
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function sourceLabel(item) {
+      return item.source === 'external' ? 'Source image' : `${item.agentName || 'Home23'} generated`;
+    }
+
+    function openLightbox(item) {
+      lightboxImage.src = item.url;
+      lightboxCaption.textContent = item.caption || item.title || 'Vibe image';
+      lightboxSeed.textContent = [sourceLabel(item), item.algorithm ? `Algorithm: ${item.algorithm}` : ''].filter(Boolean).join(' · ');
+      lightboxPrompt.textContent = item.prompt ? `Prompt: ${item.prompt}` : 'No prompt metadata recorded for this image.';
+      lightboxMeta.textContent = [formatDate(item.generatedAt), item.model, item.sourceRoot].filter(Boolean).join(' · ');
+      lightbox.classList.add('open');
+      if (item.id) {
+        const url = new URL(window.location.href);
+        url.searchParams.set('image', item.id);
+        window.history.replaceState(null, '', url);
+      }
+    }
+
+    function closeLightbox() {
+      lightbox.classList.remove('open');
+      lightboxImage.src = '';
+    }
+
+    document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
+    lightbox.addEventListener('click', (event) => {
+      if (event.target === lightbox) closeLightbox();
+    });
+
+    async function loadGallery() {
+      try {
+        const selectedId = new URLSearchParams(window.location.search).get('image');
+        const res = await fetch('/home23/api/vibe/gallery?limit=all', { signal: AbortSignal.timeout(10000) });
+        const data = await res.json();
+        const rotation = data.policy?.rotationIntervalSeconds
+          ? `rotates every ${data.policy.rotationIntervalSeconds}s`
+          : '';
+        const cadence = data.policy?.autoGenerate
+          ? `auto-generates at most every ${describeHours(data.policy.generationIntervalHours)}`
+          : '';
+        metaBar.textContent = [
+          `${data.total} image${data.total === 1 ? '' : 's'} available`,
+          `${data.storedTotal || 0} generated`,
+          `${data.externalTotal || 0} source`,
+          rotation,
+          cadence,
+          data.generating ? 'generation in progress' : ''
+        ].filter(Boolean).join(' · ');
+
+        if (!data.images || data.images.length === 0) {
+          grid.innerHTML = '<div class="h23-vg-empty">No vibe images yet. Open the dashboard Home tab to let the Vibe tile seed the gallery.</div>';
+          return;
+        }
+
+        grid.innerHTML = data.images.map((item, index) => {
+          const caption = escapeHtml(item.caption || item.prompt || '');
+          return `
+          <button class="h23-vg-card" type="button" aria-label="Open Vibe image ${index + 1}" data-index="${index}">
+            <img src="${item.url}" alt="Vibe image ${index + 1}" loading="lazy">
+            <div class="h23-vg-card-body">
+              <div class="h23-vg-source">${escapeHtml(sourceLabel(item))}</div>
+              <div class="h23-vg-caption">${caption}</div>
+              <div class="h23-vg-date">${formatDate(item.generatedAt)}</div>
+            </div>
+          </button>`;
+        }).join('');
+
+        grid.querySelectorAll('.h23-vg-card').forEach((card) => {
+          const openCard = () => {
+            const item = data.images[Number(card.dataset.index)];
+            if (item) openLightbox(item);
+          };
+          card.addEventListener('click', openCard);
+        });
+
+        if (selectedId) {
+          const selected = data.images.find((item) => item.id === selectedId || item.sourceId === selectedId);
+          if (selected) openLightbox(selected);
+        }
+      } catch (error) {
+        grid.innerHTML = `<div class="h23-vg-empty">Failed to load gallery: ${error.message}</div>`;
+      }
+    }
+
+    loadGallery();
+  </script>
+</body>
+</html>

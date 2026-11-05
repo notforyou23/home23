@@ -1,0 +1,22 @@
+{
+  "agents": [
+    {
+      "name": "Jerry",
+      "displayName": "Jerry",
+      "model": "gpt-5.2",
+      "provider": "openai",
+      "owner": "home",
+      "timezone": "America/New_York",
+      "status": "online",
+      "isPrimary": true,
+      "ports": {
+        "bridge": 5004,
+        "dashboard": 5002,
+        "engine": 5003,
+        "mcp": 5005
+      }
+    }
+  ],
+  "currentAgent": "Jerry",
+  "primaryAgent": "Jerry"
+}

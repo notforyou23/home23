@@ -1,0 +1,14 @@
+{
+  "name": "home23-substrate",
+  "version": "0.1.0",
+  "description": "Home23 Substrate OS — Cut 1 Body",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test --test-concurrency=1 tests/*.test.ts"
+  }
+}

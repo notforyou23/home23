@@ -1,0 +1,16 @@
+{
+  "evidenceMode": "fixture",
+  "candidateSha": "9ae494591e164b11450323d058b684f7a3dbadd0",
+  "capturedAt": "2026-08-25T20:00:00.000Z",
+  "source": { "headSha": "9ae494591e164b11450323d058b684f7a3dbadd0", "branch": "fixture-candidate", "clean": true, "trackedTreeSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "buildSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+  "generatedConfig": { "ecosystemSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "coordinationEntryCount": 1, "coordinationAutorestart": false },
+  "migrations": { "currentSchemaVersion": 0, "targetSchemaVersion": 5, "planSha256": "c4a9e8a40dbf0c310181b818be9b5aa9788527cf0af4975004e70a3f9e915b9f", "targetSchemaSha256": "5f2eba4c6abc23f455188c88c3cad352fd31ee708458aa229e2b7da89f65f69d" },
+  "featureFlags": { "coordination.apple.iphone_cutover": false, "coordination.apple.mac_cutover": false, "coordination.bot_lifecycle.enabled": false, "coordination.channels.enabled": false, "coordination.compaction.enabled": false, "coordination.import.shadow_enabled": false, "coordination.process.enabled": false, "coordination.public_api.enabled": false, "coordination.resident.forrest.enabled": false, "coordination.resident.jerry.enabled": false, "coordination.search.canonical": false },
+  "snapshot": { "databaseSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "walSha256": null, "shmSha256": null, "authorityHistorySha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "createdBeforeRehearsal": true },
+  "topology": { "legacyWriterIds": ["legacy-conversation-writer"], "coordinationWriterIds": [], "coordinationProcessRunning": false },
+  "bindings": [
+    { "slug": "jerry", "botId": "bot-jerry", "channelId": "channel-jerry", "conversationId": "conversation-jerry", "mailbox": "jerry", "runtimeInstanceId": "jerry-resident-1" },
+    { "slug": "forrest", "botId": "bot-forrest", "channelId": "channel-forrest", "conversationId": "conversation-forrest", "mailbox": "forrest", "runtimeInstanceId": "forrest-resident-1" }
+  ],
+  "rollback": { "snapshotSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "ecosystemSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "sourceSha": "9ae494591e164b11450323d058b684f7a3dbadd0", "legacyWriterIds": ["legacy-conversation-writer"] }
+}

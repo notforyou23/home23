@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://home23.local/contracts/client-capabilities.schema.json",
+  "title": "Home23 Client Capabilities",
+  "allOf": [
+    { "$ref": "#/$defs/clientCapabilitiesResponse" }
+  ],
+  "$defs": {
+    "clientCapabilitiesResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "generatedAt", "server", "platforms", "features", "endpoints", "auth", "selectedAgent", "query", "chat", "push", "houseGlobal"],
+      "properties": {
+        "contractVersion": { "const": "2026.07.14" },
+        "generatedAt": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{3})?Z$"
+        },
+        "server": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name"],
+          "properties": {
+            "name": { "type": "string" },
+            "version": { "type": ["string", "null"] }
+          }
+        },
+        "platforms": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ios", "mac", "tvos"],
+          "properties": {
+            "ios": { "$ref": "#/$defs/platformCapabilities" },
+            "mac": { "$ref": "#/$defs/platformCapabilities" },
+            "tvos": { "$ref": "#/$defs/platformCapabilities" }
+          }
+        },
+        "features": {
+          "type": "object",
+          "additionalProperties": { "type": "boolean" },
+          "required": ["multiAgent", "selectedAgentChat", "queryStreaming", "saunaControl", "pushRegistration", "settingsControlPlane", "chatTurnStatus", "operatorDiagnostics"]
+        },
+        "endpoints": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "required": ["agents", "settingsStatus", "settingsScope", "settingsModels", "settingsQuery", "chatHealth", "chatModels", "chatTurn", "chatStream", "chatPending", "chatStopTurn", "chatHistory", "chatConversations", "chatTurnStatus", "deviceRegister", "queryCatalog", "queryRun", "queryStream", "queryNotebook", "queryOperation", "queryOperationEvents", "queryOperationResult", "queryOperationExport", "queryOperationCancel", "queryOperationActions", "queryOperationNotifications", "queryOperationHistory", "queryDeviceCredential", "queryWebSession", "workers", "media", "saunaTileData"]
+        },
+        "auth": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["dashboard", "bridge", "queryNotebook", "queryNotebookMethods"],
+          "properties": {
+            "dashboard": { "type": "string" },
+            "bridge": { "type": "string" },
+            "queryNotebook": { "const": "required" },
+            "queryNotebookMethods": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "uniqueItems": true,
+              "prefixItems": [
+                { "const": "device-bearer" },
+                { "const": "same-origin-session" }
+              ],
+              "items": false
+            }
+          }
+        },
+        "selectedAgent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "supported"],
+          "properties": {
+            "source": { "type": "string" },
+            "supported": { "type": "boolean" }
+          }
+        },
+        "query": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["facade", "directCosmo", "streaming", "availabilityEndpoint", "notebookVersion", "progressSnapshots", "actionTokens", "deviceCredentials", "webSessions", "notificationSubscriptions", "historyRemoval", "exportFormats"],
+          "properties": {
+            "facade": { "type": "boolean" },
+            "directCosmo": { "type": "boolean" },
+            "streaming": { "type": "boolean" },
+            "availabilityEndpoint": { "type": "string" },
+            "notebookVersion": { "const": 1 },
+            "progressSnapshots": { "const": true },
+            "actionTokens": { "const": true },
+            "deviceCredentials": { "const": true },
+            "webSessions": { "const": true },
+            "notificationSubscriptions": { "const": true },
+            "historyRemoval": { "const": "terminal-only" },
+            "exportFormats": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "prefixItems": [{ "const": "markdown" }],
+              "items": false
+            }
+          }
+        },
+        "chat": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["turnStatus", "stopByTurnId", "resumePending"],
+          "properties": {
+            "turnStatus": { "type": "boolean" },
+            "stopByTurnId": { "type": "boolean" },
+            "resumePending": { "type": "boolean" }
+          }
+        },
+        "push": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["registration", "perAgentReceipts"],
+          "properties": {
+            "registration": { "type": "boolean" },
+            "perAgentReceipts": { "type": "boolean" }
+          }
+        },
+        "houseGlobal": {
+          "type": "object",
+          "additionalProperties": { "type": "boolean" },
+          "required": ["sauna"]
+        },
+        "minIOSBuild": { "type": ["integer", "null"] }
+      }
+    },
+    "platformCapabilities": {
+      "type": "object",
+      "additionalProperties": { "type": "boolean" },
+      "properties": {
+        "workers": { "type": ["boolean", "null"] }
+      },
+      "required": ["home", "query", "chat", "sauna", "settings", "diagnostics", "push"]
+    }
+  }
+}

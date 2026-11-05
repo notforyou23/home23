@@ -1,0 +1,12 @@
+{
+  "agent": "jerry",
+  "defaultModel": "gpt-5.5",
+  "defaultProvider": "openai-codex",
+  "defaultMode": "dive",
+  "enablePGSByDefault": false,
+  "pgsSweepModel": "claude-sonnet-4-7",
+  "pgsSweepProvider": "anthropic",
+  "pgsSynthModel": "claude-opus-4-8",
+  "pgsSynthProvider": "anthropic",
+  "pgsDepth": 0.25
+}

@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Home23">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#0a0908">
+  <meta name="format-detection" content="telephone=no">
+  <script src="/home23-theme.js"></script>
+  <title>Home23 — Chat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@300..900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/home23-dashboard.css">
+  <link rel="stylesheet" href="/home23-chat.css">
+  <style>
+    /* ── Standalone /chat page — mobile-first, scales up ── */
+
+    :root {
+      --sh-safe-top: env(safe-area-inset-top, 0px);
+      --sh-safe-bottom: env(safe-area-inset-bottom, 0px);
+      --sh-safe-left: env(safe-area-inset-left, 0px);
+      --sh-safe-right: env(safe-area-inset-right, 0px);
+      --sh-header-h: 52px;
+      --sh-kbd-offset: 0px;
+    }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      overscroll-behavior-y: none;
+    }
+
+    body {
+      background: var(--h23-bg, var(--h23-stage, #0a0908));
+    }
+
+    #particles-js {
+      display: none !important;
+    }
+
+    .sh-shell {
+      position: fixed;
+      inset: 0;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      padding-left: var(--sh-safe-left);
+      padding-right: var(--sh-safe-right);
+      /* Using dvh + a keyboard offset computed from visualViewport */
+      height: 100dvh;
+    }
+
+    /* Header */
+    .sh-header {
+      flex: 0 0 auto;
+      height: var(--sh-header-h);
+      padding-top: var(--sh-safe-top);
+      box-sizing: content-box;
+      display: grid;
+      grid-template-columns: 40px 1fr 40px;
+      gap: 6px;
+      align-items: center;
+      padding-left: 8px;
+      padding-right: 8px;
+      border-bottom: 1px solid var(--glass-border);
+      background: var(--glass-primary);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      position: relative;
+      z-index: 10;
+    }
+
+    .sh-icon-btn {
+      appearance: none;
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-secondary);
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .sh-icon-btn:active {
+      background: rgba(var(--h23-surface-rgb, 30,26,24), 0.7);
+    }
+    .sh-icon-btn:hover {
+      color: var(--text-primary);
+    }
+
+    .sh-title {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 10px;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .sh-title:active {
+      background: rgba(var(--h23-surface-rgb, 30,26,24), 0.55);
+    }
+    .sh-title-label {
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--text-primary);
+      max-width: 70vw;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .sh-title-sub {
+      font-size: 12px;
+      color: var(--text-muted);
+      max-width: 70vw;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .sh-title-caret {
+      display: inline-block;
+      margin-left: 4px;
+      opacity: 0.55;
+      font-size: 10px;
+      transform: translateY(-1px);
+    }
+
+    /* Messages area */
+    .sh-body {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    .sh-body .h23-chat-messages {
+      flex: 1 1 auto;
+      min-height: 0;
+      padding: 14px 14px 8px;
+      gap: 12px;
+      background: transparent;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+    }
+
+    .sh-body .h23-chat-msg {
+      max-width: 94%;
+      font-size: 17px;
+      line-height: 1.5;
+    }
+    .sh-body .h23-chat-msg.user {
+      padding: 12px 16px;
+      border-radius: 20px 20px 4px 20px;
+    }
+    .sh-body .h23-chat-msg.assistant {
+      padding: 10px 0;
+    }
+    .sh-body .h23-chat-msg.assistant pre {
+      font-size: 14px;
+      padding: 12px 14px;
+    }
+    .sh-body .h23-chat-msg.assistant code {
+      font-size: 14px;
+    }
+    .sh-body .h23-chat-thinking {
+      font-size: 14px;
+    }
+    .sh-body .h23-chat-tool {
+      font-size: 14px;
+    }
+    .sh-body .h23-chat-tool-args,
+    .sh-body .h23-chat-tool-result {
+      font-size: 13px;
+    }
+
+    /* Input bar */
+    .sh-input-bar {
+      flex: 0 0 auto;
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+      padding: 10px 12px calc(10px + var(--sh-safe-bottom));
+      border-top: 1px solid var(--glass-border);
+      background: var(--glass-primary);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      /* Lift above the on-screen keyboard (iOS visualViewport handler sets --sh-kbd-offset) */
+      transform: translateY(calc(var(--sh-kbd-offset) * -1));
+      transition: transform 0.12s ease-out;
+    }
+
+    .sh-input {
+      flex: 1 1 auto;
+      min-width: 0;
+      background: var(--glass-secondary);
+      border: 1px solid var(--glass-border);
+      color: var(--text-primary);
+      padding: 12px 16px;
+      border-radius: 20px;
+      font-size: 17px;           /* ≥16px prevents iOS zoom-on-focus */
+      font-family: inherit;
+      resize: none;
+      outline: none;
+      line-height: 1.4;
+      min-height: 48px;
+      max-height: 40dvh;
+      -webkit-appearance: none;
+    }
+    .sh-input:focus {
+      border-color: var(--accent-blue);
+    }
+    .sh-input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .sh-send-btn {
+      background: var(--accent-blue);
+      color: #fff;
+      border: none;
+      width: 48px;
+      height: 48px;
+      border-radius: 24px;
+      cursor: pointer;
+      font-size: 20px;
+      flex-basis: 48px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 48px;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .sh-send-btn:active {
+      transform: scale(0.96);
+    }
+    .sh-send-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    /* History drawer (slide from left) */
+    .sh-drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.18s ease-out;
+      z-index: 20;
+    }
+    .sh-drawer-backdrop.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .sh-drawer {
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: min(86vw, 360px);
+      padding-top: var(--sh-safe-top);
+      padding-bottom: var(--sh-safe-bottom);
+      padding-left: var(--sh-safe-left);
+      background:
+        var(--h23-raised),
+        rgba(6, 12, 24, 0.96);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      border-right: 1px solid var(--glass-border);
+      transform: translateX(-100%);
+      transition: transform 0.22s ease-out;
+      z-index: 21;
+      display: flex;
+      flex-direction: column;
+    }
+    .sh-drawer.open {
+      transform: translateX(0);
+    }
+
+    .sh-drawer-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--glass-border);
+    }
+    .sh-drawer-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .sh-drawer-actions {
+      display: flex;
+      gap: 6px;
+    }
+    .sh-drawer-list {
+      flex: 1;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .sh-drawer-list .h23-chat-conv-item {
+      padding: 14px 16px;
+    }
+    .sh-drawer-list .h23-chat-conv-preview {
+      font-size: 16px;
+    }
+    .sh-drawer-list .h23-chat-conv-meta {
+      font-size: 13px;
+    }
+
+    /* Bottom sheet (agent + model selectors) */
+    .sh-sheet-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.18s ease-out;
+      z-index: 30;
+    }
+    .sh-sheet-backdrop.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .sh-sheet {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      padding-bottom: var(--sh-safe-bottom);
+      padding-left: var(--sh-safe-left);
+      padding-right: var(--sh-safe-right);
+      background:
+        var(--h23-raised),
+        rgba(6, 12, 24, 0.98);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      border-top: 1px solid var(--glass-border);
+      border-top-left-radius: 20px;
+      border-top-right-radius: 20px;
+      transform: translateY(100%);
+      transition: transform 0.22s ease-out;
+      z-index: 31;
+      max-height: 80dvh;
+      overflow-y: auto;
+    }
+    .sh-sheet.open {
+      transform: translateY(0);
+    }
+    .sh-sheet-grip {
+      width: 42px;
+      height: 4px;
+      border-radius: 2px;
+      background: var(--h23-hairline-14);
+      margin: 8px auto 0;
+    }
+    .sh-sheet-body {
+      padding: 16px 18px 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .sh-field-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+    .sh-sheet .h23-chat-agent-select,
+    .sh-sheet .h23-chat-model-select {
+      font-size: 16px;  /* prevent iOS zoom on native picker */
+      padding: 12px 14px;
+      border-radius: 12px;
+      width: 100%;
+      min-height: 48px;
+    }
+    .sh-sheet-action {
+      appearance: none;
+      background: var(--glass-secondary);
+      border: 1px solid var(--glass-border);
+      color: var(--text-primary);
+      padding: 14px;
+      border-radius: 12px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: left;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .sh-sheet-action:active {
+      background: var(--h23-hover-row);
+    }
+    .sh-sheet-action.destructive {
+      color: var(--accent-red);
+    }
+
+    /* Scale up for tablet/desktop */
+    @media (min-width: 820px) {
+      .sh-shell {
+        max-width: none;
+        margin: 0;
+        border: 0;
+      }
+      .sh-header {
+        grid-template-columns: 48px 1fr auto;
+        padding-left: 16px;
+        padding-right: 16px;
+      }
+      .sh-body .h23-chat-messages {
+        padding: 20px 24px 12px;
+      }
+      .sh-input-bar {
+        padding: 14px 20px calc(16px + var(--sh-safe-bottom));
+      }
+      .sh-body .h23-chat-msg {
+        max-width: 88%;
+      }
+      .sh-dashboard-link {
+        display: inline-flex;
+      }
+    }
+
+    .sh-dashboard-link {
+      display: none;  /* hidden on mobile — action lives in the sheet */
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 13px;
+      padding: 8px 12px;
+      border-radius: 8px;
+    }
+    .sh-dashboard-link:hover {
+      color: var(--text-primary);
+      background: rgba(var(--h23-surface-rgb, 30,26,24), 0.55);
+    }
+
+    /* House language standalone Chat — tokens only; keep safe-area/keyboard. */
+    body.h23-chat-page {
+      --glass-primary: var(--h23-glass-panel);
+      --glass-secondary: var(--h23-glass-input);
+      --glass-border: var(--h23-hairline);
+      --text-primary: var(--h23-text-primary);
+      --text-secondary: var(--h23-text-secondary);
+      --text-muted: var(--h23-text-muted-aa);
+      --accent-blue: var(--h23-accent);
+      --accent-red: var(--h23-red-aa);
+      --shadow-glass: none;
+      color: var(--h23-paper);
+      font-family: var(--h23-font-ui);
+      background: var(--h23-stage) !important;
+    }
+
+    body.h23-chat-page::before {
+      content: none;
+      display: none;
+    }
+
+    body.h23-chat-page #particles-js {
+      display: none !important;
+    }
+
+    body.h23-chat-page .sh-shell {
+      background: var(--h23-card, var(--h23-stage));
+      box-shadow: none;
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+
+    body.h23-chat-page .sh-header,
+    body.h23-chat-page .sh-input-bar {
+      border-color: var(--h23-hairline-7);
+      background: var(--h23-card, var(--h23-stage));
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+
+    body.h23-chat-page .sh-title-label {
+      color: var(--h23-text-heading);
+      font-weight: 600;
+    }
+
+    body.h23-chat-page :is(.sh-title-sub, .sh-icon-btn, .sh-dashboard-link, .sh-field-label, .sh-drawer-title) {
+      color: var(--h23-text-secondary);
+    }
+
+    body.h23-chat-page :is(.sh-icon-btn, .sh-title, .sh-dashboard-link, .sh-sheet-action):hover {
+      color: var(--h23-accent);
+      background: var(--h23-accent-tint);
+    }
+
+    body.h23-chat-page :is(.sh-icon-btn, .sh-title, .sh-dashboard-link, .sh-sheet-action, .sh-input):focus-visible {
+      outline: 3px solid var(--h23-accent-tint-border);
+      outline-offset: 2px;
+    }
+
+    body.h23-chat-page .sh-input {
+      color: var(--h23-text-primary);
+      border-color: var(--h23-input-border);
+      background: var(--h23-glass-input);
+      box-shadow: inset 0 1px 2px rgba(30, 45, 70, 0.04);
+    }
+
+    body.h23-chat-page .sh-input:focus {
+      border-color: var(--h23-accent);
+      box-shadow: 0 0 0 3px var(--h23-accent-tint);
+    }
+
+    body.h23-chat-page .sh-input::placeholder {
+      color: var(--h23-text-muted);
+    }
+
+    body.h23-chat-page .sh-send-btn {
+      background: var(--h23-signal);
+      color: transparent;
+      box-shadow: none;
+    }
+
+    body.h23-chat-page .sh-send-btn:hover:not(:disabled) {
+      background: var(--h23-leonardo-ice);
+    }
+
+    body.h23-chat-page .sh-send-btn:disabled {
+      opacity: 0.35;
+    }
+
+    body.h23-chat-page :is(.sh-drawer-backdrop, .sh-sheet-backdrop) {
+      background: var(--h23-overlay-backdrop);
+    }
+
+    body.h23-chat-page :is(.sh-drawer, .sh-sheet) {
+      color: var(--h23-paper);
+      border-color: var(--h23-hairline-10) !important;
+      background: var(--h23-raised) !important;
+      box-shadow: var(--h23-shadow-overlay);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+
+    body.h23-chat-page .sh-drawer-header {
+      border-color: var(--h23-hairline);
+    }
+
+    body.h23-chat-page .sh-sheet-grip {
+      background: var(--h23-text-muted);
+    }
+
+    body.h23-chat-page .sh-sheet-action {
+      color: var(--h23-paper);
+      border-color: var(--h23-hairline-14);
+      background: rgba(var(--h23-surface-rgb, 30,26,24), 0.9);
+    }
+
+    body.h23-chat-page :is(.h23-chat-agent-select, .h23-chat-model-select, .h23-chat-effort-select) {
+      color: var(--h23-text-primary);
+      border-color: var(--h23-input-border);
+      background: var(--h23-glass-input);
+      font-family: var(--h23-font-ui);
+    }
+
+    body.h23-chat-page :is(.h23-chat-agent-select, .h23-chat-model-select, .h23-chat-effort-select):focus-visible {
+      outline: 3px solid var(--h23-accent-tint-border);
+      outline-offset: 2px;
+    }
+
+    body.h23-chat-page :is(.h23-chat-thinking, .h23-chat-tool-args, .h23-chat-tool-result, pre, code) {
+      font-family: var(--h23-font-mono);
+    }
+
+    @media (min-width: 820px) {
+      body.h23-chat-page .sh-shell {
+        left: 16px;
+        right: 16px;
+        top: 16px;
+        bottom: 16px;
+        width: auto;
+        height: auto;
+        margin: 0;
+        transform: none;
+        border: 1px solid var(--h23-hairline-10);
+        border-radius: var(--h23-radius-card);
+        overflow: hidden;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      body.h23-chat-page #particles-js {
+        display: none !important;
+      }
+
+      body.h23-chat-page *,
+      body.h23-chat-page *::before,
+      body.h23-chat-page *::after {
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+      }
+    }
+  </style>
+  <link rel="stylesheet" href="/home23-theme.css">
+</head>
+<body class="h23-chat-page">
+  <div id="particles-js"></div>
+
+  <div class="sh-shell">
+    <div class="h23-theme-toolbar"><a href="/home23">Home23</a><button class="h23-theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark theme">Dark mode</button></div>
+    <div class="h23-chat-slot" id="chat-slot-standalone" data-slot="standalone"></div>
+  </div>
+
+  <div class="h23-chat-menu" id="chat-more-menu" role="menu" hidden>
+    <button class="h23-chat-menu-item" data-action="new-conversation" role="menuitem" type="button">New conversation</button>
+    <button class="h23-chat-menu-item" data-action="copy-transcript" role="menuitem" type="button">Copy transcript</button>
+    <button class="h23-chat-menu-item" data-action="export-transcript" role="menuitem" type="button">Export transcript</button>
+    <a class="h23-chat-menu-item" href="/home23" role="menuitem">Dashboard</a>
+  </div>
+
+  <template id="chat-shared-template">
+    <div class="h23-chat-shared" id="chat-shared">
+      <aside class="h23-chat-sidebar" id="chat-sidebar">
+        <div class="h23-chat-sidebar-head">
+          <strong>Conversations</strong>
+          <button class="h23-chat-conv-nav" id="chat-conv-new-btn" type="button">New</button>
+        </div>
+        <div class="h23-chat-conv-list" id="chat-conv-list"></div>
+      </aside>
+      <div class="h23-chat-main">
+        <div class="h23-chat-header">
+          <button class="h23-chat-sidebar-toggle" id="chat-sidebar-toggle" type="button" title="Conversations" aria-label="Conversations">&#9776;</button>
+          <button class="h23-chat-agent-pill" id="chat-agent-pill" type="button" title="Change agent">
+            <span class="h23-chat-agent-avatar" id="chat-agent-avatar">?</span>
+            <span class="h23-chat-agent-name" id="chat-agent-name">Loading...</span>
+          </button>
+          <div class="h23-chat-actions">
+            <button class="h23-chat-model-pill" id="chat-model-pill" type="button" title="Change model">
+              <span id="chat-model-pill-label">model</span>
+            </button>
+            <button class="h23-chat-effort-pill" id="chat-effort-pill" type="button" title="Change reasoning effort">
+              <span id="chat-effort-pill-label">Effort</span>
+            </button>
+            <button class="h23-chat-thinking-pill" id="chat-thinking-toggle" type="button" aria-pressed="true" title="Hide thinking">
+              <span id="chat-thinking-toggle-label">Thoughts</span>
+            </button>
+            <button class="h23-chat-expand-btn" id="chat-more-btn" type="button" title="More" aria-haspopup="menu" aria-expanded="false">&#8230;</button>
+          </div>
+          <select class="h23-chat-agent-select" id="chat-agent-select" hidden></select>
+          <select class="h23-chat-model-select" id="chat-model-select" hidden></select>
+          <select class="h23-chat-effort-select" id="chat-effort-select" hidden></select>
+        </div>
+        <div class="h23-chat-turn-hud" id="chat-turn-hud" hidden>
+          <span class="h23-chat-hud-status" id="chat-hud-status">Working</span>
+          <div class="h23-chat-hud-actions">
+            <button type="button" id="chat-hud-refresh">Refresh</button>
+            <button type="button" id="chat-hud-reconnect">Reconnect</button>
+            <button type="button" id="chat-hud-stop">Stop</button>
+          </div>
+        </div>
+        <div class="h23-chat-stage">
+          <div class="h23-chat-stage-primary">
+            <div class="h23-chat-messages" id="chat-messages">
+              <div class="h23-chat-empty">Loading...</div>
+            </div>
+            <button class="h23-chat-jump-latest" id="chat-jump-latest" type="button" hidden>Latest</button>
+          </div>
+          <aside class="h23-chat-thought-dock" id="chat-thought-dock" hidden>
+            <div class="h23-chat-thought-dock-head">
+              <span class="h23-chat-thought-dock-label" id="chat-thought-dock-label">Thought</span>
+            </div>
+            <pre class="h23-chat-thought-dock-body" id="chat-thought-dock-body"></pre>
+          </aside>
+        </div>
+        <div class="h23-chat-work-strip" id="chat-work-strip" hidden></div>
+        <div class="h23-chat-input-area" id="chat-input-area">
+          <div class="h23-chat-attach-tray" id="chat-attach-tray" hidden></div>
+          <div class="h23-chat-input-row">
+            <button class="h23-chat-attach-btn" id="chat-attach-btn" type="button" aria-label="Attach image" title="Attach image"><span class="h23-chat-attach-icon" aria-hidden="true">Attach</span></button>
+            <input type="file" id="chat-attach-input" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
+            <textarea class="h23-chat-input" id="chat-input" placeholder="Message your agent..." rows="1" autocapitalize="sentences" autocorrect="on" spellcheck="true"></textarea>
+            <button class="h23-chat-stop-btn" id="chat-stop-btn" type="button" hidden aria-label="Stop this reply">Stop</button>
+            <button class="h23-chat-send-btn" id="chat-send-btn" type="button">&#9654;</button>
+          </div>
+          <div class="h23-chat-drop-overlay" id="chat-drop-overlay" hidden>Drop images to attach</div>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
+  <script type="module" src="/home23-chat.js?v=20260820-thought-turn-2"></script>
+  <script>
+    (function setupKeyboardOffset() {
+      const vv = window.visualViewport;
+      if (!vv) return;
+      const root = document.documentElement;
+      const update = () => {
+        const offset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+        root.style.setProperty('--sh-kbd-offset', offset + 'px');
+      };
+      vv.addEventListener('resize', update);
+      vv.addEventListener('scroll', update);
+      update();
+    })();
+
+    document.addEventListener('DOMContentLoaded', () => {
+      initChat('standalone');
+
+      const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      if (!reduceMotion && typeof particlesJS !== 'undefined') {
+        particlesJS('particles-js', {
+          particles: {
+            number: { value: 40, density: { enable: true, value_area: 1000 } },
+            color: { value: ['#ffffff', '#007AFF', '#00C7BE', '#30D158'] },
+            shape: { type: 'circle' },
+            opacity: { value: 0.3, random: true, anim: { enable: true, speed: 1, opacity_min: 0.1, sync: false } },
+            size: { value: 3, random: true, anim: { enable: true, speed: 2, size_min: 1, sync: false } },
+            line_linked: { enable: true, distance: 200, color: '#ffffff', opacity: 0.15, width: 1 },
+            move: { enable: true, speed: 0.8, direction: 'none', random: true, straight: false, out_mode: 'out', bounce: false }
+          },
+          interactivity: {
+            detect_on: 'canvas',
+            events: { onhover: { enable: true, mode: 'bubble' }, onclick: { enable: false }, resize: true },
+            modes: { bubble: { distance: 200, size: 6, duration: 2, opacity: 0.6, speed: 3 } }
+          },
+          retina_detect: true
+        });
+      }
+    });
+  </script>
+</body>
+</html>

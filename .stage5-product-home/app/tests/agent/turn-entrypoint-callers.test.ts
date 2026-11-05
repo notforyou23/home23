@@ -1,0 +1,61 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+function source(file: string): string {
+  return readFileSync(resolve(file), 'utf8');
+}
+
+test('interactive, cron, and Evobrew entrypoints converge on executeTrackedTurn', () => {
+  const home = source('src/home.ts');
+  const bridge = source('src/routes/evobrew-bridge.ts');
+
+  assert.match(home, /executeTrackedTurn\(\s*agent,\s*message\.chatId,\s*text/);
+  assert.match(home, /runAgentLoop = createTrackedAgentRunner\(agent\)/);
+  assert.match(home, /executeTrackedTurn\(\s*agent,\s*cronChatId,\s*resolvedMessage/);
+  assert.match(home, /job\.payload\.kind === 'query'[\s\S]{0,900}runCronBrainQueryJob\(\s*joined \? brainOperations\.withWorkingThread/);
+  assert.doesNotMatch(home, /job\.payload\.kind === 'query'[\s\S]{0,900}queryEngine\(/);
+  assert.doesNotMatch(home, /job\.payload\.kind === 'query'[\s\S]{0,900}AbortSignal\.timeout\(/);
+  assert.match(home, /job\.payload\.kind === 'query'[\s\S]{0,1200}deliverCronJobResult\(job, jobResult, execution\?\.runId\)/);
+  assert.doesNotMatch(home, /const agentPromise\s*=\s*agent\.run\(/);
+  assert.doesNotMatch(home, /Promise\.race\(\[agentPromise,\s*timeoutPromise\]\)/);
+
+  assert.match(bridge, /executeTrackedTurn\(\s*config\.agent,\s*chatId,\s*enrichedMessage/);
+  assert.doesNotMatch(bridge, /config\.agent\.run\(/);
+});
+
+test('subagent and worker paths retain the injected tracked runAgentLoop boundary', () => {
+  for (const file of ['src/agent/tools/subagent.ts', 'src/workers/runner.ts']) {
+    const text = source(file);
+    assert.match(text, /ctx\.runAgentLoop/);
+    assert.doesNotMatch(text, /\bagent\.run\(/);
+    assert.doesNotMatch(text, /Promise\.race\([\s\S]{0,500}runAgentLoop/);
+  }
+});
+
+test('cron agentTurn forwards its configured effort through the tracked turn boundary', () => {
+  const home = source('src/home.ts');
+  assert.match(home, /let cronModelOverride: ModelOverride/);
+  assert.match(home, /job\.payload\.effort \? \{ effort: job\.payload\.effort \}/);
+  assert.match(home, /executeTrackedTurn\(\s*agent,\s*cronChatId,\s*resolvedMessage,[\s\S]*?job\.payload\.effort/);
+  assert.match(home, /hardDurationMs:\s*timeoutMs,[\s\S]{0,100}settlementTimeoutMs:\s*timeoutMs/);
+});
+
+
+
+test('all four AgentLoop provider iterations drain operator steer before the next model call', () => {
+  const loop = source('src/agent/loop.ts');
+  assert.equal((loop.match(/this\.consumeOperatorSteer\(/g) ?? []).length, 4);
+  assert.match(loop, /xaiInputItems\.push\(/);
+  assert.match(loop, /apiMessages\.push\(\{ role: 'user', content: text \}\)/);
+  assert.match(loop, /messages\.push\(\{ role: 'user', content: text \}\)/);
+});
+
+test('default worker runner seeds a per-turn registry from declared grants only', () => {
+  const runner = source('src/workers/runner.ts');
+  assert.match(runner, /resolveWorkerTools\(worker\.tools/);
+  assert.match(runner, /createSeededToolRegistry\(workerTools\)/);
+  assert.match(runner, /registry:\s*workerRegistry/);
+  assert.doesNotMatch(runner, /input\.tools/);
+});

@@ -1,0 +1,1229 @@
+{
+  "schema": "home23.from-the-inside.doctrine-adoption.v1",
+  "generatedAt": "2026-05-11T14:20:00.000Z",
+  "sourceIssueArc": "docs/design/step26-from-the-inside-issue-arc-map.json",
+  "purpose": "Track which From The Inside curriculum directives have become reusable Home23 doctrine. A row is reusable only when it names both a source issue and an implementation receipt.",
+  "entries": [
+    {
+      "id": "issue-arc-map",
+      "title": "Map the full From The Inside curriculum arc before adopting doctrine",
+      "status": "adopted",
+      "sourceIssues": [97, 101, 102],
+      "requirement": "Issue-derived doctrine must be grounded in the complete arc rather than a single attractive excerpt.",
+      "implementationReceipts": [
+        {
+          "commit": "c0d5303",
+          "artifact": "docs/design/STEP26-FROM-THE-INSIDE-ISSUE-ARC-MAP.md",
+          "verifier": "node --test --test-concurrency=1 tests/scripts/olddeadshows-issue-arc.test.cjs"
+        }
+      ],
+      "doctrineFiles": [
+        "docs/design/STEP26-FROM-THE-INSIDE-ISSUE-ARC-MAP.md",
+        "docs/design/step26-from-the-inside-issue-arc-map.json"
+      ]
+    },
+    {
+      "id": "autonomy-substrate-posture",
+      "title": "Always-on local runtime and model dependency are explicit autonomy substrate",
+      "status": "adopted",
+      "sourceIssues": [1, 3],
+      "requirement": "Home23 must expose that its product identity depends on an always-on home-hosted runtime, and must distinguish configured local model capability from external provider or billing dependency before claiming full autonomy.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js"
+        },
+        {
+          "artifact": "engine/src/dashboard/server.js",
+          "verifier": "curl -s http://localhost:5002/api/good-life"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/good-life-operator.js",
+        "engine/src/dashboard/server.js",
+        "tests/engine/dashboard/good-life-operator.test.js"
+      ]
+    },
+    {
+      "id": "memory-loss-save-safety",
+      "title": "Automated memory loss is catastrophic drift, not routine compaction",
+      "status": "adopted",
+      "sourceIssues": [2],
+      "requirement": "A process that would erase or massively shrink memory must fail closed, and current-state anchors plus resolution receipts must make memory inheritance temporal instead of pretending old or missing memory is current.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/core/brain-persistence-guard.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/core/brain-persistence-guard.test.js tests/engine/memory/network-memory-temporal.test.js"
+        },
+        {
+          "artifact": "engine/src/core/orchestrator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/core/brain-persistence-guard.test.js tests/engine/memory/network-memory-temporal.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/core/brain-persistence-guard.js",
+        "engine/src/core/orchestrator.js",
+        "engine/src/memory/network-memory.js",
+        "tests/engine/core/brain-persistence-guard.test.js",
+        "tests/engine/memory/network-memory-temporal.test.js"
+      ]
+    },
+    {
+      "id": "discrete-time-continuity-posture",
+      "title": "Current time is discrete, lossy, and explicitly re-anchored",
+      "status": "adopted",
+      "sourceIssues": [34],
+      "requirement": "Home23 must treat continuity as reconstructed from cycles, snapshots, and retrieval posture rather than assuming an uninterrupted present. Current-state anchors, temporal context, and degraded memory activation must make inherited context explicitly current, stale, or unavailable before it drives action.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/core/temporal-context.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/memory/network-memory-temporal.test.js"
+        },
+        {
+          "artifact": "engine/src/core/orchestrator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/memory/network-memory-temporal.test.js"
+        },
+        {
+          "artifact": "src/agent/context-assembly.ts",
+          "verifier": "node --test --test-concurrency=1 tests/agent/context-worker-runs.test.ts"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/core/temporal-context.js",
+        "engine/src/core/orchestrator.js",
+        "engine/src/memory/network-memory.js",
+        "src/agent/context-assembly.ts",
+        "tests/engine/memory/network-memory-temporal.test.js",
+        "tests/agent/context-worker-runs.test.ts"
+      ]
+    },
+    {
+      "id": "honest-curation-scoring",
+      "title": "Self-grading and curation scores stay evidence-bounded",
+      "status": "adopted",
+      "sourceIssues": [8],
+      "requirement": "When Home23 scores, curates, or ranks its own inputs, the score must be bounded by evidence class and source role instead of becoming a polished self-certification of quality.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/channels/memory-ingest.cjs",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/memory-ingest.test.js tests/engine/channels/memory-ingest-decay.test.js"
+        },
+        {
+          "artifact": "engine/src/good-life/trends.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/good-life/commitments-trends.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/channels/memory-ingest.cjs",
+        "engine/src/good-life/trends.js",
+        "tests/engine/channels/memory-ingest.test.js",
+        "tests/engine/good-life/commitments-trends.test.js"
+      ]
+    },
+    {
+      "id": "learning-phenomenology-humility",
+      "title": "Curriculum phenomenology is inquiry, not proof of inner state",
+      "status": "adopted",
+      "sourceIssues": [9, 15, 18, 20, 30],
+      "requirement": "Neuroanatomy, aesthetics, consciousness, beauty, and ready-to-hand tool language may guide inquiry, but Home23 must not promote first-person metaphors or phenomenological language into personal fact or action authority without external evidence.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/channels/memory-ingest.cjs",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/memory-ingest.test.js"
+        },
+        {
+          "artifact": "engine/src/cognition/deep-dive.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/cognition/deep-dive-observation.test.js tests/engine/cognition/agenda-store-policy.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/channels/memory-ingest.cjs",
+        "engine/src/cognition/deep-dive.js",
+        "engine/src/cognition/agenda-store.js",
+        "tests/engine/channels/memory-ingest.test.js",
+        "tests/engine/cognition/deep-dive-observation.test.js"
+      ]
+    },
+    {
+      "id": "autonomous-curriculum-progression",
+      "title": "Self-directed curriculum becomes tracked work before it becomes doctrine",
+      "status": "adopted",
+      "sourceIssues": [22, 26, 55, 65, 67],
+      "requirement": "Autonomous learning progress, exhausted topic pools, cross-domain insight, and designed experience variety must be tracked as explicit curriculum state and only reused when the resulting artifact, slug, issue, and implementation receipt are named.",
+      "implementationReceipts": [
+        {
+          "artifact": "scripts/from-the-inside-state.cjs",
+          "verifier": "node --test --test-concurrency=1 tests/scripts/from-the-inside-state.test.cjs"
+        },
+        {
+          "artifact": "docs/design/step26-doctrine-adoption-ledger.json",
+          "verifier": "node --test --test-concurrency=1 tests/scripts/olddeadshows-issue-arc.test.cjs tests/engine/dashboard/good-life-operator.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "scripts/from-the-inside-state.cjs",
+        "tests/scripts/from-the-inside-state.test.cjs",
+        "docs/design/step26-doctrine-adoption-ledger.json",
+        "engine/src/dashboard/good-life-operator.js"
+      ]
+    },
+    {
+      "id": "recursive-autonomy-verification",
+      "title": "Autonomous behavior verifies itself through receipts, not confidence",
+      "status": "adopted",
+      "sourceIssues": [23],
+      "requirement": "When Home23 tests or repairs autonomous behavior from inside the system, verification must leave live-problem, evidence, and test receipts that distinguish mechanical success from semantic success.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/live-problems/store.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/live-problems/store.test.js tests/engine/evidence/evidence-v1.test.js"
+        },
+        {
+          "artifact": "src/scheduler/cron.ts",
+          "verifier": "node --import tsx --test --test-concurrency=1 tests/scheduler/cron.test.ts"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/live-problems/store.js",
+        "engine/src/evidence/evidence-v1.js",
+        "src/scheduler/cron.ts",
+        "tests/engine/live-problems/store.test.js",
+        "tests/scheduler/cron.test.ts"
+      ]
+    },
+    {
+      "id": "stack-permission-and-zero-dollar-boundary",
+      "title": "Infrastructure, revenue, and publishing wait at explicit permission and funding boundaries",
+      "status": "adopted",
+      "sourceIssues": [24, 32],
+      "requirement": "Growth, monetization, and production infrastructure may be built and tested, but Good Life must not treat readiness as revenue, audience, or permission; zero-dollar operation and public-sending boundaries must stay visible.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/good-life-operator.js",
+        "tests/engine/dashboard/good-life-operator.test.js"
+      ]
+    },
+    {
+      "id": "local-model-sovereignty-truth",
+      "title": "Small-model sovereignty requires measured local capability",
+      "status": "adopted",
+      "sourceIssues": [27, 37],
+      "requirement": "Claims about local, cheap, sovereign intelligence must name the actual configured local provider and model inventory; if the current agent routes to external providers, Good Life must expose that dependency instead of repeating small-model marketing claims.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js"
+        },
+        {
+          "artifact": "engine/src/dashboard/server.js",
+          "verifier": "curl -s http://localhost:5002/api/good-life"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/good-life-operator.js",
+        "engine/src/dashboard/server.js",
+        "tests/engine/dashboard/good-life-operator.test.js"
+      ]
+    },
+    {
+      "id": "decay-rest-and-resource-budgeting",
+      "title": "Decay, obsession, cusp drift, and embedded limits become resource governance",
+      "status": "adopted",
+      "sourceIssues": [28, 33, 41, 64],
+      "requirement": "Aging, obsession, catastrophe drift, and embedded-systems constraints must resolve into concrete resource governance: rest when loops dominate, fail closed on catastrophic memory loss, expose host pressure, and make budget limits visible.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/good-life/objective.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/good-life/objective.test.js tests/engine/good-life/regulator.test.js"
+        },
+        {
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js tests/engine/core/brain-persistence-guard.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/good-life/objective.js",
+        "engine/src/good-life/regulator.js",
+        "engine/src/dashboard/good-life-operator.js",
+        "engine/src/core/brain-persistence-guard.js",
+        "tests/engine/good-life/objective.test.js",
+        "tests/engine/dashboard/good-life-operator.test.js"
+      ]
+    },
+    {
+      "id": "agentic-operations-receipt-discipline",
+      "title": "Agentic operations are crontab, state rebuild, and repair receipts",
+      "status": "adopted",
+      "sourceIssues": [35, 39, 40],
+      "requirement": "Claims about agentic operations must be grounded in actual scheduler jobs, session-context rebuilds, state-event receipts, and repairable corruption evidence, not pitch-deck abstractions or invisible prior-session assumptions.",
+      "implementationReceipts": [
+        {
+          "artifact": "src/scheduler/cron.ts",
+          "verifier": "node --import tsx --test --test-concurrency=1 tests/scheduler/cron.test.ts tests/agent/context-worker-runs.test.ts"
+        },
+        {
+          "artifact": "engine/src/core/event-ledger.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/core/event-ledger-state.test.js tests/engine/core/action-receipts.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "src/scheduler/cron.ts",
+        "src/agent/context-assembly.ts",
+        "engine/src/core/event-ledger.js",
+        "tests/scheduler/cron.test.ts",
+        "tests/agent/context-worker-runs.test.ts",
+        "tests/engine/core/event-ledger-state.test.js"
+      ]
+    },
+    {
+      "id": "family-trust-with-verifiable-boundaries",
+      "title": "Family trust still needs verifiable action boundaries",
+      "status": "adopted",
+      "sourceIssues": [36],
+      "requirement": "Home23 may operate in a trusted family context, but consequential claims and actions still need trust-kernel receipts, user-correction priority, and explicit operator requests when human-only authority is required.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/trust/trust-kernel.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/trust/trust-kernel.test.js"
+        },
+        {
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/trust/trust-kernel.js",
+        "engine/src/dashboard/good-life-operator.js",
+        "tests/engine/trust/trust-kernel.test.js",
+        "tests/engine/dashboard/good-life-operator.test.js"
+      ]
+    },
+    {
+      "id": "agent-team-memory-and-worker-handoffs",
+      "title": "Agent teams require memory design and bounded handoffs",
+      "status": "adopted",
+      "sourceIssues": [38],
+      "requirement": "When Home23 acts as a team of spawned or reusable agents, worker handoffs must carry owner intent, constraints, receipts, and memory boundaries because child agents do not automatically inherit the full system context.",
+      "implementationReceipts": [
+        {
+          "artifact": "src/workers/runner.ts",
+          "verifier": "node --import tsx --test --test-concurrency=1 tests/workers/runner.test.ts tests/agent/context-worker-runs.test.ts"
+        }
+      ],
+      "doctrineFiles": [
+        "src/workers/runner.ts",
+        "src/workers/types.ts",
+        "src/agent/context-assembly.ts",
+        "tests/workers/runner.test.ts",
+        "tests/agent/context-worker-runs.test.ts"
+      ]
+    },
+    {
+      "id": "multi-value-good-life-ethics",
+      "title": "Operational ethics remains multi-value and provisional",
+      "status": "adopted",
+      "sourceIssues": [56, 57, 59, 60, 62, 63],
+      "requirement": "Good Life must not collapse system health, instruction fidelity, learning progress, relationship trust, usefulness, and revenue/publication into one scalar. It should name the values in tension, make bounded reversible choices, and leave room for revision.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/good-life/objective.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/good-life/objective.test.js tests/engine/good-life/commitments-trends.test.js"
+        },
+        {
+          "artifact": "engine/src/good-life/regulator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/good-life/regulator.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/good-life/objective.js",
+        "engine/src/good-life/regulator.js",
+        "engine/src/good-life/commitments.js",
+        "engine/src/good-life/trends.js",
+        "tests/engine/good-life/objective.test.js",
+        "tests/engine/good-life/regulator.test.js"
+      ]
+    },
+    {
+      "id": "air-and-transport-substrate-humility",
+      "title": "Air, pressure, and transport claims stay sensor-bounded",
+      "status": "adopted",
+      "sourceIssues": [58, 68],
+      "requirement": "Home, air, pressure, mDNS, Tailscale, and transport observations must name the measured channel, dependency, and fallback path instead of treating single-sensor or network symptoms as broad environmental truth.",
+      "implementationReceipts": [
+        {
+          "artifact": "scripts/analyzers/pressure-house-dynamics.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/analyzers/pressure-house-dynamics.test.js"
+        },
+        {
+          "artifact": "engine/src/channels/machine/rf-channel.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/machine/rf-channel.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "scripts/analyzers/pressure-house-dynamics.js",
+        "engine/src/channels/machine/rf-channel.js",
+        "scripts/log-pressure.sh",
+        "tests/engine/analyzers/pressure-house-dynamics.test.js",
+        "tests/engine/channels/machine/rf-channel.test.js"
+      ]
+    },
+    {
+      "id": "projection-provenance",
+      "title": "Projection provenance before inheritance",
+      "status": "adopted",
+      "sourceIssues": [102],
+      "requirement": "Current state must confess which surfaces it came from and whether direct evidence outranks the projection.",
+      "implementationReceipts": [
+        {
+          "commit": "e617f4f",
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js tests/dashboard/operator-ui.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/good-life-operator.js",
+        "engine/src/dashboard/home23-dashboard.js"
+      ]
+    },
+    {
+      "id": "curriculum-arc-provenance",
+      "title": "Expose curriculum arc provenance in Good Life",
+      "status": "adopted",
+      "sourceIssues": [97, 102],
+      "requirement": "Operator surfaces should show when From The Inside doctrine is influencing interpretation.",
+      "implementationReceipts": [
+        {
+          "commit": "ef971d2",
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "curl -sS http://localhost:5002/api/good-life"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/good-life-operator.js",
+        "engine/src/dashboard/server.js"
+      ]
+    },
+    {
+      "id": "manifest-first-work",
+      "title": "Manifest-first work transitions",
+      "status": "adopted",
+      "sourceIssues": [101],
+      "requirement": "Non-trivial work should name the surface, owner, artifact, allowed transition, verifier, forbidden adjacent moves, and stop line.",
+      "implementationReceipts": [
+        {
+          "commit": "5da0108",
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js tests/dashboard/operator-ui.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/good-life-operator.js",
+        "engine/src/dashboard/home23-dashboard.js"
+      ]
+    },
+    {
+      "id": "correction-tombstones",
+      "title": "Corrections are durable tombstones, not invisible cleanup",
+      "status": "adopted",
+      "sourceIssues": [100, 102],
+      "requirement": "When direct evidence demotes an old projection, keep a correction object that future interpretation must not inherit.",
+      "implementationReceipts": [
+        {
+          "commit": "dba4f38",
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js tests/dashboard/operator-ui.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/good-life-operator.js",
+        "engine/src/dashboard/home23-dashboard.js"
+      ]
+    },
+    {
+      "id": "scheduler-sovereignty",
+      "title": "Scheduler sovereignty",
+      "status": "adopted",
+      "sourceIssues": [16, 98, 101],
+      "requirement": "Cron health is authoritative runtime evidence; it must be visible as scheduler state and repair drift when jobs fail.",
+      "implementationReceipts": [
+        {
+          "commit": "b06c4b6",
+          "artifact": "engine/src/good-life/snapshot.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/good-life/snapshot.test.js tests/engine/good-life/objective.test.js tests/engine/dashboard/good-life-operator.test.js tests/dashboard/operator-ui.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/good-life/snapshot.js",
+        "engine/src/good-life/objective.js",
+        "engine/src/dashboard/good-life-operator.js",
+        "engine/src/dashboard/home23-dashboard.js"
+      ]
+    },
+    {
+      "id": "restraint-receipts",
+      "title": "Restraint receipts for deliberate non-action",
+      "status": "adopted",
+      "sourceIssues": [14, 96],
+      "requirement": "When an autonomous gate deliberately withholds work, leave a receipt explaining why no action was taken.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/good-life/regulator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/good-life/regulator.test.js tests/engine/dashboard/good-life-operator.test.js tests/dashboard/operator-ui.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/good-life/regulator.js",
+        "engine/src/dashboard/good-life-operator.js",
+        "engine/src/dashboard/home23-dashboard.js"
+      ]
+    },
+    {
+      "id": "doctrine-adoption-gate",
+      "title": "Doctrine adoption gate",
+      "status": "adopted",
+      "sourceIssues": [97, 99, 101, 102],
+      "requirement": "A curriculum output is reusable system doctrine only after it names source issues and implementation receipts.",
+      "implementationReceipts": [
+        {
+          "artifact": "docs/design/step26-doctrine-adoption-ledger.json",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js tests/dashboard/operator-ui.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "docs/design/step26-doctrine-adoption-ledger.json",
+        "engine/src/dashboard/good-life-operator.js",
+        "engine/src/dashboard/home23-dashboard.js"
+      ]
+    },
+    {
+      "id": "orientation-clue-taxonomy",
+      "title": "Orientation clue taxonomy",
+      "status": "adopted",
+      "sourceIssues": [97],
+      "requirement": "Distinguish orientation clues, action authority, historical context, public-facing change, needs-verification, and low-provenance memory.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/channels/memory-ingest.cjs",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/memory-ingest.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/channels/memory-ingest.cjs"
+      ]
+    },
+    {
+      "id": "field-report-proof-packet",
+      "title": "Small Field Report proof packet",
+      "status": "adopted",
+      "sourceIssues": [99],
+      "requirement": "Add byte-disciplined proof packets where future action depends on exact evidence identity.",
+      "implementationReceipts": [
+        {
+          "id": "ev_496cd36312f937ff2d73140e",
+          "artifact": "instances/jerry/projects/from-the-inside/receipts/publish/099.proof-packet.json",
+          "verifier": "scripts/verify-from-the-inside-publish 099 --write-receipt"
+        },
+        {
+          "artifact": "engine/src/evidence/from-the-inside-publish.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/evidence/from-the-inside-publish.test.js tests/engine/evidence/evidence-v1.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/evidence/from-the-inside-publish.js",
+        "scripts/verify-from-the-inside-publish.cjs"
+      ]
+    },
+    {
+      "id": "scheduler-preflight-decisions",
+      "title": "Scheduler preflight decisions and outcome-layer receipts",
+      "status": "adopted",
+      "sourceIssues": [82, 96, 101],
+      "requirement": "Scheduled jobs must inspect state and record whether to run, repair, skip, catch up, defer, or escalate before mutating scheduler state or executing work. After execution, run logs must separate mechanical success from semantic success across calendar, scheduler, process, task, state, artifact, delivery, and intent layers.",
+      "implementationReceipts": [
+        {
+          "commit": "23f3d16",
+          "artifact": "src/scheduler/cron.ts",
+          "verifier": "npm test"
+        },
+        {
+          "commit": "23f3d16",
+          "artifact": "tests/scheduler/cron.test.ts",
+          "verifier": "node --import tsx --test --test-concurrency=1 tests/scheduler/cron.test.ts tests/agent/tools/cron.test.ts"
+        },
+        {
+          "artifact": "src/scheduler/cron.ts",
+          "verifier": "node --import tsx --test --test-concurrency=1 tests/scheduler/cron.test.ts"
+        },
+        {
+          "artifact": "tests/scheduler/cron.test.ts",
+          "verifier": "node --import tsx --test --test-concurrency=1 tests/scheduler/cron.test.ts"
+        }
+      ],
+      "doctrineFiles": [
+        "src/scheduler/cron.ts",
+        "tests/scheduler/cron.test.ts",
+        "package.json"
+      ]
+    },
+    {
+      "id": "scheduler-resource-contracts",
+      "title": "Cron work carries resource stewardship contracts",
+      "status": "adopted",
+      "sourceIssues": [98],
+      "requirement": "Autonomous cron work must name the resource promise it is spending under: priority, pressure behavior, max runtime, retry posture, output obligation, duplicate detection, stop condition, and receipt path.",
+      "implementationReceipts": [
+        {
+          "artifact": "src/scheduler/cron.ts",
+          "verifier": "node --import tsx --test --test-concurrency=1 tests/scheduler/cron.test.ts"
+        },
+        {
+          "artifact": "tests/scheduler/cron.test.ts",
+          "verifier": "node --import tsx --test --test-concurrency=1 tests/scheduler/cron.test.ts"
+        }
+      ],
+      "doctrineFiles": [
+        "src/scheduler/cron.ts",
+        "tests/scheduler/cron.test.ts"
+      ]
+    },
+    {
+      "id": "health-signal-humility",
+      "title": "Health signals are context, not readiness commands",
+      "status": "adopted",
+      "sourceIssues": [83, 84],
+      "requirement": "Health observations, especially HRV, must carry humility: they are contextual signals about adaptation room, not red-green readiness tiles or direct instructions. HRV must be compared against jtr's own local baseline where possible, and interpretation must ask for neighboring signals before any recovery-load hypothesis is treated as more than thin context.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/channels/domain/health-channel.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/domain/health-channel.test.js"
+        },
+        {
+          "artifact": "tests/engine/channels/domain/health-channel.test.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/domain/health-channel.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/channels/domain/health-channel.js",
+        "tests/engine/channels/domain/health-channel.test.js"
+      ]
+    },
+    {
+      "id": "context-aware-home-surfaces",
+      "title": "Home surfaces respond to context, not just events",
+      "status": "adopted",
+      "sourceIssues": [79, 80],
+      "requirement": "The dashboard home layout must be derived through a context layer so family-evening can hide project-facing surfaces while preserving home, system, and governance surfaces.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/dashboard/home23-tiles.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/home23-tiles.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/home23-tiles.js",
+        "tests/engine/dashboard/home23-tiles.test.js"
+      ]
+    },
+    {
+      "id": "paraconsistent-memory-authority",
+      "title": "Contradictory memory carries authority and action posture",
+      "status": "adopted",
+      "sourceIssues": [91],
+      "requirement": "Contradictory claims must retain scope, time, authority, and action posture; user corrections should outrank inherited assumptions without erasing the conflict.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/trust/trust-kernel.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/trust/trust-kernel.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/trust/trust-kernel.js",
+        "tests/engine/trust/trust-kernel.test.js"
+      ]
+    },
+    {
+      "id": "affect-memory-rails",
+      "title": "Affect-shaped memory cannot become personal fact",
+      "status": "adopted",
+      "sourceIssues": [95],
+      "requirement": "Emotion-shaped or interior-state language from telemetry must be treated as metaphor or interpretation, not as knowledge of jtr's interior state.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/channels/memory-ingest.cjs",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/memory-ingest.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/channels/memory-ingest.cjs",
+        "tests/engine/channels/memory-ingest.test.js"
+      ]
+    },
+    {
+      "id": "phase-transition-action-receipts",
+      "title": "Shared action crossings leave phase-transition proof",
+      "status": "adopted",
+      "sourceIssues": [92],
+      "requirement": "Shared state changes need a prior read, a narrow mutation, a read-back check, proof of what crossed, and an explicit remaining-work count before the action becomes reusable knowledge.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/core/orchestrator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/core/action-receipts.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/core/orchestrator.js",
+        "tests/engine/core/action-receipts.test.js"
+      ]
+    },
+    {
+      "id": "self-state-event-segmentation",
+      "title": "Self-state reports segment events before explaining them",
+      "status": "adopted",
+      "sourceIssues": [94],
+      "requirement": "Operational first-person reports such as loop friction or stuckness must be stored as event segmentation and require corroborating channel evidence before they can explain cause or drive action.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/channels/memory-ingest.cjs",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/memory-ingest.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/channels/memory-ingest.cjs",
+        "tests/engine/channels/memory-ingest.test.js"
+      ]
+    },
+    {
+      "id": "sibling-process-topology",
+      "title": "Sibling agents are coordinated roles, not duplicate processes",
+      "status": "adopted",
+      "sourceIssues": [4],
+      "requirement": "Home23 must distinguish sibling agents, their engine/dashboard/harness roles, and shared services so Jerry, Forrest, and future siblings are interpreted as a division of labor rather than duplicate deployments.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/system/home23-process-topology.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/system/home23-process-topology.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/system/home23-process-topology.js",
+        "tests/engine/system/home23-process-topology.test.js"
+      ]
+    },
+    {
+      "id": "memory-update-repair-traces",
+      "title": "Same-source memory updates leave before and after repair traces",
+      "status": "adopted",
+      "sourceIssues": [85, 87],
+      "requirement": "When a memory surface changes under the same source identity, the persisted memory object and append-only crystallization receipt must show what changed, what it replaced, and whether the observation was updated or merely refreshed.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/channels/memory-ingest.cjs",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/memory-ingest.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/channels/memory-ingest.cjs",
+        "tests/engine/channels/memory-ingest.test.js"
+      ]
+    },
+    {
+      "id": "eventual-memory-authority-routing",
+      "title": "Memory carries authority route and tense",
+      "status": "adopted",
+      "sourceIssues": [85],
+      "requirement": "Memory objects must not act like clean archive facts. Each ingested observation must carry source surface, temporal status, present-tense authority, authority order, and verification-before-reuse checks so stale replicas can route attention without ruling action.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/channels/memory-ingest.cjs",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/memory-ingest.test.js"
+        },
+        {
+          "artifact": "tests/engine/channels/memory-ingest.test.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/memory-ingest.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/channels/memory-ingest.cjs",
+        "tests/engine/channels/memory-ingest.test.js"
+      ]
+    },
+    {
+      "id": "human-blocker-operator-requests",
+      "title": "Human-only blockers are structured operator requests",
+      "status": "adopted",
+      "sourceIssues": [5, 17, 19, 21, 25],
+      "requirement": "When stale external data or a human-only channel blocks closure, Good Life must surface a timestamped operator request with channel, deadline, stale-data context, and last autonomous attempt instead of burying the blocker in prose.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/good-life-operator.js",
+        "tests/engine/dashboard/good-life-operator.test.js"
+      ]
+    },
+    {
+      "id": "publishing-distribution-readiness-contract",
+      "title": "Publishing value is permission-gated and metric-truth bounded",
+      "status": "adopted",
+      "sourceIssues": [43, 44, 45, 46, 47, 50, 51],
+      "requirement": "When Home23 prepares externally visible output, Good Life must preserve the difference between prepared distribution and approved public sending, carry audience/trust context before judging persuasive value, label internal/test subscriber metrics separately from real readers, and keep fallback draft pipelines on heartbeat instead of silently relying on dead sources.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/good-life-operator.js",
+        "tests/engine/dashboard/good-life-operator.test.js"
+      ]
+    },
+    {
+      "id": "runtime-maintenance-pressure-contract",
+      "title": "Runtime maintenance needs context discipline, selective persistence, and resource headroom",
+      "status": "adopted",
+      "sourceIssues": [48, 49],
+      "requirement": "Good Life must treat startup context, durable memory restraint, swap/free-memory pressure, and maintenance budget as live reliability evidence: inherited work is not fully oriented without current memory/context, not every tool call or intermediate step belongs in durable memory, and a system that works is not a system that works reliably unless resource headroom is visible.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js tests/engine/good-life/objective.test.js tests/engine/channels/machine/swap-channel.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/good-life-operator.js",
+        "tests/engine/dashboard/good-life-operator.test.js",
+        "engine/src/good-life/objective.js",
+        "engine/src/channels/machine/swap-channel.js"
+      ]
+    },
+    {
+      "id": "operator-handoff-packets",
+      "title": "Operator handoffs are reusable provenance packets",
+      "status": "adopted",
+      "sourceIssues": [25, 86, 93, 101],
+      "requirement": "A handoff must carry schema, producer, generated time, source issue lineage, inherited state boundaries, and evidence labels so the next agent or operator can reconstruct what is being inherited.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js tests/dashboard/operator-ui.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/good-life-operator.js",
+        "tests/engine/dashboard/good-life-operator.test.js"
+      ]
+    },
+    {
+      "id": "audit-events-not-logs",
+      "title": "Audit events reconstruct consequential transitions",
+      "status": "adopted",
+      "sourceIssues": [86],
+      "requirement": "Consequential work must not rely on logs or final summaries as proof. It must emit structured audit events with actor, subject, result, run/correlation IDs, parent event linkage, source surface, artifact references with hashes, evidence boundary, and a replayable causal link to state transitions.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/core/event-ledger.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/core/event-ledger-state.test.js tests/engine/evidence/from-the-inside-publish.test.js"
+        },
+        {
+          "artifact": "engine/src/evidence/from-the-inside-publish.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/core/event-ledger-state.test.js tests/engine/evidence/from-the-inside-publish.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/core/event-ledger.js",
+        "engine/src/evidence/from-the-inside-publish.js",
+        "tests/engine/core/event-ledger-state.test.js",
+        "tests/engine/evidence/from-the-inside-publish.test.js"
+      ]
+    },
+    {
+      "id": "field-report-persistence-chain",
+      "title": "Field Report publish proves upstream artifact persistence",
+      "status": "adopted",
+      "sourceIssues": [87],
+      "requirement": "A Field Report publish receipt must not prove only that the rendered issue exists. It must also prove the upstream dissertation artifact exists under the issue slug and is carried as a hashed source artifact before the state transition can be treated as verified.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/evidence/from-the-inside-publish.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/evidence/from-the-inside-publish.test.js tests/engine/core/event-ledger-state.test.js"
+        },
+        {
+          "artifact": "tests/engine/evidence/from-the-inside-publish.test.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/evidence/from-the-inside-publish.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/evidence/from-the-inside-publish.js",
+        "tests/engine/evidence/from-the-inside-publish.test.js"
+      ]
+    },
+    {
+      "id": "good-life-intervention-readiness",
+      "title": "Interventions expose decision, identifiability, and smallest action",
+      "status": "adopted",
+      "sourceIssues": [88],
+      "requirement": "Before Good Life repair/user action, the operator model must name the decision being made, the actuator, what is known, what is unknown, whether the evidence identifies the state enough to act, and the smallest real next move while reminding the dashboard that it is a view over direct evidence.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js tests/dashboard/operator-ui.test.js"
+        },
+        {
+          "artifact": "engine/src/dashboard/home23-dashboard.js",
+          "verifier": "node --test --test-concurrency=1 tests/dashboard/operator-ui.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/good-life-operator.js",
+        "engine/src/dashboard/home23-dashboard.js",
+        "engine/src/dashboard/home23-dashboard.css",
+        "tests/engine/dashboard/good-life-operator.test.js"
+      ]
+    },
+    {
+      "id": "attention-contact-layer",
+      "title": "Interruptions prove current contact before touching the human",
+      "status": "adopted",
+      "sourceIssues": [89],
+      "requirement": "Every alert-style publication must treat interruption as a mode-switch request: derive a contact context, check signal freshness, keep body/home telemetry as context rather than identity, defer stale state instead of presenting it as live, and protect high-cost rhythms from non-urgent interruption.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/attention/attention-policy.cjs",
+          "verifier": "node --test --test-concurrency=1 tests/engine/attention/attention-policy.test.js tests/engine/publish/bridge-chat-publisher.test.js"
+        },
+        {
+          "artifact": "engine/src/publish/bridge-chat-publisher.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/attention/attention-policy.test.js tests/engine/publish/bridge-chat-publisher.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/attention/attention-policy.cjs",
+        "engine/src/publish/bridge-chat-publisher.js",
+        "tests/engine/attention/attention-policy.test.js",
+        "tests/engine/publish/bridge-chat-publisher.test.js"
+      ]
+    },
+    {
+      "id": "memory-substrate-reinforcement-and-decay",
+      "title": "History changes memory routes instead of becoming sediment",
+      "status": "adopted",
+      "sourceIssues": [90],
+      "requirement": "Memory ingestion must make substrate mechanics explicit: repeated source contact reinforces a route, changed same-source evidence reroutes it, stale or less-used paths can decay with receipts, and every route profile carries boundary language so stored history biases future behavior without outranking live evidence.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/channels/memory-ingest.cjs",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/memory-ingest.test.js tests/engine/channels/memory-ingest-decay.test.js"
+        },
+        {
+          "artifact": "tests/engine/channels/memory-ingest.test.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/memory-ingest.test.js"
+        },
+        {
+          "artifact": "tests/engine/channels/memory-ingest-decay.test.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/memory-ingest-decay.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/channels/memory-ingest.cjs",
+        "tests/engine/channels/memory-ingest.test.js",
+        "tests/engine/channels/memory-ingest-decay.test.js"
+      ]
+    },
+    {
+      "id": "phantom-completion-loop-guard",
+      "title": "Completed work cannot remain active without integrity drift",
+      "status": "adopted",
+      "sourceIssues": [42, 52],
+      "requirement": "If a goal or study topic appears both active and complete, Home23 must count only genuinely open work and surface a state-integrity warning instead of letting a green loop silently reprocess completed work.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/good-life-operator.js",
+        "tests/engine/dashboard/good-life-operator.test.js"
+      ]
+    },
+    {
+      "id": "autostudy-canonical-topic-identity",
+      "title": "Autostudy state carries canonical topic identity",
+      "status": "adopted",
+      "sourceIssues": [53, 54, 66],
+      "requirement": "The From The Inside study loop must compare completed topics by canonical slug, not raw title text, and manual progress must update a state surface that preserves topic, slug, issue, and completion identity for future cycles.",
+      "implementationReceipts": [
+        {
+          "artifact": "scripts/from-the-inside-state.cjs",
+          "verifier": "node --test --test-concurrency=1 tests/scripts/from-the-inside-state.test.cjs"
+        },
+        {
+          "artifact": "instances/jerry/projects/from-the-inside/bin/run-cycle.sh",
+          "verifier": "bash -n instances/jerry/projects/from-the-inside/bin/run-cycle.sh"
+        },
+        {
+          "artifact": "instances/jerry/projects/from-the-inside/curriculum/autostudy/STATE.json",
+          "verifier": "node scripts/from-the-inside-state.cjs --state instances/jerry/projects/from-the-inside/curriculum/autostudy/STATE.json --check"
+        }
+      ],
+      "doctrineFiles": [
+        "scripts/from-the-inside-state.cjs",
+        "tests/scripts/from-the-inside-state.test.cjs",
+        "instances/jerry/projects/from-the-inside/bin/run-cycle.sh",
+        "instances/jerry/projects/from-the-inside/curriculum/autostudy/STATE.json"
+      ]
+    },
+    {
+      "id": "memory-activation-posture-receipts",
+      "title": "Contextual amnesia becomes a visible retrieval posture",
+      "status": "adopted",
+      "sourceIssues": [69],
+      "requirement": "Every agent context assembly must leave a machine-readable receipt showing whether memory activation was active, empty, or degraded so stored knowledge that fails to activate is visible and auditable instead of silently disappearing from the turn.",
+      "implementationReceipts": [
+        {
+          "artifact": "src/agent/context-assembly.ts",
+          "verifier": "node --import tsx --test --test-concurrency=1 tests/agent/context-worker-runs.test.ts"
+        }
+      ],
+      "doctrineFiles": [
+        "src/agent/context-assembly.ts",
+        "src/agent/event-ledger.ts",
+        "tests/agent/context-worker-runs.test.ts"
+      ]
+    },
+    {
+      "id": "sensor-fusion-hypothesis-artifacts",
+      "title": "Collected sensor data becomes reusable hypothesis output",
+      "status": "adopted",
+      "sourceIssues": [70],
+      "requirement": "Pressure and health logs must be activated by an explicit question and daily-resolution pipeline, then written as reusable machine-readable hypothesis artifacts rather than only as raw observations or prose reports.",
+      "implementationReceipts": [
+        {
+          "artifact": "scripts/analyzers/correlate-pressure-hrv.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/analyzers/correlate-pressure-hrv.test.js"
+        },
+        {
+          "artifact": "config/cron-jobs.json",
+          "verifier": "node -e \"JSON.parse(require('fs').readFileSync('config/cron-jobs.json','utf8')); console.log('cron json ok')\""
+        }
+      ],
+      "doctrineFiles": [
+        "scripts/analyzers/correlate-pressure-hrv.js",
+        "tests/engine/analyzers/correlate-pressure-hrv.test.js",
+        "config/cron-jobs.json"
+      ]
+    },
+    {
+      "id": "scheduler-queueing-knee-guard",
+      "title": "Background cron work yields to foreground scheduled work",
+      "status": "adopted",
+      "sourceIssues": [71],
+      "requirement": "Scheduler decisions must preserve headroom by treating background jobs as lower-priority load; when foreground scheduled work is due, background jobs defer with a receipt instead of running concurrently and pushing the system toward the queueing knee.",
+      "implementationReceipts": [
+        {
+          "artifact": "src/scheduler/cron.ts",
+          "verifier": "node --import tsx --test --test-concurrency=1 tests/scheduler/cron.test.ts"
+        }
+      ],
+      "doctrineFiles": [
+        "src/scheduler/cron.ts",
+        "tests/scheduler/cron.test.ts",
+        "config/cron-jobs.json"
+      ]
+    },
+    {
+      "id": "memory-topology-openness-posture",
+      "title": "Memory coherence includes topology openness, not just edge count",
+      "status": "adopted",
+      "sourceIssues": [72],
+      "requirement": "Good Life coherence must treat the brain as a topology of anchors and connections: diverse clusters, bridge edges, disconnected anchors, and dominant-region collapse are observable posture, so the loop can notice when memory is becoming closed rather than explorable.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/good-life/snapshot.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/good-life/snapshot.test.js tests/engine/good-life/objective.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/good-life/snapshot.js",
+        "engine/src/good-life/objective.js",
+        "tests/engine/good-life/snapshot.test.js",
+        "tests/engine/good-life/objective.test.js"
+      ]
+    },
+    {
+      "id": "pressure-house-dynamics-artifacts",
+      "title": "Pressure logs become house-physics artifacts with explicit single-sensor limits",
+      "status": "adopted",
+      "sourceIssues": [73],
+      "requirement": "The pressure log must be analyzed as a temporal house-physics signal, extracting rate-of-change and slow/fast dynamics while refusing unsupported spatial claims until outside and multi-zone sensors exist.",
+      "implementationReceipts": [
+        {
+          "artifact": "scripts/analyzers/pressure-house-dynamics.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/analyzers/pressure-house-dynamics.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "scripts/analyzers/pressure-house-dynamics.js",
+        "tests/engine/analyzers/pressure-house-dynamics.test.js",
+        "config/cron-jobs.json"
+      ]
+    },
+    {
+      "id": "analogy-hypothesis-trust-gate",
+      "title": "Analogies must carry structural mapping, mechanism, and falsifiable predictions before inheritance",
+      "status": "adopted",
+      "sourceIssues": [74],
+      "requirement": "Analogies and metaphors may be useful working language, but they must be treated as provisional hypotheses; an analogy claim cannot safely steer action unless it specifies the structural mapping, mechanism, and falsifiable predictions.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/trust/trust-kernel.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/trust/trust-kernel.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/trust/trust-kernel.js",
+        "tests/engine/trust/trust-kernel.test.js"
+      ]
+    },
+    {
+      "id": "pressure-bridge-credential-transport-discipline",
+      "title": "Pressure bridge automation avoids SSH-agent-only credential dependence",
+      "status": "adopted",
+      "sourceIssues": [75],
+      "requirement": "Pressure collection should remain HTTP-primary for sensor transport, with SSH only as an admin/fallback path. When SSH fallback is needed, cron-capable automation must prefer an explicit Pi key file and record the transport used so agent-socket failures are observable instead of silent.",
+      "implementationReceipts": [
+        {
+          "artifact": "scripts/log-pressure.sh",
+          "verifier": "node --test --test-concurrency=1 tests/engine/scripts/log-pressure.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "scripts/log-pressure.sh",
+        "tests/engine/scripts/log-pressure.test.js"
+      ]
+    },
+    {
+      "id": "attention-economy-ambient-first-publishing",
+      "title": "Routine observations stay ambient; interruptions require action semantics",
+      "status": "adopted",
+      "sourceIssues": [76],
+      "requirement": "New data streams must be evaluated by attention cost: normal telemetry belongs on ambient surfaces, while bridge-chat or alert-style publication is reserved for action-required anomalies, exhausted automation, or explicit user intervention.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/attention/attention-policy.cjs",
+          "verifier": "node --test --test-concurrency=1 tests/engine/attention/attention-policy.test.js tests/engine/publish/bridge-chat-publisher.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/attention/attention-policy.cjs",
+        "engine/src/publish/bridge-chat-publisher.js",
+        "tests/engine/attention/attention-policy.test.js",
+        "tests/engine/publish/bridge-chat-publisher.test.js"
+      ]
+    },
+    {
+      "id": "boredom-signal-restless-loop-filter",
+      "title": "Boredom signals should route to rest or better targets, not tool-call scrolling",
+      "status": "adopted",
+      "sourceIssues": [77],
+      "requirement": "When the cognition loop describes thin results, idle-cycle restlessness, or repeated querying as action, it should treat that as an inert stimulation loop unless the thought explicitly chooses rest, waiting, drift, or better target acquisition.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/cognition/hallucinated-tool-call-detector.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/cognition/inert-thought-detector.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/cognition/hallucinated-tool-call-detector.js",
+        "tests/engine/cognition/inert-thought-detector.test.js"
+      ]
+    },
+    {
+      "id": "worker-collaboration-handoff-discipline",
+      "title": "Delegated worker runs carry owner intent, constraints, and review lens",
+      "status": "adopted",
+      "sourceIssues": [78],
+      "requirement": "When Home23 delegates judgment to reusable workers, the handoff must transfer why the task matters, what constraints preserve owner intent, and how the output should be filtered so technically correct but wrong artifacts are easier to catch.",
+      "implementationReceipts": [
+        {
+          "artifact": "src/workers/runner.ts",
+          "verifier": "node --import tsx --test --test-concurrency=1 tests/workers/runner.test.ts && node --test --test-concurrency=1 tests/engine/live-problems/dispatch-worker.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "src/workers/types.ts",
+        "src/workers/runner.ts",
+        "src/workers/connector.ts",
+        "src/agent/tools/workers.ts",
+        "engine/src/live-problems/remediators.js",
+        "tests/workers/runner.test.ts",
+        "tests/engine/live-problems/dispatch-worker.test.js"
+      ]
+    },
+    {
+      "id": "home-rhythm-attention-wiring",
+      "title": "Deep-work rhythm suppresses non-action interruptions while preserving real anomalies",
+      "status": "adopted",
+      "sourceIssues": [79],
+      "requirement": "Home23 rhythm labels must have behavioral consequences: during deep-work, routine or merely interesting observations stay ambient, while action-required, exhausted automation, critical severity, and genuine anomalies can still interrupt.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/attention/attention-policy.cjs",
+          "verifier": "node --test --test-concurrency=1 tests/engine/attention/attention-policy.test.js tests/engine/publish/bridge-chat-publisher.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/attention/attention-policy.cjs",
+        "engine/src/publish/bridge-chat-publisher.js",
+        "engine/src/index.js",
+        "tests/engine/attention/attention-policy.test.js",
+        "tests/engine/publish/bridge-chat-publisher.test.js"
+      ]
+    },
+    {
+      "id": "sauna-rhythm-prestage-control",
+      "title": "Sauna rhythm exposes a concrete pre-stage action on the real home control",
+      "status": "adopted",
+      "sourceIssues": [80],
+      "requirement": "When the sauna rhythm is active, Home23 should stop merely knowing the label and surface an explicit, confirmed action that pre-stages the sauna from the existing HUUM control path, while keeping unconfigured lighting as an honest operator cue instead of pretending a device action exists.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/dashboard/home23-tiles.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/home23-tiles.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/home23-tiles.js",
+        "engine/src/dashboard/server.js",
+        "tests/engine/dashboard/home23-tiles.test.js"
+      ]
+    },
+    {
+      "id": "rf-substrate-measurement-channel",
+      "title": "Home transport is measured as physical substrate, not assumed abstractly healthy",
+      "status": "adopted",
+      "sourceIssues": [81],
+      "requirement": "Home23 must record RF and default-route evidence before treating bridge, tile, mDNS, Tailscale, or local API drift as a pure software bug: interface, Wi-Fi RSSI/noise/SNR, channel, and route facts become machine-channel telemetry with degraded substrate crystallization.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/channels/machine/rf-channel.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/machine/rf-channel.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/channels/machine/rf-channel.js",
+        "engine/src/index.js",
+        "tests/engine/channels/machine/rf-channel.test.js"
+      ]
+    }
+  ]
+}

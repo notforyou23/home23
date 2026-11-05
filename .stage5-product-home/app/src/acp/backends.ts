@@ -1,0 +1,626 @@
+/**
+ * Coding backend definitions (Step 29).
+ *
+ * Each backend knows how to find its CLI binary, build a headless argv for a
+ * new or resumed session, and normalize one line of the CLI's stdout stream
+ * into BridgeEvents. The bridge stays backend-agnostic: it spawns, tails, and
+ * finalizes; everything CLI-specific lives here.
+ *
+ * Env policy (buildChildEnv): spawned CLIs inherit a scrubbed environment.
+ * Home23 does not forward provider secrets to coding CLI children. Codex and
+ * Cursor use their own CLI authentication state. Legacy backend adapters remain
+ * present only so old job receipts and event streams stay readable.
+ */
+
+import { existsSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { unprivilegedChildEnv } from '../security/child-process-env.js';
+import type {
+  BridgeConfig,
+  BridgeEvent,
+  CodingBackend,
+  CodingBackendOptions,
+} from './types.js';
+
+const SUMMARY_MAX = 300;
+const OTHER_RAW_MAX = 500;
+const RESULT_TEXT_MAX = 4000;
+export const CODEX_MODELS = ['gpt-5.6-sol', 'gpt-6-astra'] as const;
+export const DEFAULT_CODEX_MODEL = CODEX_MODELS[0];
+
+export function resolveCodexModel(model?: string): string {
+  const selected = model ?? DEFAULT_CODEX_MODEL;
+  if (!(CODEX_MODELS as readonly string[]).includes(selected)) {
+    throw new Error(`Unsupported Codex model "${selected}". Minimum contract: Sol 5.6. Supported models: ${CODEX_MODELS.join(', ')}; no job was launched and no downgrade was attempted`);
+  }
+  return selected;
+}
+
+function validateCodexExtraArgs(args: string[] = []): void {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (/^(?:--(?:model|profile|oss|local-provider)(?:=|$)|-[mp])/.test(arg)) {
+      throw new Error('Codex extraArgs must not override model or provider selection; use the supported model field');
+    }
+    if (arg === '-c' || arg === '--config' || arg.startsWith('--config=') || arg.startsWith('-c')) {
+      const value = arg === '-c' || arg === '--config' ? args[++i] : arg.replace(/^(?:--config=|-c=?)/, '');
+      if (!value || !/^model_reasoning_(?:effort|summary)\s*=\s*"[a-z_]+"$/.test(value)) {
+        throw new Error('Codex extraArgs config accepts only model_reasoning_effort or model_reasoning_summary; model/provider overrides are not allowed');
+      }
+    }
+  }
+}
+
+const SELECTABLE_BACKEND_IDS = ['codex', 'cursor'] as const;
+
+export type SelectableCodingBackendId = typeof SELECTABLE_BACKEND_IDS[number];
+
+// Secrets that must never reach a coding CLI child. ANTHROPIC_BASE_URL is
+// stripped because a nested legacy session may set it and misroute the child.
+const STRIPPED_ENV_KEYS = [
+  'OPENAI_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_API_KEY',
+  'XAI_API_KEY',
+  'OLLAMA_CLOUD_API_KEY',
+  'TELEGRAM_BOT_TOKEN',
+  'ENCRYPTION_KEY',
+  'DATABASE_URL',
+  'HOME23_BRIDGE_TOKEN',
+  'ANTHROPIC_BASE_URL',
+] as const;
+
+function extraPathDirs(): string[] {
+  return ['/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.local', 'bin')];
+}
+
+function bounded(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+function oneLine(text: string, max: number): string {
+  return bounded(text.replace(/\s*\n\s*/g, ' '), max);
+}
+
+function resolveOnPath(name: string): string | null {
+  const dirs = [
+    ...(process.env.PATH ?? '').split(':').filter(Boolean),
+    ...extraPathDirs(),
+  ];
+  for (const dir of dirs) {
+    const candidate = path.join(dir, name);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function resolveBinFrom(candidates: string[], configBin?: string): string | null {
+  const all = configBin ? [configBin, ...candidates] : candidates;
+  for (const candidate of all) {
+    if (path.isAbsolute(candidate)) {
+      if (existsSync(candidate)) return candidate;
+      continue;
+    }
+    const found = resolveOnPath(candidate);
+    if (found) return found;
+  }
+  return null;
+}
+
+function otherEvent(line: string): BridgeEvent {
+  return { kind: 'other', raw: bounded(line, OTHER_RAW_MAX) };
+}
+
+/** Reject controls that this adapter cannot enforce instead of silently dropping them. */
+export function validateBackendOptions(backend: string, opts: CodingBackendOptions): void {
+  if (backend === 'codex') {
+    resolveCodexModel(opts.model);
+    validateCodexExtraArgs(opts.extraArgs);
+  }
+  const supported: Record<string, string[]> = {
+    'claude-code': ['effort', 'appendSystemPrompt', 'maxBudgetUsd', 'addDirs', 'allowedTools', 'disallowedTools'],
+    'grok-build': ['effort', 'appendSystemPrompt', 'allowedTools', 'disallowedTools'],
+    codex: ['sandbox'],
+    cursor: ['addDirs'],
+  };
+  for (const key of ['effort', 'appendSystemPrompt', 'maxBudgetUsd', 'addDirs', 'allowedTools', 'disallowedTools', 'sandbox'] as const) {
+    const value = opts[key];
+    const present = Array.isArray(value) ? value.length > 0 : value !== undefined && value !== '';
+    if (present && !supported[backend]?.includes(key)) throw new Error(`${backend} does not support ${key}; no job was launched`);
+  }
+  if ((opts.allowedTools?.length || opts.disallowedTools?.length) && opts.permissionMode !== 'allowlist') {
+    throw new Error(`${backend} tool restrictions require allowlist permission mode; refusing to ignore them`);
+  }
+  if (opts.maxBudgetUsd !== undefined && (!Number.isFinite(opts.maxBudgetUsd) || opts.maxBudgetUsd <= 0)) {
+    throw new Error('maxBudgetUsd must be a finite positive number');
+  }
+}
+
+export function listSelectableBackendIds(): SelectableCodingBackendId[] {
+  return [...SELECTABLE_BACKEND_IDS];
+}
+
+export function isSelectableBackendId(id: string): id is SelectableCodingBackendId {
+  return (SELECTABLE_BACKEND_IDS as readonly string[]).includes(id);
+}
+
+export function unsupportedBackendMessage(id: string): string {
+  const known = listBackendIds().includes(id);
+  const legacy = known ? ' It is retained only for historical job receipts and is not launchable.' : '';
+  return `Unsupported coding backend "${id}". Supported coding backends: ${SELECTABLE_BACKEND_IDS.join(', ')}.${legacy}`;
+}
+
+// ─── claude-code ─────────────────────────────────────────────
+
+function buildClaudeArgs(opts: CodingBackendOptions): string[] {
+  validateBackendOptions('claude-code', opts);
+  const args = ['-p', '--output-format', 'stream-json', '--verbose'];
+  if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId);
+  else if (opts.newSessionId) args.push('--session-id', opts.newSessionId);
+  if (opts.model) args.push('--model', opts.model);
+  if (opts.effort) args.push('--effort', opts.effort);
+  if (opts.permissionMode === 'bypassPermissions') {
+    args.push('--dangerously-skip-permissions');
+  } else if (opts.permissionMode === 'allowlist') {
+    if (opts.allowedTools?.length) args.push('--allowedTools', opts.allowedTools.join(','));
+    if (opts.disallowedTools?.length) args.push('--disallowedTools', opts.disallowedTools.join(','));
+  } else {
+    args.push('--permission-mode', opts.permissionMode);
+  }
+  if (opts.appendSystemPrompt) args.push('--append-system-prompt', opts.appendSystemPrompt);
+  for (const dir of opts.addDirs ?? []) args.push('--add-dir', dir);
+  if (opts.maxBudgetUsd !== undefined) args.push('--max-budget-usd', String(opts.maxBudgetUsd));
+  if (opts.extraArgs?.length) args.push(...opts.extraArgs);
+  args.push(opts.prompt);
+  return args;
+}
+
+function parseClaudeEvents(line: string): BridgeEvent[] {
+  const trimmed = line.trim();
+  if (!trimmed) return [];
+  let obj: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object') return [otherEvent(trimmed)];
+    obj = parsed as Record<string, unknown>;
+  } catch {
+    return [otherEvent(trimmed)];
+  }
+
+  // Pre-init hook lines ({"type":"system","subtype":"hook_started"...}) are
+  // normal in headless mode when user-level hooks exist; they fall through to
+  // 'other' below without disturbing session detection.
+  if (obj.type === 'system' && obj.subtype === 'init') {
+    return [{
+      kind: 'session',
+      sessionId: String(obj.session_id ?? ''),
+      model: typeof obj.model === 'string' ? obj.model : undefined,
+    }];
+  }
+
+  if (obj.type === 'assistant') {
+    const message = obj.message as Record<string, unknown> | undefined;
+    const content = Array.isArray(message?.content) ? (message.content as unknown[]) : [];
+    const events: BridgeEvent[] = [];
+    for (const raw of content) {
+      const block = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+      if (block.type === 'text' && typeof block.text === 'string' && block.text) {
+        events.push({ kind: 'text', text: block.text });
+      } else if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking) {
+        events.push({ kind: 'thinking', text: block.thinking });
+      } else if (block.type === 'tool_use') {
+        events.push({
+          kind: 'tool_use',
+          tool: String(block.name ?? 'unknown'),
+          summary: oneLine(JSON.stringify(block.input ?? {}), SUMMARY_MAX),
+        });
+      }
+    }
+    return events.length ? events : [otherEvent(trimmed)];
+  }
+
+  if (obj.type === 'result') {
+    // Trust is_error, not subtype — the live CLI emits subtype "success" with
+    // is_error:true on auth failures.
+    return [{
+      kind: 'result',
+      ok: !obj.is_error,
+      text: typeof obj.result === 'string' ? bounded(obj.result, RESULT_TEXT_MAX) : '',
+      costUsd: typeof obj.total_cost_usd === 'number' ? obj.total_cost_usd : undefined,
+      numTurns: typeof obj.num_turns === 'number' ? obj.num_turns : undefined,
+      durationMs: typeof obj.duration_ms === 'number' ? obj.duration_ms : undefined,
+    }];
+  }
+
+  return [otherEvent(trimmed)];
+}
+
+const claudeCodeBackend: CodingBackend = {
+  id: 'claude-code',
+  binCandidates: ['claude', '/Users/jtr/.local/bin/claude'],
+  supportsResume: true,
+  resolveBin(configBin?: string): string | null {
+    return resolveBinFrom(this.binCandidates, configBin);
+  },
+  buildArgs: buildClaudeArgs,
+  parseEvents: parseClaudeEvents,
+  parseEvent(line: string): BridgeEvent | null {
+    return parseClaudeEvents(line)[0] ?? null;
+  },
+};
+
+// ─── grok-build ──────────────────────────────────────────────
+
+function buildGrokArgs(opts: CodingBackendOptions): string[] {
+  validateBackendOptions('grok-build', opts);
+  // --single consumes the next argv token as its prompt, so keep the prompt
+  // adjacent; placing flags between them makes Grok parse the first flag as text.
+  const args = ['--single', opts.prompt];
+  if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId);
+  else if (opts.newSessionId) args.push('--session-id', opts.newSessionId);
+  if (opts.model) args.push('--model', opts.model);
+  if (opts.effort) args.push('--reasoning-effort', opts.effort);
+  if (opts.permissionMode === 'bypassPermissions') {
+    args.push('--always-approve');
+  } else if (opts.permissionMode === 'allowlist') {
+    for (const rule of opts.allowedTools ?? []) args.push('--allow', rule);
+    for (const rule of opts.disallowedTools ?? []) args.push('--deny', rule);
+  } else {
+    args.push('--permission-mode', opts.permissionMode);
+  }
+  if (opts.appendSystemPrompt) args.push('--rules', opts.appendSystemPrompt);
+  if (opts.extraArgs?.length) args.push(...opts.extraArgs);
+  args.push('--output-format', 'streaming-json', '--no-alt-screen');
+  return args;
+}
+
+function parseGrokEvents(line: string): BridgeEvent[] {
+  const trimmed = line.trim();
+  if (!trimmed) return [];
+  let obj: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object') return [otherEvent(trimmed)];
+    obj = parsed as Record<string, unknown>;
+  } catch {
+    return [otherEvent(trimmed)];
+  }
+
+  const type = String(obj.type ?? '');
+  if (type === 'thought') {
+    return typeof obj.data === 'string' && obj.data ? [{ kind: 'thinking', text: obj.data }] : [];
+  }
+  if (type === 'text') {
+    return typeof obj.data === 'string' && obj.data ? [{ kind: 'text', text: obj.data }] : [];
+  }
+  if (type === 'tool_call') {
+    return [{
+      kind: 'tool_use',
+      tool: String(obj.toolName ?? obj.title ?? 'unknown'),
+      summary: oneLine(typeof obj.rawInput === 'string' ? obj.rawInput : JSON.stringify(obj.rawInput ?? {}), SUMMARY_MAX),
+    }];
+  }
+  if (type === 'error') {
+    return [{
+      kind: 'result',
+      ok: false,
+      text: bounded(typeof obj.message === 'string' ? obj.message : 'Grok reported an error', RESULT_TEXT_MAX),
+      costUsd: undefined,
+      numTurns: undefined,
+      durationMs: undefined,
+    }];
+  }
+  if (type === 'end') {
+    const usage = (obj.usage && typeof obj.usage === 'object') ? obj.usage as Record<string, unknown> : {};
+    return [
+      ...(typeof obj.sessionId === 'string' && obj.sessionId ? [{ kind: 'session', sessionId: obj.sessionId } as BridgeEvent] : []),
+      {
+        kind: 'result',
+        ok: String(obj.stopReason ?? '') !== 'error',
+        text: '',
+        costUsd: typeof obj.total_cost_usd === 'number' ? obj.total_cost_usd : undefined,
+        numTurns: typeof obj.num_turns === 'number' ? obj.num_turns : undefined,
+        durationMs: typeof obj.duration_ms === 'number' ? obj.duration_ms : undefined,
+      },
+    ];
+  }
+  return [otherEvent(trimmed)];
+}
+
+const grokBuildBackend: CodingBackend = {
+  id: 'grok-build',
+  binCandidates: ['grok', '/Users/jtr/.local/bin/grok'],
+  supportsResume: true,
+  resolveBin(configBin?: string): string | null {
+    return resolveBinFrom(this.binCandidates, configBin);
+  },
+  buildArgs: buildGrokArgs,
+  parseEvents: parseGrokEvents,
+  parseEvent(line: string): BridgeEvent | null {
+    return parseGrokEvents(line)[0] ?? null;
+  },
+};
+
+// ─── codex ───────────────────────────────────────────────────
+
+function buildCodexArgs(opts: CodingBackendOptions): string[] {
+  validateBackendOptions('codex', opts);
+  // cwd comes from spawn(); never pass -C / --cd.
+  const args = ['exec', '--json', '--skip-git-repo-check'];
+  if (opts.sandbox) args.push('--sandbox', opts.sandbox);
+  else if (opts.permissionMode === 'bypassPermissions') args.push('--dangerously-bypass-approvals-and-sandbox');
+  else {
+    // The former --full-auto alias is absent in current Codex. Preserve its
+    // workspace-write sandbox and on-request approval policy explicitly.
+    args.unshift('--ask-for-approval', 'on-request');
+    args.push('--sandbox', 'workspace-write');
+  }
+  args.push('--model', resolveCodexModel(opts.model));
+  if (opts.extraArgs?.length) args.push(...opts.extraArgs);
+  // --sandbox is an exec option, not a resume option. Keep execution policy
+  // on the parent command for both fresh and continued sessions.
+  if (opts.resumeSessionId) args.push('resume', opts.resumeSessionId);
+  args.push(opts.prompt);
+  return args;
+}
+
+function codexItemType(item: Record<string, unknown>): string {
+  // Codex has shipped both keys across versions; accept either.
+  return String(item.item_type ?? item.type ?? '');
+}
+
+function parseCodexEvents(line: string): BridgeEvent[] {
+  const trimmed = line.trim();
+  if (!trimmed) return [];
+  let obj: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object') return [otherEvent(trimmed)];
+    obj = parsed as Record<string, unknown>;
+  } catch {
+    return [otherEvent(trimmed)];
+  }
+
+  if (obj.type === 'thread.started') {
+    return [{ kind: 'session', sessionId: String(obj.thread_id ?? '') }];
+  }
+
+  if (obj.type === 'item.completed' && obj.item && typeof obj.item === 'object') {
+    const item = obj.item as Record<string, unknown>;
+    const itemType = codexItemType(item);
+    if (itemType === 'agent_message') {
+      return [{ kind: 'text', text: String(item.text ?? '') }];
+    }
+    if (itemType === 'command_execution') {
+      return [{ kind: 'tool_use', tool: 'shell', summary: oneLine(String(item.command ?? ''), SUMMARY_MAX) }];
+    }
+    if (itemType === 'file_change') {
+      const detail = item.changes ?? item.path ?? item.summary ?? item;
+      return [{
+        kind: 'tool_use',
+        tool: 'file_change',
+        summary: oneLine(typeof detail === 'string' ? detail : JSON.stringify(detail), SUMMARY_MAX),
+      }];
+    }
+    if (itemType === 'reasoning') {
+      return [{ kind: 'thinking', text: String(item.text ?? '') }];
+    }
+    return [otherEvent(trimmed)];
+  }
+
+  if (obj.type === 'turn.completed') {
+    // The parser is stateless; the bridge fills text from the last 'text' event.
+    return [{ kind: 'result', ok: true, text: '' }];
+  }
+
+  if (obj.type === 'turn.failed') {
+    const error = obj.error;
+    const message = typeof error === 'string'
+      ? error
+      : (error && typeof error === 'object' && typeof (error as Record<string, unknown>).message === 'string')
+        ? String((error as Record<string, unknown>).message)
+        : JSON.stringify(error ?? 'turn failed');
+    return [{ kind: 'result', ok: false, text: bounded(message, RESULT_TEXT_MAX) }];
+  }
+
+  return [otherEvent(trimmed)];
+}
+
+const codexBackend: CodingBackend = {
+  id: 'codex',
+  binCandidates: ['codex'],
+  supportsResume: true,
+  resolveBin(configBin?: string): string | null {
+    return resolveBinFrom(this.binCandidates, configBin);
+  },
+  buildArgs: buildCodexArgs,
+  parseEvents: parseCodexEvents,
+  parseEvent(line: string): BridgeEvent | null {
+    return parseCodexEvents(line)[0] ?? null;
+  },
+};
+
+// ─── cursor ──────────────────────────────────────────────────
+
+function buildCursorArgs(opts: CodingBackendOptions): string[] {
+  validateBackendOptions('cursor', opts);
+  // cwd comes from spawn(); never pass --workspace.
+  const args = ['-p', '--output-format', 'stream-json', '--trust'];
+  // Cursor exposes no --session-id: the CLI mints the chat id itself and
+  // reports it on the init line, so only resume can name one. The bridge must
+  // therefore NOT pre-generate a session id for this backend.
+  if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId);
+  if (opts.model) args.push('--model', opts.model);
+  if (opts.permissionMode === 'bypassPermissions') {
+    args.push('--force');
+  } else if (opts.permissionMode === 'plan' || opts.permissionMode === 'ask') {
+    args.push('--mode', opts.permissionMode);
+  }
+  // 'allowlist' and any other mode: Cursor has no allow/deny tool flags, so we
+  // simply withhold --force and let the CLI's own approval gating apply. That
+  // is never wider than what was asked for; inventing flags would be.
+  //
+  // Cursor also has no effort, system-prompt, or budget flags — reasoning
+  // effort is encoded in the model name (e.g. claude-opus-5-thinking-high),
+  // so opts.effort / appendSystemPrompt / maxBudgetUsd are not mapped.
+  for (const dir of opts.addDirs ?? []) args.push('--add-dir', dir);
+  if (opts.extraArgs?.length) args.push(...opts.extraArgs);
+  args.push(opts.prompt);
+  return args;
+}
+
+/** `{"shellToolCall": {...}}` → tool name "shell". */
+function cursorToolCall(container: Record<string, unknown>): { tool: string; body: Record<string, unknown> } {
+  for (const [key, value] of Object.entries(container)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const tool = key.replace(/ToolCall$/, '');
+    return { tool: tool || key, body: value as Record<string, unknown> };
+  }
+  return { tool: 'unknown', body: {} };
+}
+
+function parseCursorEvents(line: string): BridgeEvent[] {
+  const trimmed = line.trim();
+  if (!trimmed) return [];
+  let obj: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object') return [otherEvent(trimmed)];
+    obj = parsed as Record<string, unknown>;
+  } catch {
+    return [otherEvent(trimmed)];
+  }
+
+  if (obj.type === 'system' && obj.subtype === 'init') {
+    return [{
+      kind: 'session',
+      sessionId: String(obj.session_id ?? ''),
+      model: typeof obj.model === 'string' ? obj.model : undefined,
+    }];
+  }
+
+  if (obj.type === 'thinking') {
+    // subtype 'delta' carries text; 'completed' is a bare terminator.
+    return typeof obj.text === 'string' && obj.text ? [{ kind: 'thinking', text: obj.text }] : [];
+  }
+
+  if (obj.type === 'tool_call') {
+    // Report each call once, at 'started'. The matching 'completed' line
+    // repeats the whole call plus its result and would double the tool count.
+    if (obj.subtype !== 'started') return [];
+    const container = (obj.tool_call && typeof obj.tool_call === 'object')
+      ? obj.tool_call as Record<string, unknown>
+      : {};
+    const { tool, body } = cursorToolCall(container);
+    const args = (body.args && typeof body.args === 'object') ? body.args as Record<string, unknown> : {};
+    const command = typeof args.command === 'string' ? args.command : '';
+    const description = typeof body.description === 'string' ? body.description : '';
+    return [{
+      kind: 'tool_use',
+      tool,
+      summary: oneLine(command || description || JSON.stringify(args), SUMMARY_MAX),
+    }];
+  }
+
+  if (obj.type === 'assistant') {
+    const message = obj.message as Record<string, unknown> | undefined;
+    const content = Array.isArray(message?.content) ? (message.content as unknown[]) : [];
+    const events: BridgeEvent[] = [];
+    for (const raw of content) {
+      const block = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+      if (block.type === 'text' && typeof block.text === 'string' && block.text) {
+        events.push({ kind: 'text', text: block.text });
+      } else if (block.type === 'tool_use') {
+        events.push({
+          kind: 'tool_use',
+          tool: String(block.name ?? 'unknown'),
+          summary: oneLine(JSON.stringify(block.input ?? {}), SUMMARY_MAX),
+        });
+      }
+    }
+    return events.length ? events : [otherEvent(trimmed)];
+  }
+
+  if (obj.type === 'error') {
+    const message = typeof obj.message === 'string'
+      ? obj.message
+      : typeof obj.error === 'string'
+        ? obj.error
+        : JSON.stringify(obj.error ?? 'Cursor reported an error');
+    return [{ kind: 'result', ok: false, text: bounded(message, RESULT_TEXT_MAX) }];
+  }
+
+  if (obj.type === 'result') {
+    const subtype = String(obj.subtype ?? '');
+    const ok = !obj.is_error && !subtype.startsWith('error');
+    // On success the result text duplicates the final assistant message
+    // verbatim; leave it blank so the bridge uses its tracked lastText and the
+    // tail is not doubled. On failure it is the only description we get.
+    const text = ok
+      ? ''
+      : bounded(typeof obj.result === 'string' && obj.result ? obj.result : (subtype || 'cursor run failed'), RESULT_TEXT_MAX);
+    return [{
+      kind: 'result',
+      ok,
+      text,
+      costUsd: undefined,
+      numTurns: undefined,
+      durationMs: typeof obj.duration_ms === 'number' ? obj.duration_ms : undefined,
+    }];
+  }
+
+  return [otherEvent(trimmed)];
+}
+
+const cursorBackend: CodingBackend = {
+  id: 'cursor',
+  // `cursor-agent` only. NOT plain `cursor`: on this machine /usr/local/bin/cursor
+  // is the Cursor editor's VS Code GUI launcher, which accepts none of these
+  // flags — resolving to it would spawn a silently broken job. Set
+  // acp.backends.cursor.bin to override.
+  binCandidates: ['cursor-agent', '/Users/jtr/.local/bin/cursor-agent'],
+  supportsResume: true,
+  waitForProcessGroupExit: false,
+  resolveBin(configBin?: string): string | null {
+    return resolveBinFrom(this.binCandidates, configBin);
+  },
+  buildArgs: buildCursorArgs,
+  parseEvents: parseCursorEvents,
+  parseEvent(line: string): BridgeEvent | null {
+    return parseCursorEvents(line)[0] ?? null;
+  },
+};
+
+// ─── Registry + child env ────────────────────────────────────
+
+const BACKENDS: Record<string, CodingBackend> = {
+  'grok-build': grokBuildBackend,
+  'claude-code': claudeCodeBackend,
+  codex: codexBackend,
+  cursor: cursorBackend,
+};
+
+export function getBackend(id: string): CodingBackend | undefined {
+  return BACKENDS[id];
+}
+
+export function listBackendIds(): string[] {
+  return Object.keys(BACKENDS);
+}
+
+export function buildChildEnv(config: BridgeConfig): NodeJS.ProcessEnv {
+  const env = unprivilegedChildEnv();
+  for (const key of STRIPPED_ENV_KEYS) delete env[key];
+  for (const name of config.envPassthrough ?? []) {
+    const value = process.env[name];
+    if (value !== undefined) env[name] = value;
+  }
+  const currentPath = env.PATH ?? '';
+  const missing = extraPathDirs().filter(dir => !currentPath.includes(dir));
+  if (missing.length > 0) {
+    env.PATH = currentPath ? `${missing.join(':')}:${currentPath}` : missing.join(':');
+  }
+  env.CLAUDE_CODE_ENTRYPOINT = 'home23-bridge';
+  return env;
+}

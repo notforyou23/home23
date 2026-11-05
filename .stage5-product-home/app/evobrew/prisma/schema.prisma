@@ -1,0 +1,20 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  // Default to local ./studio.db, but can be overridden by DATABASE_URL env var
+  // For global install: DATABASE_URL="file:~/.evobrew/database.db"
+  url      = env("DATABASE_URL")
+}
+
+// System-wide configuration storage (OAuth tokens, feature flags, etc.)
+// Used for platform-level settings that don't belong to a specific user
+model SystemConfig {
+  key       String    @id               // Primary key: e.g., "anthropic_oauth"
+  value     String                      // Encrypted JSON blob
+  expiresAt DateTime?                   // Optional expiry for tokens
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}

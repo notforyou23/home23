@@ -1,0 +1,53 @@
+{
+  "id": "x-social-distiller",
+  "version": "0.1.0",
+  "name": "X Social Distiller",
+  "description": "Turn source material into useful public X posts/replies: distill lessons, search live X chatter, rank opportunities, queue drafts, and optionally post through the canonical x skill with verification.",
+  "layer": "skill",
+  "runtime": "nodejs",
+  "category": "social",
+  "author": "home23",
+  "entry": "index.js",
+  "keywords": [
+    "x",
+    "twitter",
+    "social",
+    "distill",
+    "reply queue",
+    "newsletter",
+    "curriculum",
+    "public lesson",
+    "social posting"
+  ],
+  "triggers": [
+    "turn this into a tweet",
+    "find a tweet to respond to from this article",
+    "distill this newsletter for x",
+    "create a social reply queue",
+    "post a useful quick hit from this topic"
+  ],
+  "requiresTools": [],
+  "dependsOn": [
+    "x",
+    "x-research"
+  ],
+  "composes": [
+    "source-validation",
+    "knowledge-structuring"
+  ],
+  "sideEffects": true,
+  "hooks": {
+    "beforeRun": "hooks/before-run.js"
+  },
+  "actions": [
+    "distill",
+    "search",
+    "queue",
+    "postQueued"
+  ],
+  "compositionHints": [
+    "Use distill first to convert source material into public lesson cards, then search or queue to find X candidates and drafts.",
+    "Use postQueued only for a selected queue item; it posts through the canonical x skill and verifies read-back before returning success.",
+    "For generated image posts, generate_image first, then postQueued with generatedImage:'latest', requireMedia:true, requireGeneratedImage:true."
+  ]
+}

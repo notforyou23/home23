@@ -1,0 +1,124 @@
+{
+  "schema": "home23.embedder-stage5-close-receipt.v1",
+  "kind": "product-search-and-chat-e2e",
+  "ok": true,
+  "closedAt": "2026-09-11T02:53:46Z",
+  "sourceCommit": "ba13ceed",
+  "homeLabel": ".stage5-product-home",
+  "resident": "stage5host",
+  "ready": {
+    "beforeStart": "connection-refused",
+    "afterStart": {
+      "http": 200,
+      "warm": true,
+      "recipeId": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+      "dimension": 768,
+      "profileId": "owned-nomic-v1.5-onnx-fp32-mean-noprefix",
+      "pid": 10158
+    },
+    "afterHostMjsStopClaim": "host.mjs reported status=stopped processes=[]; /ready later still warm on pid 10158 (split PM2 / empty jlist)",
+    "afterOwnedNameStop": "connection-refused"
+  },
+  "catalog": {
+    "queriedTooEarlyPreviously": true,
+    "brainStateJson": false,
+    "stateJsonGz": true,
+    "lifecycleWhenWarm": "resident",
+    "sourceFix": "none — wait until state.json.gz + catalog resident; not a missing-publish bug on this home"
+  },
+  "productSearch": {
+    "passed": true,
+    "path": "POST /api/memory/search with mode=context (harness searchContext / assembleContext)",
+    "query": "How does sunshine lift moisture that later falls as weather and replenishes hidden reservoirs?",
+    "retrievalMode": "semantic-ann",
+    "sourceHealth": "healthy",
+    "fallback": null,
+    "hits": [
+      {
+        "id": "2",
+        "similarity": 0.7111,
+        "retrievalScore": 0.0817,
+        "matchKind": "keyword",
+        "conceptPrefix": "The hydrologic cycle is the continuous movement of H2O on, above, and below Earth crust.",
+        "source": "usgs-style-hydrologic-cycle.txt"
+      },
+      {
+        "id": "1",
+        "similarity": 0.5555,
+        "retrievalScore": 0.0638,
+        "matchKind": "keyword",
+        "conceptPrefix": "Granite crystallizes slowly from magma deep underground.",
+        "source": "usgs-style-granite.txt"
+      }
+    ],
+    "hydrologicBeatsGranite": true,
+    "defaultPostWithoutMode": {
+      "retrievalMode": "logical-source-scan",
+      "fallback": { "route": "logical-source-scan", "reason": "exact_phrase_missing" },
+      "hydrologicBeatsGranite": false,
+      "note": "keyword tie 0.3941 / 0.3941, granite id 1 first. Not the product chat retrieve path."
+    },
+    "exhaustiveScan": {
+      "hydrologicSimilarity": 0.7111,
+      "graniteSimilarity": 0.5555,
+      "hydrologicBeatsGranite": true
+    }
+  },
+  "chat": {
+    "passed": true,
+    "path": "coordination POST /api/v1/channels/:id/messages then resident result",
+    "channelId": "chn_01a08e42-8e19-734d-9d6d-1f35cb5edae9",
+    "model": "llama3.2 (ollama tag copied from llama3.2:1b; TEST home alias also set to llama3.2:1b)",
+    "retrieveObserved": "harness: Situational awareness: 4 brain cues",
+    "turns": [
+      {
+        "messageId": "msg_01a08e5d-77d8-7da9-b29b-6400f90db61c",
+        "text": "How does sunshine lift moisture that later falls as weather and replenishes hidden reservoirs?",
+        "answerId": "msg_01a08e5d-7822-7c18-993b-04ce276851d9",
+        "answerExcerpt": "I think there may be some errors in your question. Sunshine doesn't actually \"lift\" moisture from the atmosphere; rather, it heats the surface of the Earth, which can lead to evaporation and precipitation.\n\nHowever, I'm assuming you're asking about a specific phenomenon where sunshine promotes vegetation growth or helps maintain healthy plant life.",
+        "mentionsHydrologic": false,
+        "mentionsGranite": false,
+        "usedImportedNote": false
+      },
+      {
+        "messageId": "msg_01a08e5f-6e43-7c88-af09-bda53dc13b66",
+        "text": "Using the imported notes already in memory, what does the hydrologic cycle note say about how sunshine / solar energy lifts moisture that later falls as weather and replenishes hidden reservoirs? Quote that note. Do not treat granite as the topic.",
+        "answerId": "msg_01a08e5f-6e5f-7f44-a603-282dd1814528",
+        "answerExcerpt": "The hydrologic cycle note is: \"Sunlight energy heats water molecules in the atmosphere, causing them to evaporate into the air.\"",
+        "mentionsHydrologic": true,
+        "mentionsGranite": false,
+        "quotedImportedTextExactly": false
+      }
+    ]
+  },
+  "stop": {
+    "hostMjsStop": {
+      "ok": true,
+      "status": "stopped",
+      "processesReported": [],
+      "readyActuallyWarm": true,
+      "reason": "host.mjs jlist saw no rows; did not stop daemon 70690 children"
+    },
+    "ownedNameStop": {
+      "method": "home private PM2 stop of ownedProcessNames only (not pm2 stop all)",
+      "allStopped": true,
+      "ready": "connection-refused",
+      "portsClosed": [32584, 32585, 32586, 32591]
+    },
+    "verifierOwnedKill": "attempted SIGINT/TERM on owned pids; signals did not reap; PM2 named stop did"
+  },
+  "commits": [
+    {
+      "sha": "f4a91ddf",
+      "message": "Record Stage 5 closer product search and chat mention-bar proofs.",
+      "files": ["docs/superpowers/plans/2026-09-10-owned-embedder-work-record.md"],
+      "pushed": false
+    }
+  ],
+  "notClaimed": [
+    "product default flip",
+    "existing-home Stage 6",
+    "faithful 1b quote of the imported hydrologic paragraph",
+    "host.mjs stop alone leaving /ready refused on this retry (required named PM2 stop after empty jlist)"
+  ]
+}

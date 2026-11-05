@@ -1,0 +1,3110 @@
+import { projectContinuityPrompt, type ProjectContinuity } from '../coordination/projects/continuity.js';
+import { parseHistoricalContext, historicalContextBlock, type HistoricalContextEntry } from './historical-context.js';
+import { cacheableSystemPrompt, cacheUsage, promptCacheKey } from './prompt-cache.js';
+import { estimateContextChars } from './context-pressure.js';
+/**
+ * COSMO Home 2.3 — Agent Loop
+ *
+ * The core agentic tool-use loop. Every message enters here.
+ * The LLM sees tools, decides what to use, executes them,
+ * and loops until it produces a final text response.
+ */
+
+import Anthropic from '@anthropic-ai/sdk';
+import { anthropicOAuthStealthHeaders } from './anthropic-headers.js';
+import { resolveProviderKey, isAuthError, refreshManagedOAuth } from './provider-credentials.js';
+import { createHash } from 'node:crypto';
+import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { ToolRegistry } from './tools/index.js';
+import type { ContextManager } from './context.js';
+import { ConversationHistory, type StoredMessage, type ContentBlock, type HistoryRecord, type SessionBoundary } from './history.js';
+import type {
+  AgentEvent,
+  AgentEventCallback,
+  AgentResponse,
+  ToolContext,
+  TurnRuntimeContext,
+} from './types.js';
+import type { OperationActivity } from './brain-operations/types.js';
+import type { BrainOperationsClient } from './brain-operations/client.js';
+import { ActivityLease, MAX_TIMER_DELAY_MS, type LeaseExpiryReason } from './activity-lease.js';
+import { executeAndFormatTool } from './tool-result.js';
+import { MemoryManager } from './memory.js';
+import { relieveToolPressure } from './context-window.js';
+import type { CompactionManager } from './compaction.js';
+import type { MediaAttachment } from '../types.js';
+import { getCodexCredentials, getCodexHeaders } from './codex-auth.js';
+import { assembleContext } from './context-assembly.js';
+import { isSpeakingConversationRun, isForegroundConversation } from './foreground-admission.js';
+import { collectCanonicalWorkContext, collectForegroundTurnContext } from './foreground-work-view.js';
+import {
+  isRetrievalEvalTurn,
+  retrievalEvalDisclosure,
+  continuityEnrichmentDisclosure,
+} from './retrieval-eval.js';
+import { EventLedger } from './event-ledger.js';
+import { TriggerIndex } from './trigger-index.js';
+import { MemoryObjectStore } from './memory-objects.js';
+import { RelationshipLedger } from './relationship-ledger.js';
+import { TurnStore } from '../chat/turn-store.js';
+import { turnBus } from '../chat/turn-bus.js';
+import { newTurnId, type TurnEvent } from '../chat/turn-types.js';
+import { combineRequestSignals } from './abort-signals.js';
+import { fetchCodexResponse } from './codex-fetch.js';
+import { inferProviderFromModel } from './model-resolution.js';
+import {
+  DEFAULT_REASONING_EFFORT,
+  anthropicThinkingConfig,
+  parseReasoningEffort,
+  resolveConfiguredReasoningEffort,
+  responsesReasoningConfig,
+  type ReasoningEffort,
+} from './reasoning-effort.js';
+import {
+  applyReasoningOutputItem,
+  applyReasoningStreamEvent,
+  createReasoningStreamState,
+  shouldFlushThinkingBuffer,
+  takeReasoningEvidence,
+  visibleReasoningText,
+} from './reasoning-stream.js';
+import { takeOperatorSteer } from './steer-queue.js';
+
+const MAX_ITERATIONS = 500;
+const TYPING_INTERVAL_MS = 4000;
+const MODEL_TOOL_RESULT_LIMIT_CHARS = 4000;
+const TOOL_EVENT_RESULT_LIMIT_CHARS = 4000;
+const DEFAULT_TURN_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_TURN_HARD_DURATION_MS = 8 * 60 * 60 * 1000;
+const DEFAULT_FIRST_TOKEN_TIMEOUT_MS = 30 * 1000;
+
+function hashText(text: string): string {
+  return createHash('sha256').update(text).digest('hex').slice(0, 16);
+}
+
+function isAnthropicThinkingRejected(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /thinking|budget_tokens|extended thinking/i.test(msg);
+}
+
+function isCodexReasoningRejected(errText: string): boolean {
+  return /reasoning|summary/i.test(errText);
+}
+
+function stringifyContent(content: string | ContentBlock[]): string {
+  if (typeof content === 'string') return content;
+  return content.map(block => JSON.stringify(block)).join('\n');
+}
+
+function toolMediaEvent(media: MediaAttachment, toolCallId: string): AgentEvent {
+  return {
+    type: 'media',
+    mediaType: media.type || 'image',
+    path: media.path,
+    generatedBy: media.generatedBy,
+    caption: media.caption,
+    mimeType: media.mimeType,
+    fileName: media.fileName,
+    byteCount: media.byteCount,
+    sha256: media.sha256,
+    toolCallId,
+    sourceEventType: 'runtime.tool_media',
+  };
+}
+
+function toolRoundHistoryEntry(names: string[], receipts: string[]): StoredMessage {
+  const lines = names.map((name, i) => {
+    const flat = String(receipts[i] ?? '').replace(/\s+/g, ' ').trim().slice(0, 1500);
+    return `${name}: ${flat}`;
+  });
+  return {
+    role: 'assistant',
+    content: `[Used tools: ${names.join(', ')}]\n${lines.join('\n')}`,
+  };
+}
+
+export interface CacheDiagnosticsConfig {
+  enabled: boolean;
+  runtimeDir: string;
+  logger: (event: Record<string, unknown>) => void;
+}
+
+// ─── OAuth Stealth Headers ──────────────────────────────────
+// Required to use OAuth tokens (sk-ant-oat*) with the Anthropic SDK.
+// Single source: anthropic-headers.ts (P2-18 — this was one of five copies).
+function getStealthHeaders(): Record<string, string> {
+  return anthropicOAuthStealthHeaders();
+}
+
+function getClaudeCodeSystemPrompt(): { type: 'text'; text: string; cache_control: { type: 'ephemeral' } } {
+  return {
+    type: 'text',
+    text: "You are Claude Code, Anthropic's official CLI for Claude.",
+    cache_control: { type: 'ephemeral' },
+  };
+}
+
+function createAnthropicRuntimeClient(
+  configuredKey: string,
+  baseURL?: string,
+  force = false,
+): { client: Anthropic; isOAuth: boolean; credential: string } {
+  // Read-at-use from the live secrets file (the token-rotation class's fix,
+  // 2026-08-10): a managed OAuth token frozen into boot config yields to the
+  // freshest mirrored value; static API keys stay as pinned. `force` drops the
+  // resolver cache — the auth-failure path. The credential is returned so the
+  // caller can tell whether a later resolution actually rotated.
+  const apiKey = resolveProviderKey('anthropic', configuredKey, force) || configuredKey;
+  const isOAuth = apiKey.startsWith('sk-ant-oat');
+  const client = isOAuth
+    ? new Anthropic({
+        authToken: apiKey,
+        ...(baseURL ? { baseURL } : {}),
+        defaultHeaders: getStealthHeaders(),
+        dangerouslyAllowBrowser: true,
+      })
+    : new Anthropic({
+        apiKey,
+        ...(baseURL ? { baseURL } : {}),
+      });
+  return { client, isOAuth, credential: apiKey };
+}
+
+type RuntimeModelContext = {
+  model: string;
+  provider: string;
+  reasoningEffort: ReasoningEffort;
+  client: Anthropic;
+  isOAuth: boolean;
+  memory: MemoryManager;
+};
+
+export type TerminalTurnOutcome = {
+  status: 'stopped' | 'timeout' | 'error';
+  stop_reason: string;
+  error_code?: string;
+  error_message?: string;
+};
+
+export type AgentStopResult = {
+  stopped: boolean;
+  chatIds: string[];
+  turnIds?: string[];
+  activeTurnId?: string;
+  terminal?: TerminalTurnOutcome;
+};
+
+// Cache model capabilities from Ollama Cloud /api/show
+const ollamaCapabilitiesCache = new Map<string, Set<string>>();
+
+// ─── SSE Parser ─────────────────────────────────────────────
+// Used by the openai-codex provider path.
+// Yields parsed JSON objects from a Server-Sent Events stream.
+// Filter on event.type from the JSON body — not on event._event,
+// which is added from the SSE "event:" header line and may be absent.
+async function* parseSSE(body: ReadableStream<Uint8Array>): AsyncGenerator<Record<string, unknown>> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        buffer += decoder.decode(); // flush remaining bytes
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+
+      let idx: number;
+      while ((idx = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        if (!frame.trim()) continue;
+
+        let eventType = '';
+        const dataLines: string[] = [];
+        for (const line of frame.split('\n')) {
+          if (line.startsWith('event:')) eventType = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+        }
+
+        const payload = dataLines.join('\n').trim();
+        if (!payload || payload === '[DONE]') continue;
+
+        try {
+          const parsed = JSON.parse(payload) as Record<string, unknown>;
+          if (eventType) parsed._event = eventType;
+          yield parsed;
+        } catch { /* skip malformed frame */ }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+type OpenAIFunctionTool = {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters?: unknown;
+  };
+};
+
+type XaiResponseTool =
+  | { type: 'function'; name: string; description: string | null; parameters: unknown }
+  | { type: 'web_search' }
+  | { type: 'x_search' }
+  | { type: 'code_interpreter' };
+
+const XAI_SERVER_TOOLS: XaiResponseTool[] = [
+  { type: 'web_search' },
+  { type: 'x_search' },
+  { type: 'code_interpreter' },
+];
+
+const XAI_UNSUPPORTED_SCHEMA_COMPOSITION = new Set([
+  'oneOf', 'anyOf', 'allOf', 'not', 'if', 'then', 'else',
+]);
+
+function normalizeXaiToolSchema(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeXaiToolSchema(item));
+  }
+  if (!value || typeof value !== 'object') return value;
+  const schema = value as Record<string, unknown>;
+  const normalized: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(schema)) {
+    if (XAI_UNSUPPORTED_SCHEMA_COMPOSITION.has(key)) continue;
+    if (key === 'properties' && child && typeof child === 'object' && !Array.isArray(child)) {
+      normalized[key] = Object.fromEntries(Object.entries(child as Record<string, unknown>)
+        .map(([name, propertySchema]) => [name, normalizeXaiToolSchema(propertySchema)]));
+      continue;
+    }
+    normalized[key] = normalizeXaiToolSchema(child);
+  }
+  return normalized;
+}
+
+function buildXaiResponseTools(registry: ToolRegistry): XaiResponseTool[] {
+  const localTools = (registry.getOpenAITools() as OpenAIFunctionTool[])
+    // Avoid a name collision with xAI's native web_search tool.
+    .filter((tool) => tool.function.name !== 'web_search')
+    .map((tool) => ({
+      type: 'function' as const,
+      name: tool.function.name,
+      description: tool.function.description ?? null,
+      parameters: normalizeXaiToolSchema(tool.function.parameters ?? null),
+    }));
+
+  return [...XAI_SERVER_TOOLS, ...localTools];
+}
+
+function getXaiServerToolName(itemType: string | undefined): string | null {
+  if (itemType === 'web_search_call') return 'web_search';
+  if (itemType === 'x_search_call') return 'x_search';
+  if (itemType === 'code_interpreter_call') return 'code_execution';
+  return null;
+}
+
+function getXaiServerToolArgs(item: Record<string, unknown>): unknown {
+  if (typeof item.arguments === 'string' && item.arguments.trim()) {
+    try {
+      return JSON.parse(item.arguments);
+    } catch {
+      return item.arguments;
+    }
+  }
+  if (typeof item.input === 'string' && item.input.trim()) {
+    try {
+      return JSON.parse(item.input);
+    } catch {
+      return item.input;
+    }
+  }
+  if (typeof item.query === 'string' && item.query.trim()) {
+    return { query: item.query };
+  }
+  return {};
+}
+
+function summarizeXaiServerToolResult(toolName: string, item: Record<string, unknown>): string {
+  const query = typeof item.query === 'string' ? item.query.trim() : '';
+  const args = typeof item.arguments === 'string' ? item.arguments.trim() : '';
+  const input = typeof item.input === 'string' ? item.input.trim() : '';
+  const details = query || args || input || (typeof item.id === 'string' ? `id=${item.id}` : 'handled by xAI server');
+  const outcome = xaiServerToolSucceeded(item) ? 'completed' : 'failed';
+  return `${toolName} ${outcome} via xAI server: ${details}`.slice(0, 300);
+}
+
+function xaiServerToolSucceeded(item: Record<string, unknown>): boolean {
+  const status = typeof item.status === 'string' ? item.status.trim().toLowerCase() : '';
+  return item.error == null
+    && !['failed', 'error', 'cancelled', 'incomplete'].includes(status);
+}
+
+function getXaiServerToolNameFromItem(item: Record<string, unknown> | undefined): string | null {
+  const directType = getXaiServerToolName(item?.type as string | undefined);
+  if (directType) return directType;
+
+  const name = typeof item?.name === 'string' ? item.name : '';
+  if (name === 'code_execution') return 'code_execution';
+  if (name === 'web_search' || name === 'web_search_with_snippets' || name === 'browse_page') return 'web_search';
+  if (name.startsWith('x_')) return 'x_search';
+
+  return null;
+}
+
+function isAnthropicSamplingDeprecatedModel(model: string): boolean {
+  return /^(?:[^/]+\/)?(?:claude-opus-4-8|claude-sonnet-5)(?:$|[-@])/.test(String(model || '').trim());
+}
+
+export class AgentLoop {
+  private client: Anthropic;
+  /** The credential `this.client` was built with, so a rotation is detectable. */
+  private credentialInUse: string;
+  /** Configured anthropic key from boot config — the pin/floor for resolution. */
+  private readonly configuredAnthropicKey: string;
+  private readonly configuredAnthropicBaseURL: string | undefined;
+  private model: string;
+  private provider: string;
+  private reasoningEffort: ReasoningEffort;
+  private modelReasoningEfforts: Record<string, ReasoningEffort>;
+  private currentModelReasoningEffort?: ReasoningEffort;
+  private maxTokens: number;
+  private temperature: number;
+  invalidateContext(): void { this.contextManager.invalidate(); }
+
+  private registry: ToolRegistry;
+  private contextManager: ContextManager;
+  private history: ConversationHistory;
+  private toolContext: ToolContext;
+  private isOAuth: boolean;
+  private memory: MemoryManager;
+  private compaction: CompactionManager | null;
+  private cacheDiagnostics?: CacheDiagnosticsConfig;
+  private activeRuns = new Map<string, Map<string, AbortController>>();
+  private speakingRuns = new Map<string, Set<string>>();
+  private activeTurnIds = new Map<string, Set<string>>();
+  private authenticatedUserTurns = new Map<string, { chatId: string; userText: string }>();
+  private terminalTurnOverrides = new Map<string, TerminalTurnOutcome>();
+  private sessionGapMs: number;
+  private workspacePath: string;
+  private eventLedger: EventLedger;
+  private triggerIndex: TriggerIndex;
+  private memoryStore: MemoryObjectStore;
+  private relationshipLedger: RelationshipLedger;
+  private turnStore: TurnStore;
+  private turnTiming = {
+    now: Date.now,
+    setTimeout: (fn: () => void, ms: number): unknown => setTimeout(fn, ms),
+    clearTimeout: (id: unknown): void => clearTimeout(id as ReturnType<typeof setTimeout>),
+  };
+  private pusher: import('../push/apns-pusher.js').ApnsPusher | null = null;
+  private codexCredentialsProvider: typeof getCodexCredentials = getCodexCredentials;
+  private situationalAwareness?: import('./session-bootstrap.js').SituationalAwarenessConfig;
+  private onSpeakingCleared: ((chatId: string) => void) | null = null;
+
+  constructor(opts: {
+    apiKey: string;
+    baseURL?: string;
+    model: string;
+    provider?: string;
+    reasoningEffort?: ReasoningEffort;
+    modelReasoningEfforts?: Record<string, ReasoningEffort>;
+    maxTokens?: number;
+    temperature?: number;
+    registry: ToolRegistry;
+    contextManager: ContextManager;
+    history: ConversationHistory;
+    toolContext: ToolContext;
+    workspacePath: string;
+    compaction?: CompactionManager;
+    cacheDiagnostics?: CacheDiagnosticsConfig;
+    sessionGapMs?: number;
+    situationalAwareness?: import('./session-bootstrap.js').SituationalAwarenessConfig;
+  }) {
+    // OAuth tokens (sk-ant-oat*) need stealth headers + authToken param
+    const runtimeClient = createAnthropicRuntimeClient(opts.apiKey, opts.baseURL);
+    this.isOAuth = runtimeClient.isOAuth;
+    this.client = runtimeClient.client;
+    this.credentialInUse = runtimeClient.credential;
+    this.configuredAnthropicKey = opts.apiKey;
+    this.configuredAnthropicBaseURL = opts.baseURL;
+    this.model = opts.model;
+    this.provider = inferProviderFromModel(opts.model, opts.provider);
+    this.reasoningEffort = opts.reasoningEffort ?? DEFAULT_REASONING_EFFORT;
+    this.modelReasoningEfforts = opts.modelReasoningEfforts ?? {};
+    this.maxTokens = opts.maxTokens ?? 16384;
+    this.temperature = opts.temperature ?? 0.7;
+    this.registry = opts.registry;
+    this.contextManager = opts.contextManager;
+    this.history = opts.history;
+    this.turnStore = new TurnStore(this.history);
+    this.toolContext = opts.toolContext;
+    this.memory = new MemoryManager({
+      client: this.client,
+      model: this.model,
+      provider: this.provider,
+      apiKey: opts.apiKey,
+      baseURL: opts.baseURL,
+      workspacePath: opts.workspacePath,
+    });
+    this.compaction = opts.compaction ?? null;
+    this.cacheDiagnostics = opts.cacheDiagnostics;
+    this.sessionGapMs = opts.sessionGapMs ?? 30 * 60 * 1000;
+    this.workspacePath = opts.workspacePath;
+    this.situationalAwareness = opts.situationalAwareness;
+    this.eventLedger = new EventLedger(join(this.workspacePath, '..', 'brain'));
+    const brainDir = join(this.workspacePath, '..', 'brain');
+    // Correction authentication is ONE-SHOT and SHARED across both stores: one
+    // authenticated jtr correction message mints exactly one jtr-authority
+    // record, whether that lands in the memory store or the relationship ledger
+    // (whichever tool the agent calls first consumes the token). This preserves
+    // the tested anti-replay guard — a replay of the same ingress is rejected —
+    // now spanning both stores. Recording the same correction in the second
+    // store still succeeds, as an agent_note with the correct text.
+    const validateCorrection = (ingress: { messageRef: string; chatId: string; userText: string }): boolean => {
+      const recorded = this.authenticatedUserTurns.get(ingress.messageRef);
+      const valid = recorded?.chatId === ingress.chatId && recorded.userText === ingress.userText;
+      if (valid) this.authenticatedUserTurns.delete(ingress.messageRef);
+      return valid;
+    };
+    this.memoryStore = new MemoryObjectStore(brainDir, {
+      validateCorrectionIngress: validateCorrection,
+    });
+    // Working-relationship ledger (Step 30) — same authenticated-correction binding.
+    this.relationshipLedger = new RelationshipLedger(brainDir, {
+      validateCorrectionIngress: validateCorrection,
+    });
+    this.triggerIndex = new TriggerIndex();
+    this.triggerIndex.loadFrom(this.memoryStore);
+  }
+
+  /**
+   * Write (or overwrite) workspace/sessions/session-live-<chatId>.md with the
+   * complete current conversation after every turn. This is both the recovery
+   * surface and the feeder's durable ingestion source: the final turn reaches
+   * the brain without waiting for a later message to create a session boundary.
+   */
+  private async updateActiveSnapshot(chatId: string): Promise<void> {
+    const records = this.history.load(chatId);
+    const messages = records.filter((r): r is StoredMessage => !('type' in r && r.type === 'session_boundary'));
+    if (messages.length < 2) return;
+
+    const lines: string[] = [];
+    for (const msg of messages) {
+      const role = msg.role === 'user' ? (chatId.startsWith('coordination:') ? 'Runtime input (see canonical conversation for authorship)' : 'User') : 'Agent';
+      const content = typeof msg.content === 'string'
+        ? msg.content
+        : (msg.content as Array<{ type: string; text?: string }>)
+            .filter(b => b.type === 'text')
+            .map(b => b.text || '')
+            .join('');
+      if (content.trim()) lines.push(`**${role}:** ${content.trim()}`);
+    }
+    if (lines.length < 2) return;
+
+    const sessionsDir = join(this.workspacePath, 'sessions');
+    // Safe filename: replace any non-[A-Za-z0-9_-] with _
+    const safeChatId = String(chatId).replace(/[^A-Za-z0-9_-]/g, '_');
+    const filename = `session-live-${safeChatId}.md`;
+    const body = `# Conversation Session (live)\n\n- **chatId:** ${chatId}\n- **messages:** ${messages.length}\n- **updated:** ${new Date().toISOString()}\n\n---\n\n${lines.join('\n\n')}\n`;
+
+    try {
+      mkdirSync(sessionsDir, { recursive: true });
+      writeFileSync(join(sessionsDir, filename), body);
+    } catch (err) {
+      console.warn(`[loop] Failed to write active snapshot for ${chatId}: ${err}`);
+    }
+  }
+
+  private async compileSessionTranscript(chatId: string, records: HistoryRecord[]): Promise<void> {
+    let lastBoundaryIdx = -1;
+    for (let i = records.length - 1; i >= 0; i--) {
+      const r = records[i];
+      if (r && 'type' in r && r.type === 'session_boundary') {
+        lastBoundaryIdx = i;
+        break;
+      }
+    }
+
+    const sessionMessages = records
+      .slice(lastBoundaryIdx + 1)
+      .filter((r): r is StoredMessage => !('type' in r && r.type === 'session_boundary'));
+
+    if (sessionMessages.length < 2) return;
+
+    const lines: string[] = [];
+    for (const msg of sessionMessages) {
+      const role = msg.role === 'user' ? (chatId.startsWith('coordination:') ? 'Runtime input (see canonical conversation for authorship)' : 'User') : 'Agent';
+      const content = typeof msg.content === 'string'
+        ? msg.content
+        : (msg.content as Array<{ type: string; text?: string }>)
+            .filter(b => b.type === 'text')
+            .map(b => b.text || '')
+            .join('');
+      if (content.trim()) {
+        lines.push(`**${role}:** ${content.trim()}`);
+      }
+    }
+
+    if (lines.length < 2) return;
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const safeChatId = String(chatId).replace(/[^A-Za-z0-9_-]/g, '_');
+    const filename = `session-${timestamp}-${safeChatId}.md`;
+    const sessionsDir = join(this.workspacePath, 'sessions');
+
+    try {
+      mkdirSync(sessionsDir, { recursive: true });
+      const content = `# Conversation Session\n\nDate: ${new Date().toISOString()}\nChannel: ${chatId}\nMessages: ${sessionMessages.length}\n\n---\n\n${lines.join('\n\n')}`;
+      writeFileSync(join(sessionsDir, filename), content);
+      console.log(`[loop] Session transcript written: ${filename} (${sessionMessages.length} messages)`);
+    } catch (err) {
+      console.warn(`[loop] Failed to write session transcript: ${err}`);
+    }
+
+    // Phase 7 of thinking-machine-cycle: emit conversation salience sidecar.
+    // Engine-side discovery reads this to weight attention toward clusters
+    // the user is actively engaging with. Token-overlap based for v1; no
+    // embeddings required — keeps harness dependency footprint minimal.
+    try {
+      const salienceDir = join(this.workspacePath, '..', 'brain');
+      mkdirSync(salienceDir, { recursive: true });
+      const salienceEntry = {
+        ts: new Date().toISOString(),
+        chatId,
+        messageCount: sessionMessages.length,
+        // Compact summary for engine-side token overlap scoring: the joined
+        // lines trimmed to a reasonable size. Full text lives in sessions/.
+        summary: lines.join('\n\n').slice(0, 8000),
+      };
+      appendFileSync(
+        join(salienceDir, 'conversation-salience.jsonl'),
+        JSON.stringify(salienceEntry) + '\n'
+      );
+    } catch (err) {
+      // Non-fatal — discovery salience is an optimization, not a requirement
+      console.warn(`[loop] Failed to write conversation-salience: ${err}`);
+    }
+  }
+
+  /** Expose client for CompactionManager wiring */
+  getClient(): Anthropic { return this.client; }
+
+  /** Expose memory for CompactionManager wiring */
+  getMemory(): MemoryManager { return this.memory; }
+
+  /** Expose history for cron sessionHistory='fresh' rotation */
+  getHistory(): ConversationHistory { return this.history; }
+
+  private providerMap: Map<string, { apiKey: string; baseURL?: string }> = new Map();
+
+  /** Give AgentLoop the knowledge it needs to rebuild its HTTP client when switching
+   *  between Anthropic-SDK providers (anthropic vs minimax vs Claude-via-OAuth).
+   *  Other providers (openai/xai/ollama) are called via fetch() and read their keys
+   *  from env, so no client rebuild needed. */
+  setProviderMap(map: Record<string, { apiKey: string; baseURL?: string }>): void {
+    this.providerMap = new Map(Object.entries(map));
+  }
+
+  /**
+   * Rebuild the Anthropic client if the resolved credential has rotated.
+   *
+   * Called once per turn (from createRuntimeContext), never inside the
+   * streaming path — resolveProviderKey is mtime-cached, so this is a cheap
+   * comparison in the common case. `force` drops that cache: the auth-failure
+   * path, where the rotation landed after this client was built and the cache
+   * window has not yet elapsed.
+   *
+   * An empty resolution KEEPS the working client. A secrets.yaml that briefly
+   * goes unreadable must not disarm a running agent — stale credentials beat
+   * no credentials. Returns true when the client was actually replaced.
+   */
+  private ensureFreshAnthropicClient(force = false): boolean {
+    if (this.provider !== 'anthropic' && this.provider !== 'minimax') return false;
+    const resolved = resolveProviderKey('anthropic', this.configuredAnthropicKey, force);
+    if (resolved === '' || resolved === this.credentialInUse) return false;
+    try {
+      const rebuilt = createAnthropicRuntimeClient(
+        this.configuredAnthropicKey, this.configuredAnthropicBaseURL, force);
+      this.client = rebuilt.client;
+      this.isOAuth = rebuilt.isOAuth;
+      this.credentialInUse = rebuilt.credential;
+      console.log('[agent] anthropic credential rotated in secrets.yaml — client rebuilt');
+      return true;
+    } catch (err) {
+      // Keep the working client; a failed rebuild is not worth killing a turn.
+      console.warn(`[agent] credential rebuild failed, keeping current client: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  private createRuntimeContext(
+    modelOverride?: { model: string; provider?: string; reasoningEffort?: ReasoningEffort },
+    effortOverride?: ReasoningEffort,
+  ): RuntimeModelContext {
+    // Per-turn: a rotation reaches a RUNNING loop here, with no restart.
+    this.ensureFreshAnthropicClient();
+    const model = modelOverride?.model ?? this.model;
+    const provider = modelOverride?.model
+      ? inferProviderFromModel(modelOverride.model, modelOverride.provider)
+      : this.provider;
+    const reasoningEffort = effortOverride
+      ?? modelOverride?.reasoningEffort
+      ?? (modelOverride?.model
+        ? resolveConfiguredReasoningEffort(model, this.reasoningEffort, this.modelReasoningEfforts)
+        : (this.currentModelReasoningEffort
+          ?? resolveConfiguredReasoningEffort(model, this.reasoningEffort, this.modelReasoningEfforts)));
+
+    let client = this.client;
+    let isOAuth = this.isOAuth;
+    const sdkProviders = new Set(['anthropic', 'minimax']);
+    if (modelOverride?.model && sdkProviders.has(provider)) {
+      const cfg = this.providerMap.get(provider);
+      if (cfg?.apiKey) {
+        const runtimeClient = createAnthropicRuntimeClient(cfg.apiKey, cfg.baseURL);
+        client = runtimeClient.client;
+        isOAuth = runtimeClient.isOAuth;
+      } else {
+        console.warn(`[agent] model override: no provider config for ${provider} — using configured client`);
+      }
+    }
+
+    const cfg = this.providerMap.get(provider);
+    const memory = modelOverride?.model
+      ? new MemoryManager({
+          client,
+          model,
+          provider,
+          apiKey: cfg?.apiKey,
+          baseURL: cfg?.baseURL,
+          workspacePath: this.workspacePath,
+        })
+      : this.memory;
+
+    return { model, provider, reasoningEffort, client, isOAuth, memory };
+  }
+
+  setModel(model: string, provider?: string, reasoningEffort?: ReasoningEffort): void {
+    const newProvider = inferProviderFromModel(model, provider);
+
+    // Rebuild the Anthropic SDK client when switching between SDK providers
+    // (anthropic <-> minimax). Their baseURLs differ; the client is bound at construction.
+    const sdkProviders = new Set(['anthropic', 'minimax']);
+    if (newProvider !== this.provider && sdkProviders.has(newProvider)) {
+      const cfg = this.providerMap.get(newProvider);
+      if (cfg && cfg.apiKey) {
+        const runtimeClient = createAnthropicRuntimeClient(cfg.apiKey, cfg.baseURL);
+        this.isOAuth = runtimeClient.isOAuth;
+        this.client = runtimeClient.client;
+        // Keep rotation detection honest after a provider switch, or the next
+        // ensureFreshAnthropicClient would compare against a stale credential.
+        this.credentialInUse = runtimeClient.credential;
+        console.log(`[agent] provider switched to ${newProvider} (baseURL=${cfg.baseURL ?? 'default'})`);
+      } else {
+        console.warn(`[agent] setModel: no provider config for ${newProvider} — keeping existing client`);
+      }
+    }
+
+    this.model = model;
+    this.provider = newProvider;
+    this.currentModelReasoningEffort = reasoningEffort;
+    const cfg = this.providerMap.get(newProvider);
+    this.memory = new MemoryManager({
+      client: this.client,
+      model: this.model,
+      provider: this.provider,
+      apiKey: cfg?.apiKey,
+      baseURL: cfg?.baseURL,
+      workspacePath: this.workspacePath,
+    });
+  }
+
+  getModel(): string {
+    return this.model;
+  }
+
+  getProvider(): string {
+    return this.provider;
+  }
+
+  getReasoningEffort(): ReasoningEffort {
+    return this.currentModelReasoningEffort
+      ?? resolveConfiguredReasoningEffort(this.model, this.reasoningEffort, this.modelReasoningEfforts);
+  }
+
+  /** Absolute durable workspace used for resident-owned generated artifacts. */
+  getWorkspacePath(): string {
+    return this.workspacePath;
+  }
+
+  /** Stop an active run. Returns true if a run was aborted. */
+  stop(chatId?: string, turnId?: string, reason: 'operator_stop' | 'harness_shutdown' = 'operator_stop'): AgentStopResult {
+    if (chatId) {
+      const runs = this.activeRuns.get(chatId);
+      const existingTerminal = turnId
+        ? this.terminalTurnOverrides.get(this.turnKey(chatId, turnId))
+        : undefined;
+      if (runs && runs.size > 0) {
+        const selected = turnId ? [[turnId, runs.get(turnId)] as const] : [...runs.entries()];
+        const activeTurnId = [...runs.keys()].at(-1);
+        if (turnId && !runs.has(turnId)) {
+          return {
+            stopped: false,
+            chatIds: [],
+            activeTurnId,
+            ...(existingTerminal ? { terminal: { ...existingTerminal } } : {}),
+          };
+        }
+        const stoppedTurnIds: string[] = [];
+        let requestedTerminal = existingTerminal;
+        for (const [selectedTurnId, ac] of selected) {
+          if (!ac) continue;
+          if (!selectedTurnId.startsWith('raw:')) {
+            this.setTerminalTurnOverrideOnce(chatId, selectedTurnId, {
+              status: reason === 'operator_stop' ? 'stopped' : 'error',
+              stop_reason: reason,
+              ...(reason === 'harness_shutdown' ? {error_code: reason, error_message: 'Resident harness shut down; work was interrupted.'} : {}),
+            });
+            if (selectedTurnId === turnId) {
+              requestedTerminal = this.terminalTurnOverrides.get(
+                this.turnKey(chatId, selectedTurnId),
+              );
+            }
+          }
+          ac.abort(Object.assign(new Error(reason), { code: reason }));
+          this.unregisterActiveRun(chatId, selectedTurnId, ac);
+          stoppedTurnIds.push(selectedTurnId);
+        }
+        return {
+          stopped: stoppedTurnIds.length > 0,
+          chatIds: [chatId],
+          turnIds: stoppedTurnIds,
+          ...(requestedTerminal ? { terminal: { ...requestedTerminal } } : {}),
+        };
+      }
+      return {
+        stopped: false,
+        chatIds: [],
+        ...(existingTerminal ? { terminal: { ...existingTerminal } } : {}),
+      };
+    }
+    // Stop all active runs
+    const ids = [...this.activeRuns.keys()];
+    const turnIds: string[] = [];
+    for (const [activeChatId, runs] of [...this.activeRuns.entries()]) {
+      for (const [activeTurnId, ac] of [...runs.entries()]) {
+        if (!activeTurnId.startsWith('raw:')) {
+          this.setTerminalTurnOverrideOnce(activeChatId, activeTurnId, {
+            status: reason === 'operator_stop' ? 'stopped' : 'error',
+            stop_reason: reason,
+            ...(reason === 'harness_shutdown' ? {error_code: reason, error_message: 'Resident harness shut down; work was interrupted.'} : {}),
+          });
+        }
+        ac.abort(Object.assign(new Error(reason), { code: reason }));
+        this.unregisterActiveRun(activeChatId, activeTurnId, ac);
+        turnIds.push(activeTurnId);
+      }
+    }
+    return { stopped: ids.length > 0, chatIds: ids, turnIds };
+  }
+
+  private turnKey(chatId: string, turnId: string): string {
+    return `${chatId}\u0000${turnId}`;
+  }
+
+  private setTerminalTurnOverrideOnce(
+    chatId: string,
+    turnId: string,
+    override: TerminalTurnOutcome,
+  ): void {
+    const key = this.turnKey(chatId, turnId);
+    if (!this.terminalTurnOverrides.has(key)) this.terminalTurnOverrides.set(key, override);
+  }
+
+  private registerActiveRun(
+    chatId: string,
+    turnId: string,
+    ac: AbortController,
+    opts: { speaking?: boolean } = {},
+  ): void {
+    let runs = this.activeRuns.get(chatId);
+    if (!runs) {
+      runs = new Map();
+      this.activeRuns.set(chatId, runs);
+    }
+    runs.set(turnId, ac);
+    let turnIds = this.activeTurnIds.get(chatId);
+    if (!turnIds) {
+      turnIds = new Set();
+      this.activeTurnIds.set(chatId, turnIds);
+    }
+    turnIds.add(turnId);
+    if (opts.speaking !== false) {
+      let speaking = this.speakingRuns.get(chatId);
+      if (!speaking) {
+        speaking = new Set();
+        this.speakingRuns.set(chatId, speaking);
+      }
+      speaking.add(turnId);
+    }
+  }
+
+  private unregisterActiveRun(chatId: string, turnId: string, ac: AbortController): void {
+    const runs = this.activeRuns.get(chatId);
+    if (runs?.get(turnId) !== ac) return;
+    runs.delete(turnId);
+    if (runs.size === 0) this.activeRuns.delete(chatId);
+    const turnIds = this.activeTurnIds.get(chatId);
+    turnIds?.delete(turnId);
+    if (turnIds?.size === 0) this.activeTurnIds.delete(chatId);
+    const speaking = this.speakingRuns.get(chatId);
+    const wasLastSpeaking = speaking?.has(turnId) === true && speaking.size === 1;
+    speaking?.delete(turnId);
+    if (speaking?.size === 0) this.speakingRuns.delete(chatId);
+    if (wasLastSpeaking) this.onSpeakingCleared?.(chatId);
+  }
+
+  private isExactRunActive(chatId: string, turnId: string, ac: AbortController): boolean {
+    return this.activeRuns.get(chatId)?.get(turnId) === ac;
+  }
+
+  /** Drain operator steer into the next model call and persist it on the chat. */
+  private consumeOperatorSteer(
+    chatId: string,
+    turnMessages: HistoryRecord[],
+    appendToApi: (text: string) => void,
+    onEvent?: AgentEventCallback,
+  ): void {
+    const text = takeOperatorSteer(chatId);
+    if (!text) return;
+    appendToApi(text);
+    const rec = { role: 'user' as const, content: text };
+    turnMessages.push(rec);
+    this.history.append(chatId, [rec]);
+    if (onEvent) onEvent({ type: 'status', status: 'operator_steer', message: text });
+  }
+
+  /**
+   * Conversation speaking lock. Coordination / Work turns do not set this.
+   * Abort still finds those turns via stop(chatId, turnId).
+   */
+  isRunning(chatId: string): boolean {
+    return (this.speakingRuns.get(chatId)?.size ?? 0) > 0;
+  }
+
+  /** Called when the last speaking turn for a chatId ends — drain parked Messages. */
+  setOnSpeakingCleared(handler: ((chatId: string) => void) | null): void {
+    this.onSpeakingCleared = handler;
+  }
+
+  /** List all active run chatIds. */
+  getActiveRuns(): string[] {
+    return [...this.activeRuns.keys()];
+  }
+
+  /** Recover stale pending turn envelopes after process restarts or abandoned runs. */
+  recoverStaleTurns(maxAgeMs: number = 10 * 60 * 1000, options: { preserveCoordination?: boolean } = {}): Array<{ chatId: string; turnId: string }> {
+    const recovered: Array<{ chatId: string; turnId: string }> = [];
+    for (const storageChatId of this.history.listChatIds()) {
+      const pending = this.turnStore.pendingTurns(storageChatId);
+      const activeTurnIds = new Set(
+        pending
+          .filter((turn) => this.activeTurnIds.get(turn.chat_id)?.has(turn.turn_id) || (options.preserveCoordination && turn.coordination_origin?.kind === 'coordination'))
+          .map((turn) => turn.turn_id),
+      );
+      const turnIds = this.turnStore.sweepOrphans(storageChatId, maxAgeMs, { activeTurnIds });
+      for (const turnId of turnIds) {
+        const chatId = pending.find((turn) => turn.turn_id === turnId)?.chat_id ?? storageChatId;
+        const env = this.turnStore.finalEnvelope(chatId, turnId);
+        if (env) {
+          turnBus.emit(chatId, turnId, env);
+          turnBus.close(chatId, turnId);
+        }
+        recovered.push({ chatId, turnId });
+      }
+    }
+    return recovered;
+  }
+
+  private recoveryStopped = false;
+
+  stopRecoverySweep(): void { this.recoveryStopped = true; }
+
+  private recoverySweep: Promise<Array<{ chatId: string; turnId: string }>> | null = null;
+
+  /** Non-overlapping background recovery; journal I/O cannot monopolize the event loop. */
+  recoverStaleTurnsAsync(maxAgeMs = 10 * 60 * 1000, options: { preserveCoordination?: boolean } = {}): Promise<Array<{ chatId: string; turnId: string }>> {
+    if (this.recoveryStopped) return Promise.resolve([]);
+    if (this.recoverySweep) return this.recoverySweep;
+    const sweep = async (): Promise<Array<{ chatId: string; turnId: string }>> => {
+      const recovered: Array<{ chatId: string; turnId: string }> = [];
+      const deferred: Record<string, number> = {};
+      for (const storageChatId of await this.history.listChatIdsForRecovery()) {
+        if (this.recoveryStopped) break;
+        const envelopes = await this.turnStore.sweepOrphansAsync(storageChatId, maxAgeMs, turn =>
+          this.recoveryStopped || this.terminalTurnOverrides.has(this.turnKey(turn.chat_id, turn.turn_id))
+          || !!this.activeTurnIds.get(turn.chat_id)?.has(turn.turn_id)
+          || !!(options.preserveCoordination && turn.coordination_origin?.kind === 'coordination'),
+          reason => { deferred[reason] = (deferred[reason] ?? 0) + 1; });
+        for (const env of envelopes) {
+          turnBus.emit(env.chat_id, env.turn_id, env);
+          turnBus.close(env.chat_id, env.turn_id);
+          recovered.push({ chatId: env.chat_id, turnId: env.turn_id });
+        }
+      }
+      if (Object.keys(deferred).length) console.warn('[chat-turn] Recovery deferred journals:', JSON.stringify(deferred));
+      return recovered;
+    };
+    this.recoverySweep = sweep().finally(() => { this.recoverySweep = null; });
+    return this.recoverySweep;
+  }
+
+  /** Optional: install an APNs pusher to fire notifications on turn completion. */
+  setPusher(pusher: import('../push/apns-pusher.js').ApnsPusher | null): void {
+    this.pusher = pusher;
+  }
+
+  /**
+   * The installed APNs pusher, or null if push is not configured yet. Lets other
+   * result-delivery paths (e.g. the coding-job bridge) reuse the same pusher
+   * without capturing a not-yet-initialized binding.
+   */
+  getPusher(): import('../push/apns-pusher.js').ApnsPusher | null {
+    return this.pusher;
+  }
+
+  /**
+   * Run a turn with lifecycle tracking. Writes a `pending` envelope, persists every
+   * onEvent as a seq'd `event` record, and writes a final envelope on completion/error.
+   * Returns the turn_id immediately — the agent run is awaited by the caller but can
+   * be detached (caller fires-and-forgets the returned promise).
+   */
+  async runWithTurn(
+    chatId: string,
+    userText: string,
+    opts: {
+      turnId?: string;
+      media?: import('../types.js').MediaAttachment[];
+      onEvent?: import('./types.js').AgentEventCallback;
+      onDurableEvent?: import('./types.js').DurableAgentEventCallback;
+      modelOverride?: { model: string; provider?: string; reasoningEffort?: ReasoningEffort };
+      inactivityMs?: number;
+      hardDurationMs?: number;
+      maxDurationMs?: number;
+      firstTokenTimeoutMs?: number;
+      registry?: ToolRegistry;
+      delegatedContext?: { systemPrompt: string; workspacePath: string };
+      effort?: ReasoningEffort;
+      coordinationOrigin?: import('./types.js').CoordinationTurnOrigin;
+      coordinationDelivery?: import('./types.js').CoordinationTurnDeliveryContext;
+      historyBackfill?: readonly HistoricalContextEntry[];
+      coordinationWorkDestination?: import('../work/types.js').CoordinationWorkDestination;
+      parentWorkId?: string;
+      onDurableStart?: (start: import('./types.js').DurableTurnStart) => void | Promise<void>;
+    } = {},
+  ): Promise<{ turnId: string; response: Promise<import('./types.js').AgentResponse> }> {
+    const historyBackfill = parseHistoricalContext(opts.historyBackfill, opts.coordinationOrigin?.originMessageId);
+    const turnId = opts.turnId ?? newTurnId();
+    const startedAtMs = this.turnTiming.now();
+    const inactivityMs = opts.inactivityMs ?? opts.maxDurationMs ?? DEFAULT_TURN_TIMEOUT_MS;
+    const hardDurationMs = opts.hardDurationMs ?? DEFAULT_TURN_HARD_DURATION_MS;
+    const firstTokenTimeoutMs = opts.firstTokenTimeoutMs ?? DEFAULT_FIRST_TOKEN_TIMEOUT_MS;
+    if (![inactivityMs, hardDurationMs, firstTokenTimeoutMs]
+      .every(value => Number.isSafeInteger(value) && value > 0 && value <= MAX_TIMER_DELAY_MS)) {
+      throw new TypeError('invalid turn deadline');
+    }
+    const activity_deadline_at = new Date(startedAtMs + inactivityMs).toISOString();
+    const hard_deadline_at = new Date(startedAtMs + hardDurationMs).toISOString();
+    const deadline_at = activity_deadline_at;
+    const first_token_deadline_at = new Date(startedAtMs + firstTokenTimeoutMs).toISOString();
+
+    const effort = parseReasoningEffort(opts.effort, 'turn effort');
+    const runtime = this.createRuntimeContext(opts.modelOverride, effort);
+    const model = runtime.model;
+    const provider = runtime.provider;
+
+    let seq = 0;
+    const persistAndFanOut = (event: import('./types.js').AgentEvent): void => {
+      if (this.terminalTurnOverrides.has(this.turnKey(chatId, turnId))) return;
+      seq++;
+      const record: TurnEvent = {
+        type: 'event',
+        turn_id: turnId,
+        seq,
+        ts: new Date().toISOString(),
+        kind: event.type,
+        data: { ...event } as Record<string, unknown>,
+      };
+      this.turnStore.writeEvent(chatId, record);
+      turnBus.emit(chatId, turnId, record);
+      if (opts.onDurableEvent) {
+        try {
+          opts.onDurableEvent({
+            turnId,
+            sequence: seq,
+            occurredAt: record.ts,
+            provider,
+            model,
+            reasoningEffort: runtime.reasoningEffort,
+            event,
+          });
+        } catch { /* observer errors are owned and joined by the caller */ }
+      }
+      if (opts.onEvent) {
+        try { opts.onEvent(event); } catch { /* caller errors don't kill the run */ }
+      }
+    };
+
+    const ac = new AbortController();
+    const expireTurn = (reason: LeaseExpiryReason): void => {
+      if (ac.signal.aborted) return;
+      const hard = reason === 'hard_timeout';
+      const timeoutMs = hard ? hardDurationMs : inactivityMs;
+      const code = hard ? 'turn_hard_timeout' : 'turn_timeout';
+      const label = hard ? 'hard' : 'inactivity';
+      const error_message = `turn ${label} timeout after ${timeoutMs}ms`;
+      console.warn(`[loop] turn ${turnId} ${label} deadline reached — aborting`);
+      this.setTerminalTurnOverrideOnce(chatId, turnId, {
+        status: 'timeout',
+        stop_reason: code,
+        error_code: code,
+        error_message,
+      });
+      ac.abort(Object.assign(new Error(error_message), { code }));
+    };
+    const lease = new ActivityLease({
+      inactivityMs,
+      hardDurationMs,
+      now: this.turnTiming.now,
+      setTimeout: this.turnTiming.setTimeout,
+      clearTimeout: this.turnTiming.clearTimeout,
+      onExpire: expireTurn,
+    });
+    const persistedOperationActivity = new Map<string, {
+      emittedAt: number;
+      state: OperationActivity['state'];
+      phase: OperationActivity['phase'];
+    }>();
+    const onOperationActivity = (activity: OperationActivity): void => {
+      if (!lease.observe(activity)) return;
+      const now = this.turnTiming.now();
+      const previous = persistedOperationActivity.get(activity.operationId);
+      const materialChange = !previous
+        || previous.state !== activity.state
+        || previous.phase !== activity.phase;
+      if (!materialChange && now - previous.emittedAt < 10_000) return;
+      persistedOperationActivity.set(activity.operationId, {
+        emittedAt: now,
+        state: activity.state,
+        phase: activity.phase,
+      });
+      persistAndFanOut({
+        type: 'status',
+        status: 'brain_operation_active',
+        message: `${activity.operationId} ${activity.state} ${activity.phase || ''}`.trim(),
+        activity_deadline_at: new Date(lease.activityDeadlineMs!).toISOString(),
+        hard_deadline_at: new Date(lease.hardDeadlineMs!).toISOString(),
+      });
+    };
+    const onWorkActivity: TurnRuntimeContext['onWorkActivity'] = (activity) => {
+      if (!lease.observe({ operationId: `work:${activity.workId}`, sequence: activity.sequence })) return;
+      persistAndFanOut({
+        type: 'status',
+        status: 'joined_work_active',
+        message: `${activity.workId} ${activity.state} ${activity.phase ?? ''}`.trim(),
+        activity_deadline_at: new Date(lease.activityDeadlineMs!).toISOString(),
+        hard_deadline_at: new Date(lease.hardDeadlineMs!).toISOString(),
+      });
+    };
+    const baseBrainOperations = this.toolContext.brainOperations;
+    const runBrainOperations = baseBrainOperations?.withActivityHandler
+      ? baseBrainOperations.withActivityHandler(onOperationActivity)
+      : baseBrainOperations;
+    let lastProviderActivityPersistedAt = 0;
+    const onProviderActivity = (sequence: number): void => {
+      if (!lease.observe({ operationId: 'provider:stream', sequence })) return;
+      const now = this.turnTiming.now();
+      if (now - lastProviderActivityPersistedAt < 5_000) return;
+      lastProviderActivityPersistedAt = now;
+      persistAndFanOut({ type: 'status', status: 'provider_active',
+        activity_deadline_at: new Date(lease.activityDeadlineMs!).toISOString(),
+        hard_deadline_at: new Date(lease.hardDeadlineMs!).toISOString() });
+    };
+    const turnRuntime: TurnRuntimeContext = Object.freeze({
+      onProviderActivity,
+      turnId,
+      abortController: ac,
+      signal: ac.signal,
+      brainOperations: runBrainOperations as BrainOperationsClient,
+      onOperationActivity,
+      onWorkActivity,
+      registry: opts.registry ?? this.registry,
+      ...(opts.coordinationOrigin ? { coordinationOrigin: opts.coordinationOrigin } : {}),
+      ...(opts.coordinationDelivery ? { coordinationDelivery: opts.coordinationDelivery } : {}),
+      ...(historyBackfill.length ? { historyBackfill } : {}),
+      ...(opts.coordinationWorkDestination ? { coordinationWorkDestination: opts.coordinationWorkDestination } : {}),
+      ...(opts.parentWorkId ? { parentWorkId: opts.parentWorkId } : {}),
+      ...(opts.delegatedContext ? { delegatedContext: Object.freeze({ ...opts.delegatedContext }) } : {}),
+    });
+    let firstTokenWatchdog: unknown = null;
+    try {
+      lease.start();
+      firstTokenWatchdog = this.turnTiming.setTimeout(() => {
+        if (seq === 0 && this.isExactRunActive(chatId, turnId, ac)) {
+          persistAndFanOut({
+            type: 'status',
+            status: 'awaiting_model',
+            message: `waiting for first model token after ${firstTokenTimeoutMs}ms`,
+          });
+        }
+      }, firstTokenTimeoutMs);
+      this.registerActiveRun(chatId, turnId, ac, {
+        speaking: isSpeakingConversationRun({
+          chatId,
+          coordinationOrigin: opts.coordinationOrigin,
+        }),
+      });
+      this.turnStore.writeStart(chatId, turnId, model, provider, {
+        deadline_at,
+        activity_deadline_at,
+        hard_deadline_at,
+        first_token_deadline_at,
+        reasoning_effort: runtime.reasoningEffort,
+        coordination_origin: opts.coordinationOrigin,
+      });
+      await opts.onDurableStart?.({
+        turnId,
+        chatId,
+        persistedAt: new Date(this.turnTiming.now()).toISOString(),
+      });
+    } catch (err) {
+      lease.close();
+      if (firstTokenWatchdog !== null) {
+        this.turnTiming.clearTimeout(firstTokenWatchdog);
+        firstTokenWatchdog = null;
+      }
+      this.unregisterActiveRun(chatId, turnId, ac);
+      this.terminalTurnOverrides.delete(this.turnKey(chatId, turnId));
+      throw err;
+    }
+
+    const response = (async () => {
+      try {
+        const result = await this.run(
+          chatId,
+          userText,
+          opts.media,
+          persistAndFanOut,
+          runtime,
+          turnRuntime,
+        );
+        let terminalOverride = this.terminalTurnOverrides.get(this.turnKey(chatId, turnId));
+        const completedAtMs = this.turnTiming.now();
+        if (!terminalOverride && lease.hardDeadlineMs !== null
+            && completedAtMs >= lease.hardDeadlineMs) {
+          expireTurn('hard_timeout');
+          terminalOverride = this.terminalTurnOverrides.get(this.turnKey(chatId, turnId));
+        } else if (!terminalOverride && lease.activityDeadlineMs !== null
+            && completedAtMs >= lease.activityDeadlineMs) {
+          expireTurn('inactivity_timeout');
+          terminalOverride = this.terminalTurnOverrides.get(this.turnKey(chatId, turnId));
+        }
+        if (terminalOverride?.status === 'timeout') {
+          if (ac.signal.reason instanceof Error) throw ac.signal.reason;
+          throw Object.assign(
+            new Error(terminalOverride.error_message ?? terminalOverride.stop_reason),
+            { code: terminalOverride.error_code ?? terminalOverride.stop_reason },
+          );
+        }
+        const terminalActivityDeadlineAt = new Date(
+          lease.activityDeadlineMs ?? startedAtMs + inactivityMs,
+        ).toISOString();
+        const existingEnd = terminalOverride
+          ? this.turnStore.finalEnvelope(chatId, turnId)
+          : null;
+        const endEnv = existingEnd ?? this.turnStore.writeEnd(chatId, turnId, terminalOverride?.status ?? 'complete', {
+          last_seq: seq,
+          stop_reason: terminalOverride?.stop_reason ?? 'end_turn',
+          error_code: terminalOverride?.error_code,
+          error_message: terminalOverride?.error_message,
+          deadline_at: terminalActivityDeadlineAt,
+          activity_deadline_at: terminalActivityDeadlineAt,
+          hard_deadline_at,
+          first_token_deadline_at,
+        });
+        if (!existingEnd) {
+          turnBus.emit(chatId, turnId, endEnv.status === 'complete'
+            ? { ...endEnv, assistant_content: result.text }
+            : endEnv);
+          turnBus.close(chatId, turnId);
+        }
+        // Coordination turns use a synthetic resident chat id and do not own
+        // the canonical product Message yet. Their notification is emitted by
+        // the post-commit Connected Agents path, never this legacy hook.
+        if (this.pusher && !opts.coordinationOrigin) {
+          this.pusher.notifyTurnComplete({
+            chatId,
+            turnId,
+            assistantText: result.text ?? '',
+          }).catch(err => console.warn('[push] notifyTurnComplete failed:', err));
+        }
+        // Write/overwrite the durable live session after every completed turn.
+        // The feeder watches this non-volatile session file, so the brain sees
+        // the latest conversation even if no later message creates a boundary.
+        // Fire-and-forget; a write failure must not poison turn completion.
+        this.updateActiveSnapshot(chatId).catch(err => {
+          console.warn(`[loop] active snapshot failed for ${chatId}:`, err?.message || err);
+        });
+        return { ...result, terminalStatus: endEnv.status };
+      } catch (err) {
+        const terminalOverride = this.terminalTurnOverrides.get(this.turnKey(chatId, turnId));
+        const msg = err instanceof Error ? err.message : String(err);
+        const isAbort = terminalOverride?.status === 'stopped' || msg.includes('aborted') || msg.includes('AbortError') || msg.includes('operator_stop');
+        const isTimeout = terminalOverride?.status === 'timeout' || msg.includes('turn timeout');
+        const status = terminalOverride?.status ?? (isTimeout ? 'timeout' : (isAbort ? 'stopped' : 'error'));
+        const terminalActivityDeadlineAt = new Date(
+          lease.activityDeadlineMs ?? startedAtMs + inactivityMs,
+        ).toISOString();
+        const existingEnd = terminalOverride
+          ? this.turnStore.finalEnvelope(chatId, turnId)
+          : null;
+        const endEnv = existingEnd ?? this.turnStore.writeEnd(chatId, turnId, status, {
+          last_seq: seq,
+          error: msg,
+          error_code: terminalOverride?.error_code ?? (isTimeout ? 'turn_timeout' : (status === 'error' ? 'provider_error' : undefined)),
+          error_message: terminalOverride?.error_message ?? (status === 'error' || status === 'timeout' ? msg : undefined),
+          stop_reason: terminalOverride?.stop_reason,
+          deadline_at: terminalActivityDeadlineAt,
+          activity_deadline_at: terminalActivityDeadlineAt,
+          hard_deadline_at,
+          first_token_deadline_at,
+        });
+        if (!existingEnd) {
+          turnBus.emit(chatId, turnId, endEnv);
+          turnBus.close(chatId, turnId);
+        }
+        throw err;
+      } finally {
+        lease.close();
+        if (firstTokenWatchdog !== null) {
+          this.turnTiming.clearTimeout(firstTokenWatchdog);
+          firstTokenWatchdog = null;
+        }
+        this.unregisterActiveRun(chatId, turnId, ac);
+        this.terminalTurnOverrides.delete(this.turnKey(chatId, turnId));
+      }
+    })();
+
+    return { turnId, response };
+  }
+
+  async run(
+    chatId: string,
+    userText: string,
+    userMedia?: MediaAttachment[],
+    onEvent?: import('./types.js').AgentEventCallback,
+    runtime: RuntimeModelContext = this.createRuntimeContext(),
+    turnRuntime?: TurnRuntimeContext,
+  ): Promise<AgentResponse> {
+    const startMs = Date.now();
+    let toolCallCount = 0;
+    const turnMessages: HistoryRecord[] = [];
+    let turnPersisted = false;
+    const persistTurn = (): void => {
+      if (turnPersisted || !turnMessages.length) return;
+      this.history.append(chatId, turnMessages);
+      turnPersisted = true;
+    };
+    const allMedia: MediaAttachment[] = [];
+    const runtimeModel = runtime.model;
+    const runtimeProvider = runtime.provider;
+    const runtimeReasoningEffort = runtime.reasoningEffort;
+    const runtimeClient = runtime.client;
+    const runtimeIsOAuth = runtime.isOAuth;
+    const runtimeMemory = runtime.memory;
+    const registry = turnRuntime?.registry ?? this.registry;
+
+    // Abort controller for this run — checked between iterations, passed to API calls
+    const ac = turnRuntime?.abortController ?? new AbortController();
+    let codexProgressSequence = 0;
+    const activeTurnId = turnRuntime?.turnId ?? `raw:${newTurnId()}`;
+    this.registerActiveRun(chatId, activeTurnId, ac, {
+      speaking: isSpeakingConversationRun({
+        chatId,
+        coordinationOrigin: turnRuntime?.coordinationOrigin,
+      }),
+    });
+
+    // Per-run context copy — avoids races between concurrent turns and makes
+    // situational-awareness reads use the exact turn client and abort signal.
+    const runContext: ToolContext = {
+      ...this.toolContext,
+      contextManager: this.contextManager,
+      chatId,
+      authenticatedUserMessage: undefined,
+      channelId: turnRuntime?.coordinationOrigin?.channelId ?? this.toolContext.channelId,
+      workspacePath: turnRuntime?.delegatedContext?.workspacePath ?? this.toolContext.workspacePath,
+      memoryObjectStore: this.memoryStore,
+      relationshipLedger: this.relationshipLedger,
+      parentWorkId: turnRuntime?.coordinationWorkDestination?.parentWorkId
+        ?? turnRuntime?.parentWorkId
+        ?? turnRuntime?.coordinationOrigin?.workId
+        ?? this.toolContext.parentWorkId,
+      coordinationWorkDestination: turnRuntime?.coordinationWorkDestination ?? this.toolContext.coordinationWorkDestination,
+      onEvent,
+      conversationHistory: this.history,
+      abortSignal: ac.signal,
+      brainOperations: turnRuntime?.brainOperations ?? this.toolContext.brainOperations,
+      onOperationActivity: turnRuntime?.onOperationActivity,
+      turnRuntime: turnRuntime ?? null,
+    };
+
+    // Start typing indicator (via toolContext.telegramAdapter)
+    const adapter = this.toolContext.telegramAdapter;
+    let typingInterval: ReturnType<typeof setInterval> | null = null;
+    if (adapter) {
+      adapter.sendTyping(chatId).catch(() => {});
+      typingInterval = setInterval(() => {
+        adapter.sendTyping(chatId).catch(() => {});
+      }, TYPING_INTERVAL_MS);
+    }
+
+    try {
+      // Load conversation history
+      const storedHistory = this.history.load(chatId);
+      const historyRevision = this.history.revision?.(chatId);
+
+      // Insert session boundary if gap > 30 minutes since last message
+      const SESSION_GAP_MS = this.sessionGapMs;
+      const now = new Date();
+      let needsBoundary = storedHistory.length === 0;
+
+      if (!needsBoundary && storedHistory.length > 0) {
+        const last = storedHistory[storedHistory.length - 1]!;
+        if ('ts' in last && last.ts) {
+          const lastTs = new Date(last.ts).getTime();
+          needsBoundary = (now.getTime() - lastTs) > SESSION_GAP_MS;
+        } else {
+          // No timestamp on last message — treat as gap exceeded
+          needsBoundary = true;
+        }
+      }
+
+      if (needsBoundary && storedHistory.length > 2) {
+        await this.compileSessionTranscript(chatId, storedHistory);
+      }
+
+      if (needsBoundary) {
+        const boundary: SessionBoundary = {
+          type: 'session_boundary',
+          ts: now.toISOString(),
+          trigger: chatId.startsWith('cron-') ? chatId.replace('cron-', '') : chatId.split(':')[0] || 'chat',
+        };
+        this.history.append(chatId, [boundary]);
+        storedHistory.push(boundary);
+      }
+
+      // Build user content blocks
+      const userContent: ContentBlock[] = [];
+      if (userText) {
+        userContent.push({ type: 'text', text: userText });
+      }
+      // Add images as vision blocks. Carry path/fileName on the block so
+      // history.ts can persist an image_ref pointer (instead of base64) and
+      // rehydrate from disk on the next load — survives across turns.
+      if (userMedia) {
+        for (const m of userMedia) {
+          if (m.type === 'image') {
+            const { readFileSync } = await import('node:fs');
+            const data = readFileSync(m.path).toString('base64');
+            userContent.push({
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: m.mimeType || 'image/jpeg',
+                data,
+              },
+              path: m.path,
+              fileName: m.fileName,
+            });
+          }
+        }
+      }
+
+      // Add user message to history
+      const userMsg: StoredMessage = {
+        role: 'user',
+        content: userContent.length === 1 && userContent[0]!.type === 'text'
+          ? (userContent[0] as { type: 'text'; text: string }).text
+          : userContent,
+      };
+
+      // Keep the incoming request even if pressure blocks the first model call.
+      turnMessages.push(userMsg);
+      const userMessageRef = `turn:${activeTurnId}:user`;
+      if (isForegroundConversation({ chatId, coordinationOrigin: turnRuntime?.coordinationOrigin })) {
+        this.authenticatedUserTurns.set(userMessageRef, { chatId, userText });
+        runContext.authenticatedUserMessage = { chatId, messageRef: userMessageRef, text: userText };
+      }
+
+      let truncated = storedHistory.filter((record): record is StoredMessage => 'role' in record);
+      let didTruncate = false;
+      let recoveryBundle: string | null | undefined;
+
+      // Static identity portion — stable across calls, cacheable long-term.
+      // Dynamic additions (situational awareness, COSMO state, recovery notes)
+      // are kept separate so the static prefix hits cache on every call.
+      const staticSystemPrompt = turnRuntime?.delegatedContext?.systemPrompt ?? this.contextManager.getSystemPrompt(runtimeProvider);
+      let rawSystemPrompt = staticSystemPrompt;
+      if (turnRuntime?.coordinationOrigin && runContext.coordinationChannelOperation && !turnRuntime.delegatedContext) {
+        const project = await runContext.coordinationChannelOperation({
+          origin: turnRuntime.coordinationOrigin, invocationId: `project-context:${activeTurnId}`,
+          args: { operation: 'project_context' },
+        }) as ProjectContinuity;
+        if (project?.available && Array.isArray(project.documents) && project.workspacePath) {
+          rawSystemPrompt += `\n\n${projectContinuityPrompt(project)}`;
+          runContext.personalWorkspacePath = this.workspacePath;
+          runContext.artifactWorkspacePath = this.toolContext.artifactWorkspacePath ?? this.workspacePath;
+          runContext.workspacePath = project.workspacePath;
+        }
+      }
+
+
+      // ── Session Bootstrap (situational + temporal awareness) ──
+      // Fresh session OR resumed after idle-gap → inject the files listed in
+      // config.situationalAwareness.bootstrap.reads (NOW.md + PLAYBOOK.md by default).
+      // Turns 2+ within the same session skip this — content persists via history.
+      if (needsBoundary && !turnRuntime?.delegatedContext) {
+        try {
+          const { buildBootstrapBlock } = await import('./session-bootstrap.js');
+          const bootstrap = buildBootstrapBlock(this.workspacePath, this.situationalAwareness);
+          if (bootstrap) {
+            rawSystemPrompt += `\n\n${bootstrap}`;
+            console.log(`[agent] Session bootstrap injected (${bootstrap.length} chars)`);
+          }
+        } catch (err) {
+          console.warn('[agent] Session bootstrap failed:', err instanceof Error ? err.message : err);
+        }
+      }
+
+      if (!turnRuntime?.delegatedContext) {
+        // ── Situational Awareness: Context Assembly (Step 20) ──
+        // Replaces: hardcoded evobrew/cosmo checks + semanticRecall
+        try {
+          const recentTurns = truncated
+            .filter((m): m is StoredMessage => 'role' in m)
+            .slice(-5)
+            .map(m => ({
+              role: m.role,
+              content: typeof m.content === 'string' ? m.content : stringifyContent(m.content as ContentBlock[]),
+            }));
+
+          const retrievalEval = isRetrievalEvalTurn(userText);
+          const assembly = await assembleContext(
+            userText,
+            chatId,
+            recentTurns,
+            {
+              workspacePath: this.workspacePath,
+              brainDir: join(this.workspacePath, '..', 'brain'),
+              enginePort: this.toolContext.enginePort,
+              sessionId: chatId,
+              signal: runContext.turnRuntime!.signal,
+              contextSearch: (request, signal) =>
+                runContext.turnRuntime!.brainOperations.searchContext(request, signal),
+              triggerIndex: this.triggerIndex,
+              triggeredSurfaces: this.situationalAwareness?.triggeredSurfaces,
+              substrateStateDir: this.situationalAwareness?.substrate?.stateDir,
+              substrateBudget: this.situationalAwareness?.substrate?.budget,
+              skipBrainEnrichment: retrievalEval,
+            },
+            this.eventLedger,
+            ac.signal,
+          );
+
+          if (assembly.block) {
+            rawSystemPrompt += `\n\n${assembly.block}`;
+          }
+
+        if (turnRuntime?.coordinationOrigin && runContext.coordinationChannelOperation) {
+          rawSystemPrompt += `\n\n${await collectCanonicalWorkContext(() => runContext.coordinationChannelOperation!({
+            origin: turnRuntime.coordinationOrigin!, invocationId: `current-work:${activeTurnId}`,
+            args: { operation: 'work_list', assignments_only: true, limit: 8 },
+          }), contact => {
+            if (contact.messageId !== turnRuntime.coordinationOrigin!.originMessageId) return;
+            this.authenticatedUserTurns.set(userMessageRef, { chatId, userText: contact.text });
+            runContext.authenticatedUserMessage = { chatId, messageRef: userMessageRef, text: contact.text };
+          }, this.relationshipLedger)}`;
+        } else if (isForegroundConversation({
+          chatId,
+          coordinationOrigin: turnRuntime?.coordinationOrigin,
+        })) {
+          rawSystemPrompt += `\n\n${collectForegroundTurnContext({
+            chatId,
+            workRegistry: this.toolContext.workRegistry ?? null,
+            relationshipLedger: this.relationshipLedger,
+          })}`;
+        }
+
+
+          let relationshipCount = 0;
+          if (retrievalEval) {
+            rawSystemPrompt += `\n\n${retrievalEvalDisclosure()}`;
+          } else {
+          // ── Relationship continuity (Step 30, Piece 2 · identity layer 2) ──
+          // Selective, relevance-ranked, budget-bounded working-relationship
+          // context. Privacy: sensitive entries never enter the prompt. Failure
+          // here never blocks the turn.
+          try {
+            const rel = this.relationshipLedger.retrieveForContext(userText, {
+              budgetChars: 1400,
+              excludePrivacy: ['sensitive'],
+            });
+            if (rel.text && rel.entries.length > 0) {
+              relationshipCount = rel.entries.length;
+              rawSystemPrompt += `\n\n${rel.text}`;
+              this.relationshipLedger.markSurfaced(rel.entries.map(e => e.id));
+            }
+          } catch (err) {
+            console.warn('[agent] Relationship retrieval failed:', err instanceof Error ? err.message : err);
+          }
+          if ((assembly.brainCueCount ?? 0) > 0 || relationshipCount > 0) {
+            rawSystemPrompt += `\n\n${continuityEnrichmentDisclosure({
+              brainCueCount: assembly.brainCueCount ?? 0,
+              relationshipCount,
+            })}`;
+          }
+          }
+
+          // Log assembly result
+          if (assembly.degraded) {
+            console.warn(
+              `[agent] Situational awareness: DEGRADED — source=${assembly.sourceHealth}`
+              + ` match=${assembly.matchOutcome}`
+              + `${assembly.retrievalError ? ` error=${assembly.retrievalError}` : ''}`,
+            );
+          } else if (assembly.brainCueCount > 0 || assembly.surfacesLoaded.length > 0) {
+            console.log(`[agent] Situational awareness: ${assembly.brainCueCount} brain cues, ${assembly.surfacesLoaded.length} surfaces (${assembly.surfacesLoaded.join(', ')})`);
+          }
+        } catch (err) {
+          if (ac.signal.aborted) ac.signal.throwIfAborted();
+          // Never block on assembly failure — proceed with static identity only
+          console.warn('[agent] Context assembly failed, proceeding without situational awareness:', err instanceof Error ? err.message : err);
+        }
+      }
+
+      // ── Situational awareness: COSMO 2.3 active-run check ──
+      // Keep this — it's a real-time probe, not a surface/memory concern
+      if (registry.get('research_launch')) {
+        try {
+          const { checkCosmoActiveRun } = await import('./tools/research.js');
+          const active = await checkCosmoActiveRun(runContext);
+          if (active) {
+            rawSystemPrompt += `\n\n[COSMO ACTIVE RUN]
+A research run is currently in flight — do not launch another.
+- runName: ${active.runName}
+- topic: ${active.topic || '(unknown)'}
+- started: ${active.startedAt || '(unknown)'}
+- processes: ${active.processCount ?? '(unknown)'}
+Use research_watch_run to check progress. Use research_stop to cancel. You can still query completed brains while this runs.`;
+          }
+        } catch {
+          if (ac.signal.aborted) ac.signal.throwIfAborted();
+          // Never block on situational awareness failure
+        }
+      }
+
+      const taskNotes = registry.get('task_context') ? this.history.taskContext?.briefing(chatId) : '';
+      if (taskNotes) rawSystemPrompt += `\n\n${taskNotes}`;
+      const pressure = this.compaction?.measure({
+        historyChars: this.history.estimateChars(storedHistory), systemChars: rawSystemPrompt.length,
+        toolSchemaChars: Math.max(JSON.stringify(registry.getAnthropicTools()).length, JSON.stringify(registry.getOpenAITools()).length),
+        incomingChars: this.history.estimateChars([userMsg]), outputTokens: this.maxTokens,
+        historyBudget: this.history.budget, model: runtimeModel, provider: runtimeProvider,
+      });
+      if (pressure) {
+        this.history.recordContextStatus?.(chatId, { trigger: pressure.shouldCompact ? pressure.reason : 'within_budget', pressure, measuredAt: new Date().toISOString() });
+        if (pressure.availableHistoryChars <= 0) throw Object.assign(new Error('Context budget is exhausted by instructions, input, tools and output reserve; task history retained.'), { code: 'context_pressure' });
+        if (pressure.shouldCompact) {
+          const compacted = await this.compaction!.compact(chatId, storedHistory, runtimeModel, runtimeProvider, ac.signal, pressure, historyRevision);
+          truncated = compacted.messages;
+          didTruncate = compacted.result.compacted;
+          recoveryBundle = compacted.result.recoveryBundle;
+          if (!didTruncate) this.history.recordContextStatus?.(chatId, { trigger: pressure.reason, outcome: compacted.result.tokensAfter > pressure.availableHistoryChars ? 'blocked' : 'deferred', reason: compacted.result.reason, pressure, measuredAt: new Date().toISOString() });
+          if (!didTruncate && compacted.result.tokensAfter > pressure.availableHistoryChars) {
+            throw Object.assign(new Error(`Context cannot fit safely: ${compacted.result.reason}; task history retained`), { code: 'context_compaction_failed' });
+          }
+        }
+      } else {
+        truncated = this.history.truncate(storedHistory);
+        didTruncate = truncated.length < storedHistory.length;
+        if (didTruncate) this.history.archiveCurrent?.(chatId);
+      }
+      truncated.push(userMsg);
+
+      // ── Memory: Recovery Bundle (after truncation/compaction) ───────
+      if (didTruncate) {
+        try {
+          if (recoveryBundle) {
+            rawSystemPrompt = `${rawSystemPrompt}\n\n${recoveryBundle}`;
+          } else if (!this.compaction) {
+            const bundle = runtimeMemory.buildRecoveryBundle();
+            if (bundle) {
+              rawSystemPrompt = `${rawSystemPrompt}\n\n${bundle}`;
+            }
+          }
+        } catch {
+          // Never block on memory failure
+        }
+      }
+
+      const historicalContext = historicalContextBlock(turnRuntime?.historyBackfill ?? []);
+      if (historicalContext) rawSystemPrompt += `\n\n${historicalContext}`;
+
+      // Cache only the stable system prefix explicitly. Dynamic evidence keeps
+      // its existing authority and position; changing it invalidates later cache.
+      const dynamicTail = rawSystemPrompt.slice(staticSystemPrompt.length);
+      const systemPrompt = cacheableSystemPrompt(runtimeProvider, staticSystemPrompt, dynamicTail,
+        runtimeIsOAuth ? getClaudeCodeSystemPrompt() : undefined);
+
+      // Build messages for Anthropic API
+      const messages = truncated.map(m => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+      }));
+
+      // Get tool definitions
+      const tools = registry.getAnthropicTools();
+      const cacheKey = promptCacheKey(runContext.workspacePath ?? this.workspacePath, runtimeProvider, runtimeModel, staticSystemPrompt, tools);
+      const reportCacheUsage = (usage: unknown): void => {
+        const measured = cacheUsage(runtimeProvider, usage);
+        // Report zero hits as well as misses and absent telemetry, on every
+        // completed model call, including calls that initiate a tool round.
+        onEvent?.({ type: 'cache', provider: runtimeProvider, model: runtimeModel, ...measured });
+        if (this.cacheDiagnostics?.enabled) {
+          try { this.cacheDiagnostics.logger({ type: 'cache_usage', timestamp: new Date().toISOString(), chatId, provider: runtimeProvider, model: runtimeModel, ...measured }); }
+          catch (error) { console.warn('[cache-diagnostics] Usage logging failed:', error); }
+        }
+      };
+
+      if (this.cacheDiagnostics?.enabled) {
+        try {
+          const systemPromptText = typeof systemPrompt === 'string'
+            ? systemPrompt
+            : systemPrompt.map(block => block.text).join('\n\n');
+          const toolNames = tools.map(tool => tool.name);
+          const historyText = truncated
+            .map(m => `${m.role}:${stringifyContent(m.content)}`)
+            .join('\n\n');
+          const memorySuffix = rawSystemPrompt.startsWith(this.contextManager.getSystemPrompt())
+            ? rawSystemPrompt.slice(this.contextManager.getSystemPrompt().length)
+            : rawSystemPrompt;
+          const memoryBlockHash = memorySuffix.trim() ? hashText(memorySuffix) : null;
+          const memoryBlockLength = memorySuffix.trim().length;
+
+          this.cacheDiagnostics.logger({
+            type: 'turn',
+            timestamp: new Date().toISOString(),
+            chatId,
+            provider: runtimeProvider,
+            model: runtimeModel,
+            systemPromptHash: hashText(systemPromptText),
+            systemPromptLength: systemPromptText.length,
+            toolsHash: hashText(JSON.stringify(tools)),
+            stableSystemHash: hashText(staticSystemPrompt),
+            dynamicSystemHash: hashText(dynamicTail),
+            promptCacheKey: runtimeProvider === 'openai' ? cacheKey : null,
+            toolCount: toolNames.length,
+            toolNames,
+            historyHash: hashText(historyText),
+            historyLength: historyText.length,
+            historyMessageCount: truncated.length,
+            memoryBlockHash,
+            memoryBlockLength,
+            userTextHash: hashText(userText),
+            userTextLength: userText.length,
+            usedCompaction: didTruncate,
+          });
+        } catch (err) {
+          console.warn('[cache-diagnostics] Failed to emit turn diagnostics:', err);
+        }
+      }
+
+      const maintainModelWindow = (items: Array<any>, includesSystem = true): void => {
+        if (!pressure || ac.signal.aborted) return;
+        const limit = pressure.availableHistoryChars + pressure.incomingChars + (includesSystem ? pressure.systemChars : 0);
+        let chars = estimateContextChars(items);
+        if (chars > limit * 0.8 && registry.get('task_context') && this.history.taskContext) {
+          const relief = relieveToolPressure(items, limit, this.history.taskContext, chatId);
+          chars = relief.afterChars;
+          if (relief.archived) this.history.recordContextStatus?.(chatId, { trigger: 'tool_growth', ...relief, measuredAt: new Date().toISOString() });
+        }
+        if (chars > limit) {
+          this.history.recordContextStatus?.(chatId, { trigger: 'tool_growth', outcome: 'blocked', requestChars: chars, budgetChars: limit, measuredAt: new Date().toISOString() });
+          throw Object.assign(new Error('Context pressure exceeds the safe request budget; task evidence retained. Reduce protected input or configure an appropriate context budget.'), { code: 'context_pressure' });
+        }
+      };
+
+
+      // Non-Claude model — chat-only, no tools
+      const isClaudeModel = runtimeProvider === 'anthropic' || runtimeProvider === 'minimax';
+
+      if (!isClaudeModel) {
+        try {
+          if (runtimeProvider === 'openai-codex') {
+            // ── OpenAI Codex OAuth path ──
+            // Uses ChatGPT OAuth credentials owned by Home23 in secrets.yaml.
+            // Calls https://chatgpt.com/backend-api/codex/responses (Responses API, SSE).
+            // Returns respMsg in OAI Chat Completions format so the tool loop below runs unchanged.
+
+            const initialCreds = await this.codexCredentialsProvider(ac.signal);
+            if (!initialCreds) throw new Error('openai-codex credentials not found — connect OpenAI Codex in Home23 Setup or Settings > Providers');
+            let creds = initialCreds;
+            let codexAuthRefreshSpent = false;
+
+            const sysText = typeof systemPrompt === 'string'
+              ? systemPrompt
+              : (systemPrompt as Array<{ text: string }>).map(b => b.text).join('\n');
+
+            // Convert Anthropic-format history to OAI messages.
+            // For user messages with image blocks, build a Responses API content
+            // array so vision models can actually see the bytes.
+            const chatMsgs: Array<Record<string, unknown>> = [];
+            for (const m of truncated) {
+              if (typeof m.content === 'string') {
+                chatMsgs.push({ role: m.role, content: m.content });
+              } else {
+                const blocks = m.content as Array<Record<string, unknown>>;
+                const hasImage = m.role === 'user' && blocks.some(b => b.type === 'image');
+                if (hasImage) {
+                  const respContent: Array<Record<string, unknown>> = [];
+                  for (const block of blocks) {
+                    if (block.type === 'text' && block.text) {
+                      respContent.push({ type: 'input_text', text: block.text as string });
+                    } else if (block.type === 'image') {
+                      const src = block.source as { type?: string; media_type?: string; data?: string } | undefined;
+                      if (src?.type === 'base64' && src.data && src.media_type) {
+                        respContent.push({
+                          type: 'input_image',
+                          image_url: `data:${src.media_type};base64,${src.data}`,
+                        });
+                      }
+                    }
+                  }
+                  if (respContent.length === 0) respContent.push({ type: 'input_text', text: '(empty)' });
+                  chatMsgs.push({ role: m.role, content: respContent });
+                } else {
+                  const parts: string[] = [];
+                  for (const block of blocks) {
+                    if (block.type === 'text' && block.text) parts.push(block.text as string);
+                    else if (block.type === 'tool_use') parts.push(`[Used tool: ${block.name}]`);
+                    else if (block.type === 'tool_result') parts.push(`[Tool result: ${((block.content as string) || '').slice(0, 4000)}]`);
+                    else if (block.type === 'image') parts.push('[image]');
+                  }
+                  chatMsgs.push({ role: m.role, content: parts.join('\n') || '(empty)' });
+                }
+              }
+            }
+
+            // Build the live message array (system at index 0, always stays there)
+            const apiMessages: Array<Record<string, unknown>> = [
+              { role: 'system', content: sysText },
+              ...chatMsgs,
+            ];
+
+            // Convert OAI tools to Responses API format.
+            // Do NOT set strict:true — it requires additionalProperties:false recursively on all
+            // nested schemas, which our tool definitions don't guarantee.
+            type OAITool = { type: string; function: { name: string; description?: string; parameters?: unknown } };
+            const codexTools = (registry.getOpenAITools() as OAITool[]).map(t => ({
+              type: 'function',
+              name: t.function.name,
+              description: t.function.description ?? null,
+              parameters: t.function.parameters ?? null,
+            }));
+
+            // ── Tool-use loop ──
+            type ToolCallObj = { id?: string; type?: string; function: { name: string; arguments: string | Record<string, unknown> } };
+            type ResponseMessage = { role: string; content?: string | null; tool_calls?: ToolCallObj[] };
+            const reasoning = responsesReasoningConfig(runtimeReasoningEffort);
+            let omitReasoning = false;
+            let emptyFinalRecoveryAttempted = false;
+
+            for (let i = 0; i < MAX_ITERATIONS; i++) {
+              if (ac.signal.aborted) {
+                const interruptText = `Stopped. (${toolCallCount} tool call${toolCallCount !== 1 ? 's' : ''}, ${((Date.now() - startMs) / 1000).toFixed(1)}s)`;
+                turnMessages.push({ role: 'assistant', content: interruptText });
+                persistTurn();
+                return { text: interruptText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
+              }
+              this.consumeOperatorSteer(chatId, turnMessages, (text) => {
+                apiMessages.push({ role: 'user', content: text });
+              }, onEvent);
+              maintainModelWindow(apiMessages);
+
+              // ── Convert apiMessages → Responses API input ──
+              // apiMessages[0] is always the system message — extract as instructions, skip in input.
+              const instructions = (apiMessages[0]?.content as string) ?? '';
+              const inputItems: Array<Record<string, unknown>> = [];
+
+              for (const msg of apiMessages.slice(1)) {
+                const role = msg.role as string;
+                const content = msg.content as string | Array<Record<string, unknown>> | null | undefined;
+                const toolCalls = msg.tool_calls as ToolCallObj[] | undefined;
+
+                if (role === 'user') {
+                  inputItems.push({
+                    type: 'message',
+                    role: 'user',
+                    content: Array.isArray(content)
+                      ? content
+                      : [{ type: 'input_text', text: (content as string | null | undefined) ?? '' }],
+                  });
+                } else if (role === 'assistant') {
+                  // Emit text message first if content is non-empty
+                  if (content) {
+                    inputItems.push({
+                      type: 'message',
+                      role: 'assistant',
+                      content: [{ type: 'output_text', text: content }],
+                    });
+                  }
+                  // Emit function_call items for each tool call
+                  if (toolCalls?.length) {
+                    for (const tc of toolCalls) {
+                      inputItems.push({
+                        type: 'function_call',
+                        call_id: tc.id,
+                        name: tc.function.name,
+                        arguments: typeof tc.function.arguments === 'string'
+                          ? tc.function.arguments
+                          : JSON.stringify(tc.function.arguments),
+                      });
+                    }
+                  }
+                } else if (role === 'tool') {
+                  inputItems.push({
+                    type: 'function_call_output',
+                    call_id: msg.tool_call_id as string,
+                    output: (msg.content as string) ?? '',
+                  });
+                }
+              }
+
+              // ── POST to Codex endpoint ──
+              // Hosted Codex/GPT-5.6 models do not expose raw CoT. summary:'auto'
+              // is what makes reasoning_summary_text arrive. If the stream also
+              // has response.reasoning_text, we prefer that full channel.
+              const buildCodexBody = () => ({
+                model: runtimeModel,
+                instructions,
+                input: inputItems,
+                tools: codexTools.length > 0 ? codexTools : undefined,
+                tool_choice: codexTools.length > 0 ? 'auto' : undefined,
+                stream: true,
+                store: false,
+                ...(!omitReasoning && reasoning ? { reasoning } : {}),
+              });
+
+              console.log(`[agent] codex request: model=${runtimeModel}, tools=${codexTools.length}, input_items=${inputItems.length}, instructions_len=${instructions.length}`);
+
+              // The tracked turn owns renewable inactivity and the hard ceiling.
+              // A fixed request deadline killed active reasoning after two minutes.
+              const fetchSignal = turnRuntime ? ac.signal
+                : combineRequestSignals(ac.signal, DEFAULT_TURN_HARD_DURATION_MS);
+
+              const postCodex = async (body: Record<string, unknown>): Promise<Response> => {
+                const send = () => fetchCodexResponse('https://chatgpt.com/backend-api/codex/responses', {
+                  method: 'POST',
+                  headers: getCodexHeaders(creds),
+                  body: JSON.stringify(body),
+                  signal: fetchSignal,
+                });
+                let response = await send();
+                if (!codexAuthRefreshSpent && (response.status === 401 || response.status === 403)) {
+                  const rejectedToken = creds.accessToken;
+                  await response.body?.cancel().catch(() => {});
+                  codexAuthRefreshSpent = true;
+                  const refreshed = await this.codexCredentialsProvider(ac.signal, true, rejectedToken);
+                  if (!refreshed) {
+                    throw new Error(`codex HTTP ${response.status}: Home23 credential refresh failed`);
+                  }
+                  creds = refreshed;
+                  response = await send();
+                }
+                return response;
+              };
+
+              let res = await postCodex(buildCodexBody());
+              if (!res.ok) {
+                const errText = await res.text().catch(() => '');
+                if (!omitReasoning && reasoning && isCodexReasoningRejected(errText)) {
+                  omitReasoning = true;
+                  console.warn('[agent] codex reasoning rejected — retrying once without reasoning summary');
+                  res = await postCodex(buildCodexBody());
+                }
+                if (!res.ok) {
+                  const retryText = omitReasoning ? await res.text().catch(() => '') : errText;
+                  throw new Error(`codex HTTP ${res.status}: ${retryText.slice(0, 300)}`);
+                }
+              }
+              if (!res.body) throw new Error('codex response missing body');
+
+              // ── Parse SSE stream ──
+              let textContent = '';
+              let streamedAnswer = false;
+              const thinkingState = createReasoningStreamState();
+              type FunctionCallItem = { call_id: string; name: string; arguments: string };
+              const functionCallItems: FunctionCallItem[] = [];
+              let terminalEvent: Record<string, unknown> | null = null;
+              const flushThinking = (): void => {
+                const evidence = takeReasoningEvidence(thinkingState);
+                if (onEvent) {
+                  for (const item of evidence) onEvent({ type: 'thinking', ...item });
+                }
+                thinkingState.pendingThinking = '';
+              };
+
+              for await (const event of parseSSE(res.body)) {
+                const evType = event.type as string | undefined;
+                if (typeof evType === 'string' && (
+                  (evType.endsWith('.delta') && typeof event.delta === 'string' && event.delta.length > 0)
+                  || evType === 'response.output_item.done' || evType === 'response.completed'
+                )) {
+                  turnRuntime?.onProviderActivity?.(++codexProgressSequence);
+                }
+                if (evType === 'response.completed'
+                    || evType === 'response.failed'
+                    || evType === 'response.incomplete') {
+                  terminalEvent = event;
+                  break;
+                }
+                const reasoningKind = applyReasoningStreamEvent(event, thinkingState);
+                if (reasoningKind === 'delta') {
+                  if (shouldFlushThinkingBuffer(thinkingState.pendingThinking)) flushThinking();
+                  continue;
+                }
+                if (reasoningKind === 'done') {
+                  flushThinking();
+                  continue;
+                }
+                if (evType === 'response.output_text.delta') {
+                  flushThinking();
+                  const delta = (event.delta as string) ?? '';
+                  textContent += delta;
+                  if (onEvent && delta) {
+                    streamedAnswer = true;
+                    onEvent({
+                      type: 'response_chunk', chunk: delta,
+                      sourceEventType: evType, providerEvent: event,
+                    });
+                  }
+                } else if (evType === 'response.output_text.done') {
+                  flushThinking();
+                  textContent = (event.text as string) ?? textContent;
+                } else if (evType === 'response.output_item.done') {
+                  const item = event.item as Record<string, unknown> | undefined;
+                  applyReasoningOutputItem(item, thinkingState);
+                  flushThinking();
+                  if (item?.type === 'message') {
+                    const content = Array.isArray(item.content)
+                      ? item.content as Array<Record<string, unknown>>
+                      : [];
+                    const completedText = content
+                      .filter(part => part.type === 'output_text' && typeof part.text === 'string')
+                      .map(part => part.text as string)
+                      .join('\n');
+                    if (completedText) textContent = completedText;
+                  } else if (item?.type === 'function_call') {
+                    functionCallItems.push({
+                      call_id: item.call_id as string,
+                      name: item.name as string,
+                      arguments: (item.arguments as string) ?? '{}',
+                    });
+                  }
+                }
+              }
+              flushThinking();
+
+              if (!terminalEvent) {
+                throw Object.assign(
+                  new Error('openai-codex response stream ended before response.completed'),
+                  { code: 'provider_incomplete' },
+                );
+              }
+              if (terminalEvent.type === 'response.failed') {
+                const response = terminalEvent.response && typeof terminalEvent.response === 'object'
+                  ? terminalEvent.response as Record<string, unknown>
+                  : undefined;
+                const rawError = response?.error ?? terminalEvent.error;
+                const error = rawError && typeof rawError === 'object'
+                  ? rawError as Record<string, unknown>
+                  : undefined;
+                const detail = [
+                  typeof error?.code === 'string' ? error.code : '',
+                  typeof error?.message === 'string'
+                    ? error.message.slice(0, 300)
+                    : (typeof rawError === 'string' ? rawError.slice(0, 300) : ''),
+                ].filter(Boolean).join(': ');
+                throw Object.assign(
+                  new Error(`openai-codex response failed${detail ? `: ${detail}` : ''}`),
+                  { code: 'provider_failed' },
+                );
+              }
+              if (terminalEvent.type === 'response.incomplete') {
+                const response = terminalEvent.response && typeof terminalEvent.response === 'object'
+                  ? terminalEvent.response as Record<string, unknown>
+                  : undefined;
+                const rawDetails = response?.incomplete_details ?? terminalEvent.incomplete_details;
+                const details = rawDetails && typeof rawDetails === 'object'
+                  ? rawDetails as Record<string, unknown>
+                  : undefined;
+                const reason = typeof details?.reason === 'string'
+                  ? details.reason.slice(0, 300)
+                  : (typeof rawDetails === 'string' ? rawDetails.slice(0, 300) : '');
+                throw Object.assign(
+                  new Error(`openai-codex response incomplete${reason ? `: ${reason}` : ''}`),
+                  { code: 'provider_incomplete' },
+                );
+              }
+
+              // The Responses stream is allowed to carry the authoritative
+              // completed output only on the terminal response object. Keep
+              // the delta/item path for live rendering, but never turn a
+              // valid completed message into an empty assistant row when an
+              // intermediary event was coalesced or omitted.
+              const completedResponse = terminalEvent.response
+                && typeof terminalEvent.response === 'object'
+                ? terminalEvent.response as Record<string, unknown>
+                : undefined;
+              reportCacheUsage(completedResponse?.usage);
+              const completedOutput = Array.isArray(completedResponse?.output)
+                ? completedResponse.output as Array<Record<string, unknown>>
+                : [];
+              for (const item of completedOutput) {
+                if (item.type === 'message' && !textContent) {
+                  const content = Array.isArray(item.content)
+                    ? item.content as Array<Record<string, unknown>>
+                    : [];
+                  textContent = content
+                    .filter(part => part.type === 'output_text' && typeof part.text === 'string')
+                    .map(part => part.text as string)
+                    .join('\n');
+                } else if (item.type === 'function_call'
+                    && typeof item.call_id === 'string'
+                    && !functionCallItems.some(call => call.call_id === item.call_id)) {
+                  functionCallItems.push({
+                    call_id: item.call_id,
+                    name: typeof item.name === 'string' ? item.name : '',
+                    arguments: typeof item.arguments === 'string' ? item.arguments : '{}',
+                  });
+                }
+              }
+
+              // ── Build respMsg in OAI Chat Completions format ──
+              const respMsg: ResponseMessage = {
+                role: 'assistant',
+                content: textContent || null,
+                tool_calls: functionCallItems.length > 0
+                  ? functionCallItems.map(fc => ({
+                      id: fc.call_id,
+                      type: 'function' as const,
+                      function: { name: fc.name, arguments: fc.arguments },
+                    }))
+                  : undefined,
+              };
+
+              console.log(`[agent] codex response: content=${(respMsg.content || '').length} chars, tool_calls=${respMsg.tool_calls?.length ?? 0}, tools_sent=${codexTools.length}, model=${runtimeModel}`);
+
+              // ── Process the response ──
+              const toolCalls = respMsg.tool_calls;
+
+              if (!toolCalls || toolCalls.length === 0) {
+                let contentStr = (respMsg.content || '').trim();
+
+                // Detect model outputting tool calls as text — strip and retry
+                const hasTextToolCall = contentStr.includes('<parameter name=') ||
+                  contentStr.includes('</invoke>') ||
+                  contentStr.includes('[Used tool') ||
+                  contentStr.includes('"type":"tool_use"') ||
+                  contentStr.includes('"type":"function"');
+
+                if (hasTextToolCall) {
+                  console.warn('[agent] codex: model returned tool calls as text — stripping and retrying');
+                  const cleanText = contentStr
+                    .replace(/\[Used tools?[^\]]*\][\s\S]*$/m, '')
+                    .replace(/\[?\{["\s]*type["\s]*:["\s]*(tool_use|function)[\s\S]*$/m, '')
+                    .trim();
+                  if (cleanText) apiMessages.push({ role: 'assistant', content: cleanText });
+                  apiMessages.push({ role: 'user', content: 'Please use the function calling tools provided to take actions. Do not output tool calls as text.' });
+                  continue;
+                }
+
+                if (!contentStr) {
+                  if (!emptyFinalRecoveryAttempted) {
+                    emptyFinalRecoveryAttempted = true;
+                    console.warn('[agent] codex returned an empty final response — requesting visible answer once');
+                    apiMessages.push({
+                      role: 'user',
+                      content: 'Your tool work is complete, but no visible answer text was returned. Respond now with a concise final answer to the user. Do not end the turn without visible answer text.',
+                    });
+                    continue;
+                  }
+                  throw Object.assign(
+                    new Error('openai-codex returned an empty final response after one recovery attempt'),
+                    { code: 'provider_incomplete' },
+                  );
+                }
+
+                const answer = contentStr;
+                if (onEvent && answer && !streamedAnswer) onEvent({ type: 'response_chunk', chunk: answer });
+                turnMessages.push({ role: 'assistant', content: answer });
+                persistTurn();
+                if (messages.length > 10) {
+                  runtimeMemory.extractAndSave(chatId, messages, runtimeModel, runtimeProvider).catch(() => {});
+                }
+                return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
+              }
+
+              // Model wants to call tools — append to apiMessages and execute
+              apiMessages.push({
+                role: 'assistant',
+                content: respMsg.content || null,
+                tool_calls: toolCalls,
+              });
+
+              for (const tc of toolCalls) {
+                if (ac.signal.aborted) {
+                  apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: 'Interrupted by /stop' });
+                  continue;
+                }
+
+                toolCallCount++;
+                const toolCallId = tc.id || `runtime-tool-${toolCallCount}`;
+                let input: Record<string, unknown>;
+                if (typeof tc.function.arguments === 'string') {
+                  try { input = JSON.parse(tc.function.arguments); } catch { input = { raw: tc.function.arguments }; }
+                } else {
+                  input = tc.function.arguments as Record<string, unknown>;
+                }
+
+                const argsPreview = typeof tc.function.arguments === 'string'
+                  ? tc.function.arguments.slice(0, 100)
+                  : JSON.stringify(tc.function.arguments).slice(0, 100);
+                console.log(`[agent] Tool call #${toolCallCount}: ${tc.function.name}(${argsPreview})`);
+                if (onEvent) onEvent({
+                  type: 'tool_start', tool: tc.function.name, args: input, toolCallId,
+                  sourceEventType: 'response.output_item.done', providerEvent: tc,
+                });
+
+                try {
+                  const formatted = await executeAndFormatTool({
+                    registry,
+                    name: tc.function.name,
+                    toolCallId,
+                    input,
+                    context: runContext,
+                    onEvent,
+                    modelLimit: MODEL_TOOL_RESULT_LIMIT_CHARS,
+                    eventLimit: TOOL_EVENT_RESULT_LIMIT_CHARS,
+                  });
+                  const { result } = formatted;
+                  if (result.media) {
+                    allMedia.push(...result.media);
+                    if (onEvent) for (const m of result.media) onEvent(toolMediaEvent(m, toolCallId));
+                  }
+                  apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: formatted.modelContent });
+                } catch (toolErr) {
+                  console.error(`[agent] Tool ${tc.function.name} threw:`, toolErr);
+                  const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+                  apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: `Tool error: ${errMsg}` });
+                  if (onEvent) onEvent({
+                    type: 'tool_result', tool: tc.function.name, toolCallId,
+                    result: errMsg, exactResult: errMsg, success: false,
+                    sourceEventType: 'runtime.tool_error',
+                  });
+                }
+              }
+
+              const names = toolCalls.map(tc => tc.function.name);
+              const receipts = apiMessages.slice(-toolCalls.length).map(m => String(m.content ?? ''));
+              turnMessages.push(toolRoundHistoryEntry(names, receipts));
+              // continue to next iteration
+            }
+
+            // Hit iteration cap
+            const capText = `Hit max tool calls (${MAX_ITERATIONS}).`;
+            turnMessages.push({ role: 'assistant', content: capText });
+            persistTurn();
+            return { text: capText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
+          } else if (runtimeProvider === 'xai' || runtimeModel.includes('grok')) {
+            // ── xAI Responses API path (all Grok models) ──
+            // Read-at-use (2026-08-11): secrets.yaml first, env floor second —
+            // the raw env read here was one of the last rotation-blind spots
+            // after 159703ef.
+            const xaiKey = resolveProviderKey('xai', undefined);
+            if (!xaiKey) throw new Error('xai credential unavailable (secrets.yaml providers.xai.apiKey or XAI_API_KEY)');
+
+            const sysText = typeof systemPrompt === 'string'
+              ? systemPrompt
+              : (systemPrompt as Array<{ text: string }>).map(b => b.text).join('\n');
+
+            const chatMsgs: Array<Record<string, unknown>> = [];
+            for (const m of truncated) {
+              if (typeof m.content === 'string') {
+                chatMsgs.push({ role: m.role, content: m.content });
+              } else {
+                const parts: string[] = [];
+                for (const block of m.content as Array<Record<string, unknown>>) {
+                  if (block.type === 'text' && block.text) parts.push(block.text as string);
+                  else if (block.type === 'tool_use') parts.push(`[Used tool: ${block.name}]`);
+                    else if (block.type === 'tool_result') parts.push(`[Tool result: ${((block.content as string) || '').slice(0, 4000)}]`);
+                  else if (block.type === 'image') parts.push('[image]');
+                }
+                chatMsgs.push({ role: m.role, content: parts.join('\n') || '(empty)' });
+              }
+            }
+
+            const xaiTools = buildXaiResponseTools(registry);
+
+            const initialInput: Array<Record<string, unknown>> = [
+              ...(sysText ? [{ role: 'system', content: sysText }] : []),
+              ...chatMsgs,
+            ];
+
+            type ToolCallObj = { id?: string; type?: string; function: { name: string; arguments: string | Record<string, unknown> } };
+            const xaiInputItems: Array<Record<string, unknown>> = [...initialInput];
+
+            for (let i = 0; i < MAX_ITERATIONS; i++) {
+              if (ac.signal.aborted) {
+                const interruptText = `Stopped. (${toolCallCount} tool call${toolCallCount !== 1 ? 's' : ''}, ${((Date.now() - startMs) / 1000).toFixed(1)}s)`;
+                turnMessages.push({ role: 'assistant', content: interruptText });
+                persistTurn();
+                return { text: interruptText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
+              }
+              this.consumeOperatorSteer(chatId, turnMessages, (text) => {
+                xaiInputItems.push({
+                  type: 'message',
+                  role: 'user',
+                  content: [{ type: 'input_text', text }],
+                });
+              }, onEvent);
+
+              maintainModelWindow(xaiInputItems);
+              const xaiBody = {
+                model: runtimeModel,
+                input: xaiInputItems,
+                tools: xaiTools.length > 0 ? xaiTools : undefined,
+                tool_choice: xaiTools.length > 0 ? 'auto' : undefined,
+                parallel_tool_calls: true,
+                truncation: 'auto',
+                max_output_tokens: this.maxTokens,
+                temperature: this.temperature,
+                tool_stream: true,
+                stream: true,
+                include: ['reasoning.encrypted_content'],
+              };
+
+              const xaiTimeout = 120_000;
+              const fetchSignal = combineRequestSignals(ac.signal, xaiTimeout);
+
+              const res = await fetch('https://api.x.ai/v1/responses', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${xaiKey}` },
+                body: JSON.stringify(xaiBody),
+                signal: fetchSignal,
+              });
+
+              if (!res.ok) {
+                const errText = await res.text().catch(() => '');
+                throw new Error(`xai responses HTTP ${res.status}: ${errText.slice(0, 300)}`);
+              }
+              if (!res.body) throw new Error('xai responses missing body');
+
+              // Parse SSE stream. Prefer response.reasoning_text (full CoT);
+              // reasoning_summary_text is fallback only when no full channel arrives.
+              let textContent = '';
+              let streamedAnswer = false;
+              const thinkingState = createReasoningStreamState();
+              type FunctionCallItem = { call_id: string; name: string; arguments: string };
+              const functionCallItems: FunctionCallItem[] = [];
+              const completedOutputItems: Array<Record<string, unknown>> = [];
+              const serverToolNames: string[] = [];
+              let terminalEvent: Record<string, unknown> | null = null;
+              const flushThinking = (): void => {
+                const evidence = takeReasoningEvidence(thinkingState);
+                if (onEvent) {
+                  for (const item of evidence) onEvent({ type: 'thinking', ...item });
+                }
+                thinkingState.pendingThinking = '';
+              };
+
+              for await (const event of parseSSE(res.body)) {
+                const evType = event.type as string | undefined;
+                if (evType === 'response.completed'
+                    || evType === 'response.failed'
+                    || evType === 'response.incomplete') {
+                  terminalEvent = event;
+                  break;
+                } else if (evType === 'response.output_text.delta') {
+                  flushThinking();
+                  textContent += (event.delta as string) ?? '';
+                  if (onEvent && event.delta) {
+                    streamedAnswer = true;
+                    onEvent({
+                      type: 'response_chunk', chunk: event.delta as string,
+                      sourceEventType: evType, providerEvent: event,
+                    });
+                  }
+                } else if (evType === 'response.output_text.done') {
+                  flushThinking();
+                  textContent = (event.text as string) ?? textContent;
+                } else if (evType === 'response.output_item.done') {
+                  const item = event.item as Record<string, unknown> | undefined;
+                  applyReasoningOutputItem(item, thinkingState);
+                  flushThinking();
+                  if (item) completedOutputItems.push(item);
+                  if (item?.type === 'function_call') {
+                    functionCallItems.push({ call_id: item.call_id as string, name: item.name as string, arguments: (item.arguments as string) ?? '{}' });
+                  } else {
+                    const toolName = getXaiServerToolNameFromItem(item);
+                    if (toolName) {
+                      toolCallCount++;
+                      const toolCallId = typeof item?.id === 'string' && item.id
+                        ? item.id
+                        : typeof item?.call_id === 'string' && item.call_id
+                          ? item.call_id
+                          : `runtime-server-tool-${toolCallCount}`;
+                      serverToolNames.push(toolName);
+                      const args = item ? getXaiServerToolArgs(item) : {};
+                      if (onEvent) {
+                        onEvent({
+                          type: 'tool_start', tool: toolName, args, toolCallId,
+                          sourceEventType: 'response.output_item.done', providerEvent: item,
+                        });
+                        onEvent({
+                          type: 'tool_result',
+                          tool: toolName,
+                          toolCallId,
+                          result: summarizeXaiServerToolResult(toolName, item ?? {}),
+                          exactResult: JSON.stringify(item ?? {}),
+                          success: xaiServerToolSucceeded(item ?? {}),
+                          sourceEventType: 'response.output_item.done',
+                          providerEvent: item,
+                        });
+                      }
+                    }
+                  }
+                } else {
+                  const reasoningKind = applyReasoningStreamEvent(event, thinkingState);
+                  if (reasoningKind === 'delta') {
+                    if (shouldFlushThinkingBuffer(thinkingState.pendingThinking)) flushThinking();
+                  } else if (reasoningKind === 'done') {
+                    flushThinking();
+                  }
+                }
+              }
+              flushThinking();
+
+              if (!terminalEvent) {
+                throw new Error('xai responses stream ended before response.completed');
+              }
+              if (terminalEvent.type === 'response.failed') {
+                const response = terminalEvent.response && typeof terminalEvent.response === 'object'
+                  ? terminalEvent.response as Record<string, unknown>
+                  : undefined;
+                const rawError = response?.error ?? terminalEvent.error;
+                const error = rawError && typeof rawError === 'object'
+                  ? rawError as Record<string, unknown>
+                  : undefined;
+                const detail = [
+                  typeof error?.code === 'string' ? error.code : '',
+                  typeof error?.message === 'string'
+                    ? error.message
+                    : (typeof rawError === 'string' ? rawError : ''),
+                ].filter(Boolean).join(': ');
+                throw new Error(`xai responses failed${detail ? `: ${detail}` : ''}`);
+              }
+              if (terminalEvent.type === 'response.incomplete') {
+                const response = terminalEvent.response && typeof terminalEvent.response === 'object'
+                  ? terminalEvent.response as Record<string, unknown>
+                  : undefined;
+                const rawDetails = response?.incomplete_details ?? terminalEvent.incomplete_details;
+                const details = rawDetails && typeof rawDetails === 'object'
+                  ? rawDetails as Record<string, unknown>
+                  : undefined;
+                const reason = typeof details?.reason === 'string'
+                  ? details.reason
+                  : (typeof rawDetails === 'string' ? rawDetails : '');
+                throw new Error(`xai responses incomplete${reason ? `: ${reason}` : ''}`);
+              }
+
+              reportCacheUsage((terminalEvent.response as Record<string, unknown> | undefined)?.usage);
+              const answerText = (textContent || visibleReasoningText(thinkingState) || '').trim();
+              const toolCalls: ToolCallObj[] = functionCallItems.map(fc => ({
+                id: fc.call_id,
+                type: 'function' as const,
+                function: { name: fc.name, arguments: fc.arguments },
+              }));
+
+              console.log(`[agent] xai responses: content=${answerText.length} chars, tool_calls=${toolCalls.length}, tools_sent=${xaiTools.length}, model=${runtimeModel}`);
+
+              if (toolCalls.length === 0) {
+                const answer = answerText || '(no response)';
+                if (onEvent && answer && !streamedAnswer) {
+                  onEvent({ type: 'response_chunk', chunk: answer });
+                }
+                if (serverToolNames.length > 0) {
+                  turnMessages.push({ role: 'assistant', content: `[Used tools: ${serverToolNames.join(', ')}]` });
+                }
+                turnMessages.push({ role: 'assistant', content: answer });
+                persistTurn();
+                if (messages.length > 10) {
+                  runtimeMemory.extractAndSave(chatId, messages, runtimeModel, runtimeProvider).catch(() => {});
+                }
+                return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
+              }
+
+              // ZDR organizations cannot hydrate previous_response_id. Replay the
+              // complete response output (including encrypted reasoning and the
+              // completed function_call items) before appending matching outputs.
+              xaiInputItems.push(...completedOutputItems);
+              for (const tc of toolCalls) {
+                if (ac.signal.aborted) {
+                  xaiInputItems.push({ type: 'function_call_output', call_id: tc.id, output: 'Interrupted by /stop' });
+                  continue;
+                }
+                toolCallCount++;
+                const toolCallId = tc.id || `runtime-tool-${toolCallCount}`;
+                let input: Record<string, unknown>;
+                try { input = typeof tc.function.arguments === 'string' ? JSON.parse(tc.function.arguments) : tc.function.arguments; }
+                catch { input = {}; }
+                if (onEvent) onEvent({
+                  type: 'tool_start', tool: tc.function.name, args: input, toolCallId,
+                  sourceEventType: 'response.output_item.done', providerEvent: tc,
+                });
+                try {
+                  const formatted = await executeAndFormatTool({
+                    registry,
+                    name: tc.function.name,
+                    toolCallId,
+                    input,
+                    context: runContext,
+                    onEvent,
+                    modelLimit: MODEL_TOOL_RESULT_LIMIT_CHARS,
+                    eventLimit: TOOL_EVENT_RESULT_LIMIT_CHARS,
+                  });
+                  const { result } = formatted;
+                  if (result.media?.length) { allMedia.push(...result.media); if (onEvent) for (const m of result.media) onEvent(toolMediaEvent(m, toolCallId)); }
+                  xaiInputItems.push({ type: 'function_call_output', call_id: tc.id, output: formatted.modelContent });
+                } catch (toolErr) {
+                  const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+                  xaiInputItems.push({ type: 'function_call_output', call_id: tc.id, output: `Error: ${errMsg}` });
+                  if (onEvent) onEvent({ type: 'tool_result', tool: tc.function.name, toolCallId, result: errMsg, exactResult: errMsg, success: false, sourceEventType: 'runtime.tool_error' });
+                }
+              }
+              const names = [...serverToolNames, ...toolCalls.map(tc => tc.function.name)];
+              const receipts = xaiInputItems
+                .filter(item => item.type === 'function_call_output')
+                .slice(-toolCalls.length)
+                .map(item => String(item.output ?? ''));
+              turnMessages.push(toolRoundHistoryEntry(names, receipts));
+            }
+
+            const capText = `Hit max tool calls (${MAX_ITERATIONS}).`;
+            turnMessages.push({ role: 'assistant', content: capText });
+            persistTurn();
+            return { text: capText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
+
+          } else {
+          // ── Non-Claude tool-use loop ──
+          // Ollama Cloud: native /api/chat (proper tool support, configurable num_ctx)
+          // OpenAI: /v1/chat/completions (standard OpenAI format)
+
+          const isOllamaCloud = runtimeProvider === 'ollama-cloud';
+          const isOllamaLocal = runtimeProvider === 'ollama-local';
+
+          const providerConfig: Record<string, { keyEnv: string; timeout: number }> = {
+            'openai': { keyEnv: 'OPENAI_API_KEY', timeout: 60_000 },
+            'ollama-cloud': { keyEnv: 'OLLAMA_CLOUD_API_KEY', timeout: 120_000 },
+            'ollama-local': { keyEnv: '', timeout: 300_000 },
+          };
+          const pconf = providerConfig[runtimeProvider];
+          if (!pconf) throw new Error(`Unknown provider: ${runtimeProvider}`);
+
+          // Read-at-use (2026-08-11): the resolver covers secrets.yaml with
+          // pconf.keyEnv as the floor — a rotation reaches a running turn.
+          // ollama-local talks to a keyless local endpoint (LOCAL_LLM_BASE_URL).
+          const apiKey = isOllamaLocal ? '' : resolveProviderKey(runtimeProvider, undefined);
+          if (!apiKey && !isOllamaLocal) throw new Error(`${runtimeProvider} credential unavailable (secrets.yaml providers.${runtimeProvider}.apiKey or ${pconf.keyEnv})`);
+
+          const sysText = typeof systemPrompt === 'string'
+            ? systemPrompt
+            : (systemPrompt as Array<{text: string}>).map(b => b.text).join('\n');
+
+          // Convert Anthropic-format history to plain text messages
+          const chatMsgs: Array<Record<string, unknown>> = [];
+          for (const m of truncated) {
+            if (typeof m.content === 'string') {
+              chatMsgs.push({ role: m.role, content: m.content });
+            } else {
+              const parts: string[] = [];
+              for (const block of m.content as Array<Record<string, unknown>>) {
+                if (block.type === 'text' && block.text) parts.push(block.text as string);
+                else if (block.type === 'tool_use') parts.push(`[Used tool: ${block.name}]`);
+                    else if (block.type === 'tool_result') parts.push(`[Tool result: ${((block.content as string) || '').slice(0, 4000)}]`);
+                else if (block.type === 'image') parts.push('[image]');
+              }
+              chatMsgs.push({ role: m.role, content: parts.join('\n') || '(empty)' });
+            }
+          }
+
+          // Check if model supports tools (Ollama Cloud only — cache per model)
+          let modelSupportsTools = true;
+          if (isOllamaCloud) {
+            if (!ollamaCapabilitiesCache.has(runtimeModel)) {
+              try {
+                const showRes = await fetch('https://ollama.com/api/show', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+                  body: JSON.stringify({ model: runtimeModel }),
+                  signal: combineRequestSignals(ac.signal, 5_000),
+                });
+                if (showRes.ok) {
+                  const showData = await showRes.json() as { capabilities?: string[] };
+                  ollamaCapabilitiesCache.set(runtimeModel, new Set(showData.capabilities ?? []));
+                }
+              } catch { /* assume tools supported */ }
+            }
+            const caps = ollamaCapabilitiesCache.get(runtimeModel);
+            if (caps && !caps.has('tools')) {
+              modelSupportsTools = false;
+              console.log(`[agent] Model ${runtimeModel} does not support tools — chat-only mode`);
+            }
+          }
+
+          const oaiTools = modelSupportsTools ? registry.getOpenAITools() : [];
+
+          // Build the live message array for the API (mutated during tool loop)
+          const apiMessages: Array<Record<string, unknown>> = [
+            { role: 'system', content: sysText },
+            ...chatMsgs,
+          ];
+
+          // Tool-use loop
+          for (let i = 0; i < MAX_ITERATIONS; i++) {
+            if (ac.signal.aborted) {
+              const interruptText = `Stopped. (${toolCallCount} tool call${toolCallCount !== 1 ? 's' : ''}, ${((Date.now() - startMs) / 1000).toFixed(1)}s)`;
+              turnMessages.push({ role: 'assistant', content: interruptText });
+              persistTurn();
+              return { text: interruptText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
+            }
+            this.consumeOperatorSteer(chatId, turnMessages, (text) => {
+              apiMessages.push({ role: 'user', content: text });
+            }, onEvent);
+            maintainModelWindow(apiMessages);
+
+            // ── Make the API call ──
+            type ToolCallObj = { id?: string; function: { name: string; arguments: string | Record<string, unknown> } };
+            type ResponseMessage = { role: string; content?: string | null; tool_calls?: ToolCallObj[] };
+            let respMsg: ResponseMessage;
+
+            if (isOllamaCloud) {
+              // Native Ollama /api/chat — proper tool support + num_ctx
+              const res = await fetch('https://ollama.com/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+                body: JSON.stringify({
+                  model: runtimeModel,
+                  messages: apiMessages,
+                  tools: oaiTools.length > 0 ? oaiTools : undefined,
+                  stream: false,
+                  options: { num_ctx: 32768, temperature: this.temperature },
+                }),
+                signal: combineRequestSignals(ac.signal, pconf.timeout),
+              });
+              if (!res.ok) {
+                const errText = await res.text().catch(() => '');
+                throw new Error(`ollama-cloud HTTP ${res.status}: ${errText.slice(0, 300)}`);
+              }
+              const data = await res.json() as { message?: ResponseMessage };
+              reportCacheUsage(undefined);
+              respMsg = data.message ?? { role: 'assistant', content: '(no response)' };
+            } else {
+              // OpenAI-compatible /v1/chat/completions (OpenAI, or local Ollama via LOCAL_LLM_BASE_URL)
+              const baseUrl = isOllamaLocal
+                ? (process.env.LOCAL_LLM_BASE_URL || 'http://127.0.0.1:11434/v1')
+                : 'https://api.openai.com/v1';
+              const isGpt5Plus = runtimeModel.includes('gpt-5') || runtimeModel.includes('gpt5');
+              const tokenParam = isGpt5Plus ? { max_completion_tokens: this.maxTokens } : { max_tokens: this.maxTokens };
+
+              const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+              if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+              const res = await fetch(`${baseUrl}/chat/completions`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                  model: runtimeModel,
+                  messages: apiMessages,
+                  tools: oaiTools.length > 0 ? oaiTools : undefined,
+                  ...tokenParam,
+                  ...(runtimeProvider === 'openai' ? { prompt_cache_key: cacheKey } : {}),
+                  temperature: this.temperature,
+                }),
+                signal: combineRequestSignals(ac.signal, pconf.timeout),
+              });
+              if (!res.ok) {
+                const errText = await res.text().catch(() => '');
+                throw new Error(`${isOllamaLocal ? 'ollama-local' : 'openai'} HTTP ${res.status}: ${errText.slice(0, 300)}`);
+              }
+              const data = await res.json() as { choices?: Array<{ message: ResponseMessage }>; usage?: unknown };
+              reportCacheUsage(data.usage);
+              respMsg = data.choices?.[0]?.message ?? { role: 'assistant', content: '(no response)' };
+            }
+
+            // ── Process the response ──
+            const toolCalls = respMsg.tool_calls;
+
+            // Log response shape for debugging
+            console.log(`[agent] Response: content=${(respMsg.content || '').length} chars, tool_calls=${toolCalls?.length ?? 0}, tools_sent=${oaiTools.length}, model=${runtimeModel}`);
+
+            if (!toolCalls || toolCalls.length === 0) {
+              let contentStr = (respMsg.content || '').trim();
+
+              // Detect model outputting tool calls as text (XML or JSON format)
+              // instead of using the function calling API. Strip and retry.
+              const hasTextToolCall = contentStr.includes('<parameter name=') ||
+                contentStr.includes('</invoke>') ||
+                contentStr.includes('[Used tool') ||
+                contentStr.includes('"type":"tool_use"') ||
+                contentStr.includes('"type":"function"');
+
+              if (hasTextToolCall) {
+                console.warn(`[agent] Model returned tool calls as text — stripping and retrying`);
+                // Strip the fake tool call, keep any real text before it
+                const cleanText = contentStr
+                  .replace(/\[Used tools?[^\]]*\][\s\S]*$/m, '')
+                  .replace(/\[?\{["\s]*type["\s]*:["\s]*(tool_use|function)[\s\S]*$/m, '')
+                  .trim();
+
+                if (cleanText) {
+                  apiMessages.push({ role: 'assistant', content: cleanText });
+                }
+                apiMessages.push({ role: 'user', content: 'Please use the function calling tools provided to take actions. Do not output tool calls as text.' });
+                continue;
+              }
+
+              // Final text response
+              const answer = contentStr || '(no response)';
+              if (onEvent && answer) onEvent({ type: 'response_chunk', chunk: answer });
+              turnMessages.push({ role: 'assistant', content: answer });
+              persistTurn();
+              if (messages.length > 10) {
+                runtimeMemory.extractAndSave(chatId, messages, runtimeModel, runtimeProvider).catch(() => {});
+              }
+              return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
+            }
+
+            // Model wants to call tools
+            apiMessages.push({
+              role: 'assistant',
+              content: respMsg.content || null,
+              tool_calls: toolCalls,
+            });
+
+            for (const tc of toolCalls) {
+              if (ac.signal.aborted) {
+                apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: 'Interrupted by /stop' });
+                continue;
+              }
+
+              toolCallCount++;
+              const toolCallId = tc.id || `runtime-tool-${toolCallCount}`;
+              // Native Ollama returns arguments as object; OpenAI returns as string
+              let input: Record<string, unknown>;
+              if (typeof tc.function.arguments === 'string') {
+                try { input = JSON.parse(tc.function.arguments); } catch { input = { raw: tc.function.arguments }; }
+              } else {
+                input = tc.function.arguments as Record<string, unknown>;
+              }
+
+              const argsPreview = typeof tc.function.arguments === 'string' ? tc.function.arguments.slice(0, 100) : JSON.stringify(tc.function.arguments).slice(0, 100);
+              console.log(`[agent] Tool call #${toolCallCount}: ${tc.function.name}(${argsPreview})`);
+              if (onEvent) onEvent({ type: 'tool_start', tool: tc.function.name, args: input, toolCallId, sourceEventType: 'provider.tool_call', providerEvent: tc });
+
+              try {
+                const formatted = await executeAndFormatTool({
+                  registry,
+                  name: tc.function.name,
+                  toolCallId,
+                  input,
+                  context: runContext,
+                  onEvent,
+                  modelLimit: MODEL_TOOL_RESULT_LIMIT_CHARS,
+                  eventLimit: TOOL_EVENT_RESULT_LIMIT_CHARS,
+                });
+                const { result } = formatted;
+                if (result.media) {
+                  allMedia.push(...result.media);
+                  if (onEvent) for (const m of result.media) onEvent(toolMediaEvent(m, toolCallId));
+                }
+                apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: formatted.modelContent });
+              } catch (toolErr) {
+                console.error(`[agent] Tool ${tc.function.name} threw:`, toolErr);
+                const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+                apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: `Tool error: ${errMsg}` });
+                if (onEvent) onEvent({ type: 'tool_result', tool: tc.function.name, toolCallId, result: errMsg, exactResult: errMsg, success: false, sourceEventType: 'runtime.tool_error' });
+              }
+            }
+
+            const names = toolCalls.map(tc => tc.function.name);
+            const receipts = apiMessages.slice(-toolCalls.length).map(m => String(m.content ?? ''));
+            turnMessages.push(toolRoundHistoryEntry(names, receipts));
+            continue;
+          }
+
+          // Hit iteration cap
+          const capText = `Hit max tool calls (${MAX_ITERATIONS}).`;
+          turnMessages.push({ role: 'assistant', content: capText });
+          persistTurn();
+          return { text: capText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
+          } // end else (non-codex providers)
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          if (ac.signal.aborted) throw ac.signal.reason;
+          const errorText = `Error calling ${runtimeModel}: ${errMsg}`;
+          throw Object.assign(new Error(errorText, { cause: err }), { code: (err as { code?: unknown })?.code });
+        }
+      }
+
+      // The loop
+      for (let i = 0; i < MAX_ITERATIONS; i++) {
+        // ── Check abort signal (set by /stop command) ──
+        if (ac.signal.aborted) {
+          const interruptText = `Stopped. (${toolCallCount} tool call${toolCallCount !== 1 ? 's' : ''}, ${((Date.now() - startMs) / 1000).toFixed(1)}s)`;
+          turnMessages.push({ role: 'assistant', content: interruptText });
+          persistTurn();
+          return {
+            text: interruptText,
+            media: allMedia.length > 0 ? allMedia : undefined,
+            model: runtimeModel,
+            toolCallCount,
+            durationMs: Date.now() - startMs,
+          };
+        }
+        this.consumeOperatorSteer(chatId, turnMessages, (text) => {
+          messages.push({ role: 'user', content: text });
+        }, onEvent);
+
+        let response: Anthropic.Message;
+        let streamedThinking = false;
+        try {
+          // Streaming call: emit text/thinking deltas to onEvent as they arrive,
+          // then resolve the full Message at the end for tool-loop processing.
+          // SDK: messages.stream() returns an iterable of server-sent events plus
+          // a finalMessage() method that yields the fully-accumulated Message.
+          const omitSamplingParams = isAnthropicSamplingDeprecatedModel(runtimeModel);
+          maintainModelWindow(messages, false);
+          const requestParams: Record<string, unknown> = {
+            model: runtimeModel,
+            max_tokens: this.maxTokens,
+            system: systemPrompt,
+            ...(runtimeProvider === 'anthropic' ? { cache_control: { type: 'ephemeral' } } : {}),
+            messages: messages as Anthropic.MessageParam[],
+            tools: tools as Anthropic.Tool[],
+            temperature: this.temperature,
+          };
+          if (omitSamplingParams) {
+            delete requestParams.temperature;
+          }
+
+          const thinkingCfg = runtimeProvider === 'anthropic'
+            ? anthropicThinkingConfig(runtimeReasoningEffort, this.maxTokens)
+            : undefined;
+          let thinkingEnabled = Boolean(thinkingCfg);
+          const applyThinking = (): void => {
+            if (thinkingEnabled && thinkingCfg) {
+              requestParams.thinking = thinkingCfg.thinking;
+              requestParams.temperature = 1;
+              requestParams.max_tokens = thinkingCfg.maxTokens;
+            } else {
+              delete requestParams.thinking;
+              requestParams.max_tokens = this.maxTokens;
+              if (omitSamplingParams) delete requestParams.temperature;
+              else requestParams.temperature = this.temperature;
+            }
+          };
+          applyThinking();
+
+          // Tracks whether anything has already reached the user this attempt.
+          // A retry after visible output would duplicate text in the chat, so
+          // the credential retry below is allowed only before the first delta.
+          // In practice a 401 arrives on the request itself, before any
+          // content — this is the guard that keeps that assumption honest.
+          let emittedAny = false;
+          const streamAttempt = async (client: Anthropic): Promise<Anthropic.Message> => {
+            const stream = client.messages.stream(
+              requestParams as unknown as Anthropic.MessageCreateParams,
+              { signal: ac.signal },
+            );
+
+            for await (const event of stream) {
+              if (event.type === 'content_block_start' && onEvent) {
+                const block = (event as { content_block?: { type?: string; thinking?: string } }).content_block;
+                if (block?.type === 'thinking' && block.thinking) {
+                  emittedAny = true;
+                  streamedThinking = true;
+                  onEvent({
+                    type: 'thinking', content: block.thinking,
+                    provenance: 'provider_verbatim_reasoning',
+                    sourceEventType: 'content_block_start.thinking',
+                    providerEvent: event,
+                  });
+                }
+              } else if (event.type === 'content_block_delta' && onEvent) {
+                const delta = event.delta as
+                  | { type: 'text_delta'; text: string }
+                  | { type: 'thinking_delta'; thinking: string }
+                  | { type: 'input_json_delta'; partial_json: string };
+                if (delta.type === 'text_delta') {
+                  emittedAny = true;
+                  onEvent({
+                    type: 'response_chunk', chunk: delta.text,
+                    sourceEventType: 'content_block_delta.text_delta',
+                    providerEvent: event,
+                  });
+                } else if (delta.type === 'thinking_delta') {
+                  emittedAny = true;
+                  streamedThinking = true;
+                  onEvent({
+                    type: 'thinking', content: delta.thinking,
+                    provenance: 'provider_verbatim_reasoning',
+                    sourceEventType: 'content_block_delta.thinking_delta',
+                    providerEvent: event,
+                  });
+                }
+                // input_json_delta accumulates tool-call arguments; surface the
+                // completed tool call at content_block_stop via finalMessage below.
+              }
+            }
+
+            return stream.finalMessage();
+          };
+
+          try {
+            response = await streamAttempt(runtimeClient);
+          } catch (streamErr) {
+            // Thinking-unsupported models 400 before any delta. Strip thinking
+            // once rather than inventing a thought stream.
+            if (!ac.signal.aborted && !emittedAny && thinkingEnabled && isAnthropicThinkingRejected(streamErr)) {
+              thinkingEnabled = false;
+              applyThinking();
+              console.warn('[agent] anthropic thinking rejected — retrying once without extended thinking');
+              response = await streamAttempt(runtimeClient);
+            } else if (ac.signal.aborted || emittedAny || !isAuthError(streamErr)) {
+              throw streamErr;
+            } else {
+              await refreshManagedOAuth('anthropic');
+              if (!this.ensureFreshAnthropicClient(true)) throw streamErr;
+              // One Home23-managed refresh and retry. The shared secrets lock
+              // prevents another resident from spending the same rotating
+              // refresh credential concurrently. Never loops.
+              console.warn('[agent] auth failure — retrying once with refreshed Home23 credentials');
+              response = await streamAttempt(this.client);
+            }
+          }
+        } catch (err) {
+          // If aborted by /stop, exit gracefully instead of throwing
+          if (ac.signal.aborted) {
+            const interruptText = `Stopped. (${toolCallCount} tool call${toolCallCount !== 1 ? 's' : ''}, ${((Date.now() - startMs) / 1000).toFixed(1)}s)`;
+            turnMessages.push({ role: 'assistant', content: interruptText });
+            persistTurn();
+            return {
+              text: interruptText,
+              media: allMedia.length > 0 ? allMedia : undefined,
+              model: runtimeModel,
+              toolCallCount,
+              durationMs: Date.now() - startMs,
+            };
+          }
+          throw err;
+        }
+
+        reportCacheUsage(response.usage);
+
+        // If the SDK only attached thinking on the completed message (no
+        // thinking_delta events), forward those blocks once. Do not invent.
+        if (onEvent && !streamedThinking) {
+          for (const block of response.content) {
+            const thinking = (block as { type?: string; thinking?: string }).type === 'thinking'
+              ? (block as { thinking?: string }).thinking
+              : undefined;
+            if (thinking) onEvent({
+              type: 'thinking', content: thinking,
+              provenance: 'provider_verbatim_reasoning',
+              sourceEventType: 'message.content.thinking',
+              providerEvent: block,
+            });
+          }
+        }
+
+        // ── Handle tool_use blocks (regardless of stop_reason) ──
+        const toolUseBlocks = response.content.filter(b => b.type === 'tool_use') as Array<{
+          type: 'tool_use';
+          id: string;
+          name: string;
+          input: Record<string, unknown>;
+        }>;
+
+        if (toolUseBlocks.length > 0) {
+          // Add assistant message with tool calls to messages
+          const assistantToolMsg = {
+            role: 'assistant' as const,
+            content: response.content as unknown as string | ContentBlock[],
+          };
+          messages.push(assistantToolMsg);
+          turnMessages.push(assistantToolMsg as StoredMessage);
+
+          // Execute each tool and collect results
+          const toolResults: Array<{ type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }> = [];
+
+          for (const toolCall of toolUseBlocks) {
+            // Check abort before each tool execution
+            if (ac.signal.aborted) {
+              toolResults.push({
+                type: 'tool_result',
+                tool_use_id: toolCall.id,
+                content: 'Interrupted by /stop',
+                is_error: true,
+              });
+              continue;
+            }
+
+            toolCallCount++;
+            const toolCallId = toolCall.id;
+            console.log(`[agent] Tool call #${toolCallCount}: ${toolCall.name}(${JSON.stringify(toolCall.input).slice(0, 100)})`);
+            if (onEvent) onEvent({ type: 'tool_start', tool: toolCall.name, args: toolCall.input, toolCallId, sourceEventType: 'message.content.tool_use', providerEvent: toolCall });
+
+            // Catch per-tool errors so one bad tool doesn't kill the whole turn
+            try {
+              const formatted = await executeAndFormatTool({
+                registry,
+                name: toolCall.name,
+                toolCallId,
+                input: toolCall.input,
+                context: runContext,
+                onEvent,
+                modelLimit: MODEL_TOOL_RESULT_LIMIT_CHARS,
+                eventLimit: TOOL_EVENT_RESULT_LIMIT_CHARS,
+              });
+              const { result } = formatted;
+
+              if (result.media) {
+                allMedia.push(...result.media);
+                if (onEvent) {
+                  for (const m of result.media) {
+                    onEvent(toolMediaEvent(m, toolCallId));
+                  }
+                }
+              }
+
+              toolResults.push({
+                type: 'tool_result',
+                tool_use_id: toolCall.id,
+                content: formatted.modelContent,
+                ...(result.is_error ? { is_error: true } : {}),
+              });
+            } catch (toolErr) {
+              console.error(`[agent] Tool ${toolCall.name} threw:`, toolErr);
+              const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+              toolResults.push({
+                type: 'tool_result',
+                tool_use_id: toolCall.id,
+                content: `Tool error: ${errMsg}`,
+                is_error: true,
+              });
+              if (onEvent) onEvent({ type: 'tool_result', tool: toolCall.name, toolCallId, result: errMsg, exactResult: errMsg, success: false, sourceEventType: 'runtime.tool_error' });
+            }
+          }
+
+          // Add tool results as user message
+          const toolResultMsg = {
+            role: 'user' as const,
+            content: toolResults as unknown as string | ContentBlock[],
+          };
+          messages.push(toolResultMsg);
+          turnMessages.push(toolResultMsg as StoredMessage);
+
+          continue;
+        }
+
+        // ── Assemble final text (already streamed; this is for history storage) ──
+        const textBlocks = response.content.filter(b => b.type === 'text');
+        const finalText = textBlocks.map(b => (b as { text: string }).text).join('\n');
+
+        if (response.stop_reason === 'end_turn' || response.stop_reason === 'stop_sequence' || finalText) {
+          const assistantMsg: StoredMessage = { role: 'assistant', content: finalText || '(no response)' };
+          turnMessages.push(assistantMsg);
+          persistTurn();
+
+          // ── Memory: Extract and save (fire-and-forget) ───
+          if (messages.length > 10) {
+            runtimeMemory.extractAndSave(chatId, messages, runtimeModel, runtimeProvider).catch(() => {});
+          }
+
+          return {
+            text: finalText || '(no response)',
+            media: allMedia.length > 0 ? allMedia : undefined,
+            model: runtimeModel,
+            toolCallCount,
+            durationMs: Date.now() - startMs,
+          };
+        }
+
+        // Truly unexpected — log and return what we have
+        console.warn(`[agent] Unexpected stop_reason: ${response.stop_reason}, content types: ${response.content.map(b => b.type).join(',')}`);
+        turnMessages.push({ role: 'assistant', content: '(unexpected response)' });
+        persistTurn();
+
+        return {
+          text: '(unexpected response)',
+          media: allMedia.length > 0 ? allMedia : undefined,
+          model: runtimeModel,
+          toolCallCount,
+          durationMs: Date.now() - startMs,
+        };
+      }
+
+      // Hit iteration cap — still persist what we have
+      const capText = `I've hit the maximum number of tool calls (${MAX_ITERATIONS}) for this message. Here's what I've done so far — let me know if you'd like me to continue.`;
+      turnMessages.push({ role: 'assistant', content: capText });
+      persistTurn();
+
+      return {
+        text: capText,
+        media: allMedia.length > 0 ? allMedia : undefined,
+        model: runtimeModel,
+        toolCallCount,
+        durationMs: Date.now() - startMs,
+      };
+    } catch (err) {
+      if (!turnPersisted && turnMessages.length) {
+        if (toolCallCount > 0) turnMessages.push({ role: 'assistant', content: '[Turn interrupted before completion. Retained tool receipts describe actions already attempted; inspect them before retrying.]' });
+        try { persistTurn(); } catch (persistError) { console.error('[agent] Failed to retain interrupted turn:', persistError); }
+      }
+      console.error('[agent] LOOP ERROR:', err instanceof Error ? err.message : String(err));
+      if (err instanceof Error && err.stack) console.error('[agent] Stack:', err.stack);
+      throw err;
+    } finally {
+      this.authenticatedUserTurns.delete(`turn:${activeTurnId}:user`);
+      this.unregisterActiveRun(chatId, activeTurnId, ac);
+      if (typingInterval) clearInterval(typingInterval);
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+  "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+  "attachment": {
+    "id": "art_0198d95f-6c00-7000-8000-000000000051",
+    "ownerPrincipalId": "user_owner",
+    "state": "ready",
+    "name": "launch-notes.pdf",
+    "declaredContentType": "application/pdf",
+    "detectedContentType": "application/pdf",
+    "byteCount": 312400,
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "storage": "content_addressed",
+    "createdAt": "2026-08-24T15:48:00.000Z",
+    "expiresAt": null
+  },
+  "throughEventSequence": 127
+}

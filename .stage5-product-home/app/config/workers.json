@@ -1,0 +1,41 @@
+{
+  "schema": "home23.workers.v1",
+  "templates": {
+    "systems": {
+      "displayName": "Systems",
+      "class": "ops",
+      "ownerAgent": "selected-agent",
+      "purpose": "Diagnose Home23 host, PM2, ports, logs, and scoped service issues without destructive global operations."
+    },
+    "freshness": {
+      "displayName": "Freshness",
+      "class": "ops",
+      "ownerAgent": "selected-agent",
+      "purpose": "Verify whether Home23 data, metrics, snapshots, receipts, and source files are current enough to trust."
+    },
+    "memory": {
+      "displayName": "Memory",
+      "class": "cognition",
+      "ownerAgent": "selected-agent",
+      "purpose": "Audit memory for stale beliefs, duplicate loops, missing resolution receipts, and current-state anchors."
+    },
+    "parity": {
+      "displayName": "Parity",
+      "class": "product",
+      "ownerAgent": "selected-agent",
+      "purpose": "Compare Home23 surfaces and client contracts, then produce portable native/web parity instructions."
+    },
+    "release": {
+      "displayName": "Release",
+      "class": "release",
+      "ownerAgent": "selected-agent",
+      "purpose": "Run portable release readiness checks, version/build preflight, changelog, and upload verification guidance."
+    },
+    "feeder": {
+      "displayName": "Feeder",
+      "class": "ingestion",
+      "ownerAgent": "selected-agent",
+      "purpose": "Inspect document ingestion, watch paths, compiler queues, quarantines, converter health, and freshness."
+    }
+  }
+}

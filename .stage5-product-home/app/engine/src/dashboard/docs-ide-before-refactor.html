@@ -1,0 +1,4368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COSMO Documentation IDE</title>
+    
+    <!-- External Dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/fuse.js@7.0.0/dist/fuse.min.js"></script>
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #1e1e1e;
+            --bg-secondary: #252526;
+            --bg-tertiary: #2d2d30;
+            --border-color: #3e3e42;
+            --text-primary: #cccccc;
+            --text-secondary: #969696;
+            --text-active: #ffffff;
+            --accent-primary: #007acc;
+            --accent-hover: #1177bb;
+            --success-color: #10b981;
+            --error-color: #ef4444;
+            --warning-color: #f0883e;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            overflow: hidden;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+        }
+
+        .ide-container {
+            display: flex;
+            height: 100vh;
+            flex-direction: column;
+        }
+
+        /* Header */
+        .ide-header {
+            height: 48px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            padding: 0 16px;
+            justify-content: space-between;
+            z-index: 100;
+        }
+
+        .ide-title {
+            font-size: 14px;
+            color: var(--text-primary);
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .system-info {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-left: 8px;
+        }
+        
+        .system-picker {
+            background: var(--border-color);
+            border: 1px solid #5a5a5a;
+            color: var(--text-primary);
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            max-width: 300px;
+            transition: background 0.2s;
+        }
+        
+        .system-picker:hover {
+            background: #505050;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .btn {
+            background: #0e639c;
+            border: none;
+            color: white;
+            padding: 6px 14px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn:hover:not(:disabled) {
+            background: var(--accent-hover);
+            transform: translateY(-1px);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: var(--border-color);
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: #505050;
+        }
+
+        .btn-icon {
+            padding: 6px 10px;
+            font-size: 14px;
+        }
+
+        /* Body */
+        .ide-body {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 280px;
+            flex: 0 0 auto;
+            min-width: 200px;
+            max-width: 600px;
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            transition: none; /* Disable transition during resize */
+            position: relative;
+        }
+
+        .sidebar.collapsed {
+            width: 0;
+            min-width: 0;
+        }
+
+        /* Resize handles - Make visible and functional */
+        .resize-handle {
+            position: absolute;
+            background: linear-gradient(90deg, transparent 0%, rgba(0, 122, 204, 0.3) 50%, transparent 100%);
+            z-index: 1000;
+            transition: background 0.15s;
+        }
+
+        .resize-handle:hover {
+            background: linear-gradient(90deg, transparent 0%, var(--accent-primary) 50%, transparent 100%);
+        }
+
+        .resize-handle.active {
+            background: var(--accent-primary);
+        }
+
+        .resize-handle-vertical {
+            width: 8px;
+            top: 0;
+            bottom: 0;
+            cursor: col-resize;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        .sidebar .resize-handle-vertical {
+            right: -4px;
+        }
+
+        .preview-pane .resize-handle-vertical {
+            left: -4px;
+        }
+
+        .ai-panel .resize-handle-vertical {
+            left: -4px;
+        }
+
+        .sidebar-header {
+            padding: 12px 16px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            color: var(--text-primary);
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .file-tree {
+            flex: 1;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding: 8px 0;
+            user-select: none;
+        }
+
+        .file-tree::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .file-tree::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 4px;
+        }
+
+        .tree-item {
+            display: block;
+        }
+
+        .file-item, .folder-item {
+            padding: 4px 12px 4px 8px;
+            cursor: pointer;
+            color: var(--text-primary);
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: background 0.15s;
+            white-space: nowrap;
+        }
+
+        .file-item:hover, .folder-item:hover {
+            background: #2a2d2e;
+        }
+
+        .file-item.active {
+            background: #37373d;
+            color: var(--text-active);
+        }
+
+        .folder-item {
+            font-weight: 500;
+        }
+
+        .folder-chevron {
+            font-size: 10px;
+            color: var(--text-secondary);
+            transition: transform 0.2s;
+            width: 12px;
+            text-align: center;
+        }
+
+        .folder-chevron.expanded {
+            transform: rotate(90deg);
+        }
+
+        .folder-icon, .file-icon {
+            font-size: 14px;
+        }
+
+        .file-icon {
+            margin-left: 18px;
+        }
+
+        .folder-contents {
+            padding-left: 16px;
+        }
+
+        .folder-contents.collapsed {
+            display: none;
+        }
+
+        /* Editor Container */
+        .editor-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: var(--bg-primary);
+            position: relative;
+        }
+
+        /* Tabs Bar */
+        .tabs-bar {
+            height: 35px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            overflow-x: auto;
+        }
+
+        .tabs-bar::-webkit-scrollbar {
+            height: 3px;
+        }
+
+        .tabs-bar::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+        }
+
+        /* Breadcrumb Bar */
+        .breadcrumb-bar {
+            user-select: none;
+        }
+
+        .breadcrumb-bar::-webkit-scrollbar {
+            height: 3px;
+        }
+
+        .breadcrumb-bar::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+        }
+
+        .breadcrumb-item {
+            display: inline-block;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 2px 4px;
+            border-radius: 3px;
+            transition: background 0.15s, color 0.15s;
+        }
+
+        .breadcrumb-item:hover {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+        }
+
+        .breadcrumb-item.active {
+            color: var(--text-active);
+            font-weight: 500;
+        }
+
+        .breadcrumb-separator {
+            display: inline-block;
+            margin: 0 6px;
+            color: var(--text-secondary);
+            font-size: 10px;
+        }
+
+        .tab {
+            padding: 8px 16px;
+            background: transparent;
+            border: none;
+            border-right: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            cursor: pointer;
+            white-space: nowrap;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: background 0.15s, color 0.15s;
+            max-width: 200px;
+        }
+
+        .tab:hover {
+            background: #2a2d2e;
+            color: var(--text-primary);
+        }
+
+        .tab.active {
+            background: var(--bg-primary);
+            color: var(--text-active);
+        }
+
+        .tab.pinned {
+            background: var(--bg-secondary);
+            border-left: 2px solid #0e639c;
+        }
+
+        .tab.pinned.active {
+            background: var(--bg-primary);
+        }
+
+        .tab.dragging {
+            opacity: 0.5;
+        }
+
+        .tab.drag-over {
+            border-left: 2px solid #0e639c;
+        }
+
+        .tab-pin {
+            opacity: 0;
+            margin-right: 4px;
+            font-size: 12px;
+            line-height: 1;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .tab:hover .tab-pin {
+            opacity: 0.6;
+        }
+
+        .tab-pin:hover {
+            opacity: 1;
+        }
+
+        .tab.pinned .tab-pin {
+            opacity: 0.8;
+        }
+
+        .tab-close {
+            opacity: 0;
+            margin-left: 4px;
+            font-size: 16px;
+            line-height: 1;
+            transition: opacity 0.2s;
+        }
+
+        .tab:hover .tab-close {
+            opacity: 0.6;
+        }
+
+        .tab-close:hover {
+            opacity: 1;
+        }
+
+        /* Split View */
+        .editor-split-container {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+            min-width: 0; /* Critical for flex overflow handling */
+        }
+
+        .editor-pane {
+            flex: 1 1 0;
+            min-width: 300px;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .preview-pane {
+            width: 400px;
+            flex: 0 0 auto;
+            min-width: 300px;
+            max-width: 800px;
+            background: var(--bg-primary);
+            border-left: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .preview-pane.hidden {
+            display: none;
+        }
+
+        .preview-pane .resize-handle-vertical {
+            left: -2px;
+            right: auto;
+        }
+
+        .preview-header {
+            height: 35px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 0 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .preview-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+            color: var(--text-primary);
+        }
+
+        .preview-content h1, .preview-content h2, .preview-content h3 {
+            color: var(--text-active);
+            margin-top: 24px;
+            margin-bottom: 12px;
+        }
+
+        .preview-content h1 { font-size: 28px; }
+        .preview-content h2 { font-size: 22px; }
+        .preview-content h3 { font-size: 18px; }
+
+        .preview-content p {
+            margin-bottom: 12px;
+            line-height: 1.6;
+        }
+
+        .preview-content code {
+            background: var(--bg-tertiary);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+
+        .preview-content pre {
+            background: var(--bg-secondary);
+            padding: 16px;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin: 12px 0;
+        }
+
+        .preview-content pre code {
+            background: none;
+            padding: 0;
+        }
+
+        /* AI Chat Panel */
+        .ai-panel {
+            width: 400px;
+            flex: 0 0 auto;
+            min-width: 300px;
+            max-width: 800px;
+            background: var(--bg-secondary);
+            border-left: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .ai-panel.hidden {
+            display: none;
+        }
+
+        .ai-panel .resize-handle-vertical {
+            left: -2px;
+            right: auto;
+        }
+
+        .ai-header {
+            height: 35px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 0 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .ai-chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        }
+
+        .ai-message {
+            margin-bottom: 16px;
+            animation: fadeIn 0.3s ease-out;
+        }
+
+        .ai-message-header {
+            font-size: 11px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+        }
+
+        .ai-message-content {
+            background: var(--bg-tertiary);
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .ai-message.user .ai-message-header {
+            color: #0e639c;
+        }
+
+        .ai-message.user .ai-message-content {
+            background: #1e3a5f;
+        }
+
+        .ai-message.assistant .ai-message-header {
+            color: #10b981;
+        }
+
+        .ai-message.assistant .ai-message-content {
+            background: var(--bg-tertiary);
+        }
+
+        .ai-message.error .ai-message-content {
+            background: #3d2020;
+            color: var(--error-color);
+        }
+
+        .ai-message-actions {
+            margin-top: 8px;
+            display: flex;
+            gap: 8px;
+        }
+
+        .ai-quick-actions {
+            padding: 12px 16px;
+            border-top: 1px solid var(--border-color);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .ai-quick-actions-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+        }
+
+        .ai-quick-action-btn {
+            display: block;
+            width: 100%;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 8px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            text-align: left;
+            margin-bottom: 6px;
+            transition: all 0.15s;
+        }
+
+        .ai-quick-action-btn:hover {
+            background: var(--bg-primary);
+            border-color: var(--accent-primary);
+        }
+
+        .ai-input-container {
+            padding: 12px 16px;
+            background: var(--bg-tertiary);
+            border-top: 1px solid var(--border-color);
+        }
+
+        .ai-input {
+            width: 100%;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 13px;
+            font-family: inherit;
+            resize: vertical;
+            min-height: 60px;
+            max-height: 200px;
+        }
+
+        .ai-input:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+        }
+
+        .ai-send-btn {
+            margin-top: 8px;
+            width: 100%;
+            background: var(--accent-primary);
+            border: none;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .ai-send-btn:hover:not(:disabled) {
+            background: var(--accent-hover);
+        }
+
+        .ai-send-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .ai-thinking {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px;
+            background: var(--bg-tertiary);
+            border-radius: 6px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .ai-thinking-spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--border-color);
+            border-top-color: var(--accent-primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Editor Wrapper */
+        .editor-wrapper {
+            flex: 1;
+            position: relative;
+        }
+
+        #monaco-editor {
+            width: 100%;
+            height: 100%;
+        }
+
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: var(--bg-primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-primary);
+            font-size: 14px;
+            z-index: 50;
+        }
+
+        .loading-overlay.hidden {
+            display: none;
+        }
+
+        /* Command Palette */
+        .command-palette {
+            position: fixed;
+            top: 20%;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 600px;
+            max-width: 90vw;
+            max-height: 400px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--accent-primary);
+            border-radius: 8px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+            z-index: 10000;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .command-palette.hidden {
+            display: none;
+        }
+
+        .command-palette input {
+            width: 100%;
+            padding: 16px;
+            background: var(--border-color);
+            border: none;
+            color: var(--text-primary);
+            font-size: 14px;
+            outline: none;
+        }
+
+        .command-results {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .command-item {
+            padding: 10px 16px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background 0.15s;
+            border-left: 3px solid transparent;
+        }
+
+        .command-item:hover, .command-item.selected {
+            background: var(--bg-secondary);
+            border-left-color: var(--accent-primary);
+        }
+
+        .command-label {
+            font-size: 13px;
+        }
+
+        .command-keys {
+            font-size: 11px;
+            color: var(--text-secondary);
+            background: var(--bg-secondary);
+            padding: 2px 8px;
+            border-radius: 3px;
+        }
+
+        /* Settings Panel */
+        .settings-panel {
+            position: fixed;
+            top: 0;
+            right: 0;
+            width: 400px;
+            height: 100vh;
+            background: var(--bg-secondary);
+            border-left: 1px solid var(--border-color);
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            transform: translateX(100%);
+            transition: transform 0.3s;
+            box-shadow: -4px 0 12px rgba(0,0,0,0.3);
+        }
+
+        .settings-panel.open {
+            transform: translateX(0);
+        }
+
+        .settings-header {
+            height: 48px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 0 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-weight: 600;
+        }
+
+        .settings-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        }
+
+        .setting-group {
+            margin-bottom: 24px;
+        }
+
+        .setting-group-title {
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+            margin-bottom: 12px;
+        }
+
+        .setting-item {
+            margin-bottom: 16px;
+        }
+
+        .setting-label {
+            font-size: 13px;
+            margin-bottom: 6px;
+            display: block;
+        }
+
+        .setting-input {
+            width: 100%;
+            padding: 8px 12px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            border-radius: 4px;
+            font-size: 13px;
+        }
+
+        .setting-input:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+        }
+
+        .setting-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+        }
+
+        .setting-checkbox input {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+
+        /* Search Panel */
+        .search-panel {
+            position: absolute;
+            top: 50px;
+            right: 20px;
+            width: 350px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            z-index: 1000;
+            padding: 12px;
+        }
+
+        .search-panel.hidden {
+            display: none;
+        }
+
+        .search-input-group {
+            margin-bottom: 8px;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 8px 12px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            border-radius: 4px;
+            font-size: 13px;
+        }
+
+        .search-input:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+        }
+
+        .search-options {
+            display: flex;
+            gap: 12px;
+            margin-top: 8px;
+            font-size: 12px;
+        }
+
+        .search-option {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            cursor: pointer;
+        }
+
+        /* Keyboard Help */
+        .keyboard-help {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 700px;
+            max-width: 90vw;
+            max-height: 80vh;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+            z-index: 10000;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .keyboard-help.hidden {
+            display: none;
+        }
+
+        .keyboard-help-header {
+            padding: 16px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .keyboard-help-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        }
+
+        .shortcut-section {
+            margin-bottom: 20px;
+        }
+
+        .shortcut-section-title {
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .shortcut-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            font-size: 13px;
+        }
+
+        .shortcut-keys {
+            color: var(--text-secondary);
+            font-family: monospace;
+        }
+
+        /* Status Bar */
+        .status-bar {
+            height: 22px;
+            background: var(--accent-primary);
+            color: white;
+            display: flex;
+            align-items: center;
+            padding: 0 12px;
+            font-size: 12px;
+            justify-content: space-between;
+        }
+
+        .status-left, .status-right {
+            display: flex;
+            gap: 16px;
+        }
+
+        .status-item {
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .status-item:hover {
+            opacity: 0.8;
+        }
+
+        /* Toast Notification */
+        .toast {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            padding: 12px 20px;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            font-size: 13px;
+            z-index: 10001;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        .toast.success {
+            border-left: 3px solid var(--success-color);
+        }
+
+        .toast.error {
+            border-left: 3px solid var(--error-color);
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        /* Context Menu */
+        .context-menu {
+            position: fixed;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            z-index: 10000;
+            min-width: 180px;
+            padding: 4px 0;
+        }
+
+        .context-menu.hidden {
+            display: none;
+        }
+
+        .context-menu-item {
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: background 0.15s;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .context-menu-item:hover {
+            background: var(--bg-secondary);
+        }
+
+        .context-menu-item.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .context-menu-separator {
+            height: 1px;
+            background: var(--border-color);
+            margin: 4px 0;
+        }
+
+        /* Tooltips */
+        [data-tooltip] {
+            position: relative;
+        }
+
+        [data-tooltip]::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%) translateY(-4px);
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            white-space: nowrap;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+            border: 1px solid var(--border-color);
+            z-index: 10000;
+        }
+
+        [data-tooltip]:hover::after {
+            opacity: 1;
+        }
+
+        /* Overlay for modals */
+        .overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 9998;
+        }
+
+        .overlay.hidden {
+            display: none;
+        }
+
+        /* Smooth transitions */
+        * {
+            transition-property: background-color, color, border-color, opacity, transform;
+            transition-duration: 0.2s;
+            transition-timing-function: ease;
+        }
+
+        input, select, button, .tab, .file-item {
+            transition-property: background-color, color, border-color, opacity, transform;
+        }
+    </style>
+</head>
+<body>
+    <div class="ide-container">
+        <!-- Header -->
+        <div class="ide-header">
+            <div class="ide-title">
+                <span style="font-size: 18px;">🌌</span>
+                <span>COSMO Documentation IDE</span>
+                <select class="system-picker" id="system-picker" onchange="switchSystem()">
+                    <option value="">Loading systems...</option>
+                </select>
+            </div>
+            <div class="header-actions">
+                <button class="btn btn-icon" onclick="togglePreview()" id="preview-btn" data-tooltip="Toggle Preview" style="display: none;">
+                    👁️
+                </button>
+                <button class="btn btn-icon" onclick="toggleAI()" id="ai-btn" data-tooltip="AI Assistant (Cmd+K A)" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                    🤖
+                </button>
+                <button class="btn btn-icon" onclick="toggleSearch()" data-tooltip="Search (Cmd+F)">
+                    🔍
+                </button>
+                <button class="btn btn-icon" onclick="toggleSettings()" data-tooltip="Settings">
+                    ⚙️
+                </button>
+                <button class="btn btn-icon" onclick="toggleKeyboardHelp()" data-tooltip="Keyboard Shortcuts (?)">
+                    ⌨️
+                </button>
+                <button class="btn btn-icon" onclick="downloadCurrentFile()" id="download-btn" disabled data-tooltip="Download Current File">
+                    ⬇️
+                </button>
+                <button class="btn" onclick="saveCurrentFile()" id="save-btn" disabled data-tooltip="Save (Cmd+S)">
+                    💾 Save
+                </button>
+                <button class="btn btn-secondary" onclick="saveAllFiles()" id="save-all-btn" disabled data-tooltip="Save All (Cmd+Shift+S)">
+                    Save All
+                </button>
+                <button class="btn btn-secondary" onclick="window.location.href='/intelligence?name=' + runName">
+                    ← Back
+                </button>
+            </div>
+        </div>
+
+        <!-- Body -->
+        <div class="ide-body">
+            <!-- Sidebar -->
+            <div class="sidebar" id="sidebar">
+                <div class="resize-handle resize-handle-vertical" data-target="sidebar"></div>
+                <div class="sidebar-header">
+                    <span>DOCUMENTATION FILES</span>
+                    <button class="btn btn-icon" onclick="toggleSidebar()" data-tooltip="Toggle Sidebar" style="background: none; padding: 0;">
+                        ◀
+                    </button>
+                </div>
+                <div class="file-tree" id="file-tree">
+                    <!-- Populated by JavaScript -->
+                </div>
+            </div>
+
+            <!-- Editor -->
+            <div class="editor-container">
+                <div class="tabs-bar" id="tabs-bar">
+                    <!-- Tabs populated by JavaScript -->
+                </div>
+                
+                <div class="breadcrumb-bar" id="breadcrumb-bar" style="height: 28px; background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); padding: 0 16px; display: none; align-items: center; font-size: 12px; color: var(--text-secondary); overflow-x: auto; white-space: nowrap;">
+                    <!-- Breadcrumb populated by JavaScript -->
+                </div>
+                
+                <div class="editor-split-container">
+                    <div class="editor-pane">
+                        <div class="editor-wrapper">
+                            <div id="monaco-editor"></div>
+                            <div class="loading-overlay" id="loading-overlay">
+                                <span>🌌 Loading Monaco Editor...</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Markdown Preview Pane -->
+                    <div class="preview-pane hidden" id="preview-pane">
+                        <div class="resize-handle resize-handle-vertical" data-target="preview-pane"></div>
+                        <div class="preview-header">
+                            <span>📄 Preview</span>
+                            <button onclick="togglePreview()" style="background: none; border: none; color: var(--text-primary); cursor: pointer; font-size: 18px;">×</button>
+                        </div>
+                        <div class="preview-content" id="preview-content">
+                            <p style="color: var(--text-secondary);">Preview will appear here...</p>
+                        </div>
+                    </div>
+                    
+                    <!-- AI Chat Panel -->
+                    <div class="ai-panel hidden" id="ai-panel">
+                        <div class="resize-handle resize-handle-vertical" data-target="ai-panel"></div>
+                        <div class="ai-header">
+                            <span>🤖 AI Assistant</span>
+                            <button onclick="toggleAI()" style="background: none; border: none; color: var(--text-primary); cursor: pointer; font-size: 18px;">×</button>
+                </div>
+                        
+                        <div class="ai-quick-actions">
+                            <div class="ai-quick-actions-title">💡 Quick Actions</div>
+                            <button class="ai-quick-action-btn" onclick="aiQuickAction('improve')">✨ Improve this section</button>
+                            <button class="ai-quick-action-btn" onclick="aiQuickAction('summarize')">📝 Summarize document</button>
+                            <button class="ai-quick-action-btn" onclick="aiQuickAction('grammar')">✓ Check grammar</button>
+                            <button class="ai-quick-action-btn" onclick="aiQuickAction('examples')">💡 Add examples</button>
+                        </div>
+                        
+                        <div class="ai-chat-messages" id="ai-chat-messages">
+                            <div style="padding: 20px; text-align: center; color: var(--text-secondary); font-size: 12px;">
+                                👋 Hi! I'm your AI assistant.<br>
+                                Ask me to help with your documentation!
+                            </div>
+                        </div>
+                        
+                        <div class="ai-input-container">
+                            <textarea 
+                                id="ai-input" 
+                                class="ai-input" 
+                                placeholder="Ask AI to help with your document..."
+                                onkeydown="if(event.key==='Enter' && (event.metaKey||event.ctrlKey)) sendAIMessage()"
+                            ></textarea>
+                            <button id="ai-send-btn" class="ai-send-btn" onclick="sendAIMessage()">
+                                Send (Cmd+Enter)
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Status Bar -->
+        <div class="status-bar">
+            <div class="status-left">
+                <span id="status-file">No file open</span>
+                <span id="status-line">Ln 1, Col 1</span>
+                <span id="status-selection"></span>
+                <span id="status-dirty"></span>
+            </div>
+            <div class="status-right">
+                <span id="status-size"></span>
+                <span id="status-words"></span>
+                <span id="status-lang">Plain Text</span>
+                <span id="status-encoding">UTF-8</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Command Palette -->
+    <div class="command-palette hidden" id="command-palette">
+        <input type="text" id="command-input" placeholder="Type a command or search files (Cmd+Shift+P)..." />
+        <div class="command-results" id="command-results"></div>
+    </div>
+
+    <!-- Search Panel -->
+    <div class="search-panel hidden" id="search-panel">
+        <div class="search-input-group">
+            <input type="text" class="search-input" id="search-input" placeholder="Find..." />
+        </div>
+        <div class="search-input-group">
+            <input type="text" class="search-input" id="replace-input" placeholder="Replace..." />
+        </div>
+        <div class="search-options">
+            <label class="search-option">
+                <input type="checkbox" id="search-case" />
+                <span>Match Case</span>
+            </label>
+            <label class="search-option">
+                <input type="checkbox" id="search-whole" />
+                <span>Whole Word</span>
+            </label>
+            <label class="search-option">
+                <input type="checkbox" id="search-regex" />
+                <span>Regex</span>
+            </label>
+        </div>
+        <div style="margin-top: 12px; display: flex; gap: 8px;">
+            <button class="btn" onclick="findNext()" style="flex: 1;">Find Next</button>
+            <button class="btn btn-secondary" onclick="replaceOne()" style="flex: 1;">Replace</button>
+        </div>
+        <div style="margin-top: 8px;">
+            <button class="btn btn-secondary" onclick="replaceAll()" style="width: 100%;">Replace All</button>
+        </div>
+    </div>
+
+    <!-- Settings Panel -->
+    <div class="settings-panel" id="settings-panel">
+        <div class="settings-header">
+            <span>⚙️ Settings</span>
+            <button onclick="toggleSettings()" style="background: none; border: none; color: var(--text-primary); cursor: pointer; font-size: 18px;">×</button>
+        </div>
+        <div class="settings-content">
+            <div class="setting-group">
+                <div class="setting-group-title">Editor</div>
+                <div class="setting-item">
+                    <label class="setting-label">Theme</label>
+                    <select class="setting-input" id="setting-theme" onchange="applyTheme()">
+                        <option value="vs-dark">Dark (default)</option>
+                        <option value="vs">Light</option>
+                        <option value="hc-black">High Contrast Dark</option>
+                        <option value="hc-light">High Contrast Light</option>
+                    </select>
+                </div>
+                <div class="setting-item">
+                    <label class="setting-label">Font Size</label>
+                    <input type="number" class="setting-input" id="setting-font-size" value="14" min="10" max="24" onchange="applyFontSize()" />
+                </div>
+                <div class="setting-item">
+                    <label class="setting-label">Tab Size</label>
+                    <input type="number" class="setting-input" id="setting-tab-size" value="2" min="2" max="8" onchange="applyTabSize()" />
+                </div>
+            </div>
+            <div class="setting-group">
+                <div class="setting-group-title">View</div>
+                <div class="setting-item">
+                    <label class="setting-checkbox">
+                        <input type="checkbox" id="setting-minimap" checked onchange="applyMinimap()" />
+                        <span>Show Minimap</span>
+                    </label>
+                </div>
+                <div class="setting-item">
+                    <label class="setting-checkbox">
+                        <input type="checkbox" id="setting-line-numbers" checked onchange="applyLineNumbers()" />
+                        <span>Show Line Numbers</span>
+                    </label>
+                </div>
+                <div class="setting-item">
+                    <label class="setting-checkbox">
+                        <input type="checkbox" id="setting-word-wrap" checked onchange="applyWordWrap()" />
+                        <span>Word Wrap</span>
+                    </label>
+                </div>
+            </div>
+            <div class="setting-group">
+                <div class="setting-group-title">Auto-Save</div>
+                <div class="setting-item">
+                    <label class="setting-label">Auto-Save Mode</label>
+                    <select class="setting-input" id="setting-auto-save" onchange="applyAutoSave()">
+                        <option value="off">Off</option>
+                        <option value="afterDelay">After Delay</option>
+                        <option value="onFocusChange">On Focus Change</option>
+                    </select>
+                </div>
+                <div class="setting-item">
+                    <label class="setting-label">Auto-Save Delay (ms)</label>
+                    <input type="number" class="setting-input" id="setting-auto-save-delay" value="1000" min="500" max="5000" step="500" />
+                </div>
+            </div>
+            <div style="margin-top: 24px;">
+                <button class="btn" onclick="resetSettings()" style="width: 100%;">Reset to Defaults</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Keyboard Help -->
+    <div class="keyboard-help hidden" id="keyboard-help">
+        <div class="keyboard-help-header">
+            <span>⌨️ Keyboard Shortcuts</span>
+            <button onclick="toggleKeyboardHelp()" style="background: none; border: none; color: var(--text-primary); cursor: pointer; font-size: 18px;">×</button>
+        </div>
+        <div class="keyboard-help-content">
+            <div class="shortcut-section">
+                <div class="shortcut-section-title">File Operations</div>
+                <div class="shortcut-item"><span>Save File</span><span class="shortcut-keys">Cmd+S / Ctrl+S</span></div>
+                <div class="shortcut-item"><span>Save All Files</span><span class="shortcut-keys">Cmd+Shift+S</span></div>
+                <div class="shortcut-item"><span>Close File</span><span class="shortcut-keys">Cmd+W / Ctrl+W</span></div>
+            </div>
+            <div class="shortcut-section">
+                <div class="shortcut-section-title">Navigation</div>
+                <div class="shortcut-item"><span>Command Palette</span><span class="shortcut-keys">Cmd+Shift+P</span></div>
+                <div class="shortcut-item"><span>Quick Open File</span><span class="shortcut-keys">Cmd+P</span></div>
+                <div class="shortcut-item"><span>Go to Line</span><span class="shortcut-keys">Cmd+G / Ctrl+G</span></div>
+            </div>
+            <div class="shortcut-section">
+                <div class="shortcut-section-title">Editing</div>
+                <div class="shortcut-item"><span>Find</span><span class="shortcut-keys">Cmd+F / Ctrl+F</span></div>
+                <div class="shortcut-item"><span>Replace</span><span class="shortcut-keys">Cmd+H / Ctrl+H</span></div>
+                <div class="shortcut-item"><span>Format Document</span><span class="shortcut-keys">Shift+Alt+F</span></div>
+                <div class="shortcut-item"><span>Toggle Comment</span><span class="shortcut-keys">Cmd+/ / Ctrl+/</span></div>
+            </div>
+            <div class="shortcut-section">
+                <div class="shortcut-section-title">View</div>
+                <div class="shortcut-item"><span>Toggle Sidebar</span><span class="shortcut-keys">Cmd+B / Ctrl+B</span></div>
+                <div class="shortcut-item"><span>Toggle Preview</span><span class="shortcut-keys">Cmd+K V</span></div>
+                <div class="shortcut-item"><span>Toggle AI Assistant</span><span class="shortcut-keys">Cmd+K A</span></div>
+                <div class="shortcut-item"><span>Settings</span><span class="shortcut-keys">Cmd+,</span></div>
+            </div>
+            <div class="shortcut-section">
+                <div class="shortcut-section-title">AI Assistant</div>
+                <div class="shortcut-item"><span>Send Message</span><span class="shortcut-keys">Cmd+Enter</span></div>
+                <div class="shortcut-item"><span>Improve Selection</span><span class="shortcut-keys">Right-click → AI menu</span></div>
+            </div>
+            <div class="shortcut-section">
+                <div class="shortcut-section-title">Help</div>
+                <div class="shortcut-item"><span>Keyboard Shortcuts</span><span class="shortcut-keys">? / Cmd+K Cmd+S</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Context Menu -->
+    <div class="context-menu hidden" id="context-menu">
+        <!-- Populated dynamically -->
+    </div>
+
+    <!-- Overlay -->
+    <div class="overlay hidden" id="overlay" onclick="closeAllModals()"></div>
+
+    <!-- Monaco Loader -->
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+
+    <script>
+        // ============================================================================
+        // STATE MANAGEMENT
+        // ============================================================================
+        
+        // Parse URL parameters
+        const params = new URLSearchParams(window.location.search);
+        let runName = params.get('run');
+        let systemId = params.get('system');
+        let initialFileName = params.get('file');
+
+        // Core state
+        let editor = null;
+        let openFiles = new Map();
+        let activeFile = null;
+        let allFiles = [];
+        let availableSystems = [];
+        let autoSaveTimer = null;
+        let previewUpdateTimer = null;
+        let selectedCommandIndex = 0;
+        let pinnedTabs = new Set(); // Track pinned file paths
+        let recentFiles = []; // Track recently opened files
+        const MAX_RECENT_FILES = 20;
+        
+        // Settings
+        const defaultSettings = {
+            theme: 'vs-dark',
+            fontSize: 14,
+            tabSize: 2,
+            minimap: true,
+            lineNumbers: true,
+            wordWrap: true,
+            autoSave: 'off',
+            autoSaveDelay: 1000,
+        };
+        
+        let settings = loadSettings();
+
+        // ============================================================================
+        // INITIALIZATION
+        // ============================================================================
+        
+        if (!systemId) {
+            showSystemPickerModal();
+        } else {
+            initializeMonaco();
+        }
+
+        // ============================================================================
+        // SYSTEM PICKER
+        // ============================================================================
+        
+        async function showSystemPickerModal() {
+            try {
+                const response = await fetch('/api/compiled-docs/all');
+                const data = await response.json();
+                
+                if (!data.success || data.systems.length === 0) {
+                    document.getElementById('loading-overlay').innerHTML = `
+                        <div style="text-align: center;">
+                            <div style="font-size: 18px; margin-bottom: 12px;">📦 No Compiled Systems Yet</div>
+                            <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 20px;">
+                                Compile your first system from the Query tab in Intelligence.
+                            </div>
+                            <a href="/intelligence" 
+                               style="background: #0e639c; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-size: 13px;">
+                                Go to Intelligence Dashboard
+                            </a>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                let html = `
+                    <div style="text-align: center; max-width: 500px;">
+                        <div style="font-size: 18px; margin-bottom: 8px; color: var(--text-primary);">Select Documentation System</div>
+                        <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 20px;">
+                            ${data.systems.length} compiled ${data.systems.length === 1 ? 'system' : 'systems'} available
+                        </div>
+                        <select id="initial-system-picker" 
+                                style="width: 100%; padding: 10px; background: var(--border-color); border: 1px solid #5a5a5a; color: var(--text-primary); border-radius: 4px; font-size: 13px; margin-bottom: 16px;">
+                `;
+                
+                const byRun = {};
+                data.systems.forEach(sys => {
+                    if (!byRun[sys.runName]) byRun[sys.runName] = [];
+                    byRun[sys.runName].push(sys);
+                });
+                
+                for (const [run, systems] of Object.entries(byRun)) {
+                    html += `<optgroup label="${run}">`;
+                    systems.forEach(sys => {
+                        const label = `${sys.systemId} (${sys.mdFiles} docs, ${sys.queryCount || 0} queries)`;
+                        html += `<option value="${sys.runName}:${sys.systemId}">${label}</option>`;
+                    });
+                    html += `</optgroup>`;
+                }
+                
+                html += `
+                        </select>
+                        <button onclick="loadSelectedSystem()" 
+                                style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 10px 24px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600;">
+                            📝 Open in IDE
+                        </button>
+                    </div>
+                `;
+                
+                document.getElementById('loading-overlay').innerHTML = html;
+                
+            } catch (error) {
+                document.getElementById('loading-overlay').innerHTML = `
+                    <div style="color: var(--error-color);">Failed to load systems: ${error.message}</div>
+                `;
+            }
+        }
+        
+        function loadSelectedSystem() {
+            const picker = document.getElementById('initial-system-picker');
+            const value = picker.value;
+            if (!value) return;
+            const [run, system] = value.split(':');
+            window.location.href = `/docs-ide?run=${run}&system=${system}`;
+        }
+
+        // ============================================================================
+        // MONACO EDITOR INITIALIZATION
+        // ============================================================================
+        
+        function initializeMonaco() {
+            loadAvailableSystems();
+            
+            require.config({ 
+                paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' } 
+            });
+
+            require(['vs/editor/editor.main'], async function() {
+                console.log('Monaco Editor loaded');
+
+                // Create editor instance
+                editor = monaco.editor.create(document.getElementById('monaco-editor'), {
+                    theme: settings.theme,
+                    fontSize: settings.fontSize,
+                    lineNumbers: settings.lineNumbers ? 'on' : 'off',
+                    minimap: { enabled: settings.minimap },
+                    scrollBeyondLastLine: false,
+                    wordWrap: settings.wordWrap ? 'on' : 'off',
+                    automaticLayout: true,
+                    renderWhitespace: 'selection',
+                    tabSize: settings.tabSize,
+                    insertSpaces: true,
+                    folding: true,
+                    lineDecorationsWidth: 10,
+                    lineNumbersMinChars: 4,
+                    glyphMargin: false,
+                    overviewRulerBorder: false,
+                    hideCursorInOverviewRuler: true,
+                    find: {
+                        seedSearchStringFromSelection: 'always',
+                        autoFindInSelection: 'never'
+                    }
+                });
+
+                // Event handlers
+                editor.onDidChangeCursorPosition((e) => {
+                    document.getElementById('status-line').textContent = 
+                        `Ln ${e.position.lineNumber}, Col ${e.position.column}`;
+                    updateSelectionInfo();
+                });
+
+                editor.onDidChangeCursorSelection(() => {
+                    updateSelectionInfo();
+                });
+
+                editor.onDidChangeModelContent(() => {
+                    if (activeFile) {
+                        const fileData = openFiles.get(activeFile);
+                        if (fileData && !fileData.dirty) {
+                            fileData.dirty = true;
+                            updateTabDirtyState(activeFile, true);
+                            updateSaveButtons();
+                        }
+                        updateFileStats();
+                        schedulePreviewUpdate();
+                    }
+                });
+
+                // Add context menu actions for AI
+                editor.addAction({
+                    id: 'ai-improve-selection',
+                    label: '🤖 AI: Improve Selection',
+                    contextMenuGroupId: 'ai',
+                    contextMenuOrder: 1,
+                    run: async function(ed) {
+                        const selection = ed.getSelection();
+                        if (selection && !selection.isEmpty()) {
+                            // Open AI panel if closed
+                            const aiPanel = document.getElementById('ai-panel');
+                            if (aiPanel.classList.contains('hidden')) {
+                                toggleAI();
+                            }
+                            // Set quick action
+                            await aiQuickAction('improve');
+                        }
+                    }
+                });
+
+                editor.addAction({
+                    id: 'ai-fix-grammar',
+                    label: '✓ AI: Check Grammar',
+                    contextMenuGroupId: 'ai',
+                    contextMenuOrder: 2,
+                    run: async function(ed) {
+                        const aiPanel = document.getElementById('ai-panel');
+                        if (aiPanel.classList.contains('hidden')) {
+                            toggleAI();
+                        }
+                        await aiQuickAction('grammar');
+                    }
+                });
+
+                editor.addAction({
+                    id: 'ai-custom',
+                    label: '💬 Ask AI About This...',
+                    contextMenuGroupId: 'ai',
+                    contextMenuOrder: 3,
+                    run: function(ed) {
+                        const aiPanel = document.getElementById('ai-panel');
+                        if (aiPanel.classList.contains('hidden')) {
+                            toggleAI();
+                        }
+                        document.getElementById('ai-input').focus();
+                    }
+                });
+
+                // Keyboard shortcuts
+                setupKeyboardShortcuts();
+
+                // Hide loading overlay
+                document.getElementById('loading-overlay').classList.add('hidden');
+
+                // Load file tree
+                await loadFileTree();
+                
+                // Restore workspace state
+                restoreWorkspaceState();
+            });
+        }
+
+        // ============================================================================
+        // KEYBOARD SHORTCUTS
+        // ============================================================================
+        
+        function setupKeyboardShortcuts() {
+            // Save
+            editor.addCommand(
+                monaco.KeyMod.CtrlCmd | monaco.KeyCode.KEY_S,
+                () => saveCurrentFile()
+            );
+
+            // Save All
+            editor.addCommand(
+                monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KEY_S,
+                () => saveAllFiles()
+            );
+
+            // Close Tab
+            editor.addCommand(
+                monaco.KeyMod.CtrlCmd | monaco.KeyCode.KEY_W,
+                () => { if (activeFile) closeTab(activeFile); }
+            );
+
+            // Command Palette
+            editor.addCommand(
+                monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KEY_P,
+                () => toggleCommandPalette()
+            );
+
+            // Quick Open
+            editor.addCommand(
+                monaco.KeyMod.CtrlCmd | monaco.KeyCode.KEY_P,
+                () => toggleCommandPalette('file')
+            );
+
+            // Find
+            editor.addCommand(
+                monaco.KeyMod.CtrlCmd | monaco.KeyCode.KEY_F,
+                () => toggleSearch()
+            );
+
+            // Toggle Sidebar
+            editor.addCommand(
+                monaco.KeyMod.CtrlCmd | monaco.KeyCode.KEY_B,
+                () => toggleSidebar()
+            );
+
+            // Settings
+            editor.addCommand(
+                monaco.KeyMod.CtrlCmd | monaco.KeyCode.US_COMMA,
+                () => toggleSettings()
+            );
+
+            // Recent Files
+            editor.addCommand(
+                monaco.KeyMod.CtrlCmd | monaco.KeyCode.KEY_E,
+                () => showRecentFiles()
+            );
+
+            // Find in Files
+            editor.addCommand(
+                monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KEY_F,
+                () => showFindInFiles()
+            );
+
+            // Toggle AI Panel
+            editor.addCommand(
+                monaco.KeyMod.CtrlCmd | monaco.KeyCode.KEY_K,
+                () => {
+                    // Wait for next key
+                    const nextKeyHandler = (e) => {
+                        if (e.key === 'a' || e.key === 'A') {
+                            toggleAI();
+                            document.removeEventListener('keydown', nextKeyHandler);
+                        }
+                    };
+                    document.addEventListener('keydown', nextKeyHandler);
+                    setTimeout(() => document.removeEventListener('keydown', nextKeyHandler), 2000);
+                }
+            );
+
+            // Global keyboard listener for non-editor shortcuts
+            document.addEventListener('keydown', (e) => {
+                // Escape - close modals
+                if (e.key === 'Escape') {
+                    closeAllModals();
+                }
+                
+                // ? - help
+                if (e.key === '?') {
+                    toggleKeyboardHelp();
+                    e.preventDefault();
+                }
+                
+                // Arrow navigation in command palette
+                const palette = document.getElementById('command-palette');
+                if (!palette.classList.contains('hidden')) {
+                    if (e.key === 'ArrowDown') {
+                        navigateCommands(1);
+                        e.preventDefault();
+                    } else if (e.key === 'ArrowUp') {
+                        navigateCommands(-1);
+                        e.preventDefault();
+                    } else if (e.key === 'Enter') {
+                        executeSelectedCommand();
+                        e.preventDefault();
+                    }
+                }
+            });
+        }
+
+        // ============================================================================
+        // FILE TREE
+        // ============================================================================
+        
+        async function loadFileTree() {
+            try {
+                const response = await fetch(`/api/compiled-docs/${runName}/${systemId}/files`);
+                const data = await response.json();
+
+                if (!data.success) {
+                    throw new Error(data.error || 'Failed to load files');
+                }
+
+                allFiles = data.files;
+
+                const tree = document.getElementById('file-tree');
+                tree.innerHTML = '';
+
+                if (allFiles.length === 0) {
+                    tree.innerHTML = '<div style="padding: 16px; color: var(--text-secondary); font-size: 12px;">No files found</div>';
+                    return;
+                }
+
+                renderTree(allFiles, tree);
+
+                // Auto-open file
+                let fileToOpen = null;
+                
+                if (initialFileName) {
+                    fileToOpen = findFileInTree(allFiles, initialFileName);
+                }
+                
+                if (!fileToOpen) {
+                    fileToOpen = findFileInTree(allFiles, 'INDEX.md');
+                }
+                
+                if (fileToOpen) {
+                    setTimeout(() => openFile(fileToOpen.path, fileToOpen.name), 100);
+                }
+
+            } catch (error) {
+                console.error('Failed to load file tree:', error);
+                showToast('Failed to load files: ' + error.message, 'error');
+            }
+        }
+
+        function renderTree(items, container) {
+            items.forEach(item => {
+                const treeItem = document.createElement('div');
+                treeItem.className = 'tree-item';
+                
+                if (item.type === 'directory') {
+                    const folderHeader = document.createElement('div');
+                    folderHeader.className = 'folder-item';
+                    folderHeader.innerHTML = `
+                        <span class="folder-chevron expanded">▶</span>
+                        <span class="folder-icon">📁</span>
+                        <span>${item.name}</span>
+                    `;
+                    
+                    const folderContents = document.createElement('div');
+                    folderContents.className = 'folder-contents';
+                    
+                    folderHeader.onclick = (e) => {
+                        e.stopPropagation();
+                        const chevron = folderHeader.querySelector('.folder-chevron');
+                        chevron.classList.toggle('expanded');
+                        folderContents.classList.toggle('collapsed');
+                    };
+                    
+                    treeItem.appendChild(folderHeader);
+                    treeItem.appendChild(folderContents);
+                    
+                    if (item.children && item.children.length > 0) {
+                        renderTree(item.children, folderContents);
+                    }
+                } else {
+                    const fileItem = document.createElement('div');
+                    fileItem.className = 'file-item';
+                    fileItem.dataset.path = item.path;
+                    
+                    const icon = item.type === 'markdown' ? '📄' : 
+                                item.type === 'json' ? '📊' : '📝';
+                    
+                    fileItem.innerHTML = `
+                        <span class="file-icon">${icon}</span>
+                        <span>${item.name}</span>
+                    `;
+                    
+                    fileItem.onclick = () => openFile(item.path, item.name);
+                    
+                    // Context menu
+                    fileItem.addEventListener('contextmenu', (e) => {
+                        e.preventDefault();
+                        showContextMenu(e.clientX, e.clientY, [
+                            { label: 'Open', action: () => openFile(item.path, item.name) },
+                            { label: 'Copy Path', action: () => copyToClipboard(item.path) },
+                        ]);
+                    });
+                    
+                    treeItem.appendChild(fileItem);
+                }
+                
+                container.appendChild(treeItem);
+            });
+        }
+
+        function findFileInTree(items, fileName) {
+            for (const item of items) {
+                if (item.type !== 'directory' && item.name === fileName) {
+                    return item;
+                }
+                if (item.children) {
+                    const found = findFileInTree(item.children, fileName);
+                    if (found) return found;
+                }
+            }
+            return null;
+        }
+
+        // ============================================================================
+        // FILE OPERATIONS
+        // ============================================================================
+        
+        async function openFile(filePath, fileName) {
+            if (openFiles.has(filePath)) {
+                setActiveFile(filePath);
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/compiled-docs/${runName}/${systemId}/file/${encodeURIComponent(filePath)}`);
+                const data = await response.json();
+
+                if (!data.success) {
+                    throw new Error(data.error || 'Failed to load file');
+                }
+
+                const language = detectLanguage(fileName);
+
+                const model = monaco.editor.createModel(
+                    data.content,
+                    language,
+                    monaco.Uri.file(filePath)
+                );
+
+                openFiles.set(filePath, {
+                    model,
+                    dirty: false,
+                    name: fileName,
+                    path: filePath,
+                    originalContent: data.content
+                });
+
+                addTab(filePath, fileName);
+                setActiveFile(filePath);
+
+                console.log('Opened:', fileName, 'Language:', language);
+
+            } catch (error) {
+                console.error('Failed to open file:', error);
+                showToast('Failed to open file: ' + error.message, 'error');
+            }
+        }
+
+        function detectLanguage(filename) {
+            const ext = filename.split('.').pop().toLowerCase();
+            const langMap = {
+                'md': 'markdown',
+                'markdown': 'markdown',
+                'json': 'json',
+                'js': 'javascript',
+                'ts': 'typescript',
+                'py': 'python',
+                'html': 'html',
+                'css': 'css',
+                'yaml': 'yaml',
+                'yml': 'yaml',
+                'txt': 'plaintext'
+            };
+            return langMap[ext] || 'plaintext';
+        }
+
+        function setActiveFile(filePath) {
+            activeFile = filePath;
+            const fileData = openFiles.get(filePath);
+
+            if (!fileData) return;
+
+            editor.setModel(fileData.model);
+
+            document.querySelectorAll('.file-item').forEach(item => {
+                item.classList.toggle('active', item.dataset.path === filePath);
+            });
+
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.toggle('active', tab.dataset.path === filePath);
+            });
+
+            document.getElementById('status-file').textContent = fileData.name;
+            document.getElementById('status-lang').textContent = 
+                fileData.model.getLanguageId().toUpperCase();
+
+            updateSaveButtons();
+            updateFileStats();
+            
+            // Show/hide preview button for previewable file types
+            const language = fileData.model.getLanguageId();
+            const fileName = fileData.name.toLowerCase();
+            const isImage = /\.(png|jpg|jpeg|gif|webp|svg|bmp|ico)$/i.test(fileName);
+            const isPDF = fileName.endsWith('.pdf');
+            const isPreviewable = ['markdown', 'html', 'json', 'css', 'svg'].includes(language) || isImage || isPDF;
+            document.getElementById('preview-btn').style.display = isPreviewable ? 'flex' : 'none';
+            
+            // Update preview if it's open and file is previewable
+            const previewPane = document.getElementById('preview-pane');
+            if (isPreviewable && !previewPane.classList.contains('hidden')) {
+                updatePreview();
+                updatePreviewHeader();
+            } else if (!isPreviewable && !previewPane.classList.contains('hidden')) {
+                // Hide preview if switching to non-previewable file
+                previewPane.classList.add('hidden');
+            }
+            
+            updateBreadcrumb();
+            addToRecentFiles(filePath, fileData.name);
+            saveWorkspaceState();
+        }
+        
+        function updateBreadcrumb() {
+            const fileData = activeFile ? openFiles.get(activeFile) : null;
+            const breadcrumbBar = document.getElementById('breadcrumb-bar');
+            
+            if (!fileData) {
+                breadcrumbBar.style.display = 'none';
+                return;
+            }
+            
+            breadcrumbBar.style.display = 'flex';
+            const pathParts = fileData.path.split('/');
+            
+            let html = `<span class="breadcrumb-item">${systemId}</span>`;
+            
+            for (let i = 0; i < pathParts.length; i++) {
+                const isLast = i === pathParts.length - 1;
+                html += `<span class="breadcrumb-separator">▸</span>`;
+                html += `<span class="breadcrumb-item ${isLast ? 'active' : ''}">${pathParts[i]}</span>`;
+            }
+            
+            breadcrumbBar.innerHTML = html;
+        }
+        
+        function addToRecentFiles(filePath, fileName) {
+            // Remove if already in list
+            recentFiles = recentFiles.filter(f => f.path !== filePath);
+            
+            // Add to front
+            recentFiles.unshift({ path: filePath, name: fileName, timestamp: Date.now() });
+            
+            // Limit size
+            if (recentFiles.length > MAX_RECENT_FILES) {
+                recentFiles = recentFiles.slice(0, MAX_RECENT_FILES);
+            }
+            
+            // Save to localStorage
+            try {
+                localStorage.setItem(`cosmo-recent-files-${runName}-${systemId}`, JSON.stringify(recentFiles));
+            } catch (e) {
+                console.error('Failed to save recent files:', e);
+            }
+        }
+        
+        function loadRecentFiles() {
+            try {
+                const saved = localStorage.getItem(`cosmo-recent-files-${runName}-${systemId}`);
+                if (saved) {
+                    recentFiles = JSON.parse(saved);
+                }
+            } catch (e) {
+                console.error('Failed to load recent files:', e);
+                recentFiles = [];
+            }
+        }
+        
+        function showRecentFiles() {
+            if (recentFiles.length === 0) {
+                showToast('No recent files', 'error');
+                return;
+            }
+            
+            // Show in command palette
+            toggleCommandPalette('recent');
+        }
+
+        async function saveCurrentFile() {
+            if (!activeFile) return;
+
+            const fileData = openFiles.get(activeFile);
+            if (!fileData || !fileData.dirty) return;
+
+            try {
+                const content = fileData.model.getValue();
+
+                const response = await fetch(`/api/compiled-docs/${runName}/${systemId}/file/${encodeURIComponent(fileData.path)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content })
+                });
+
+                const data = await response.json();
+
+                if (!data.success) {
+                    throw new Error(data.error || 'Save failed');
+                }
+
+                fileData.dirty = false;
+                fileData.originalContent = content;
+                updateTabDirtyState(activeFile, false);
+                updateSaveButtons();
+
+                showToast(`Saved: ${fileData.name}`, 'success');
+                console.log('Saved:', fileData.path);
+
+            } catch (error) {
+                console.error('Save failed:', error);
+                showToast('Save failed: ' + error.message, 'error');
+            }
+        }
+
+        async function saveAllFiles() {
+            const dirtyFiles = Array.from(openFiles.entries())
+                .filter(([path, data]) => data.dirty);
+
+            if (dirtyFiles.length === 0) return;
+
+            let savedCount = 0;
+            let failedCount = 0;
+
+            for (const [filePath, fileData] of dirtyFiles) {
+                try {
+                    const content = fileData.model.getValue();
+
+                    const response = await fetch(`/api/compiled-docs/${runName}/${systemId}/file/${encodeURIComponent(fileData.path)}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ content })
+                    });
+
+                    const data = await response.json();
+
+                    if (data.success) {
+                        fileData.dirty = false;
+                        fileData.originalContent = content;
+                        updateTabDirtyState(filePath, false);
+                        savedCount++;
+                    } else {
+                        failedCount++;
+                    }
+
+                } catch (error) {
+                    console.error('Failed to save:', fileData.path, error);
+                    failedCount++;
+                }
+            }
+
+            updateSaveButtons();
+
+            if (failedCount === 0) {
+                showToast(`Saved ${savedCount} ${savedCount === 1 ? 'file' : 'files'}`, 'success');
+            } else {
+                showToast(`Saved ${savedCount}, failed ${failedCount}`, 'error');
+            }
+        }
+
+        // ============================================================================
+        // TAB MANAGEMENT
+        // ============================================================================
+        
+        function addTab(filePath, fileName) {
+            const tab = document.createElement('button');
+            tab.className = 'tab';
+            if (pinnedTabs.has(filePath)) {
+                tab.classList.add('pinned');
+            }
+            tab.dataset.path = filePath;
+            tab.draggable = true;
+            
+            // Create tab content
+            const pinIcon = document.createElement('span');
+            pinIcon.className = 'tab-pin';
+            pinIcon.textContent = pinnedTabs.has(filePath) ? '📌' : '📍';
+            pinIcon.title = pinnedTabs.has(filePath) ? 'Unpin tab' : 'Pin tab';
+            pinIcon.onclick = (e) => {
+                e.stopPropagation();
+                togglePinTab(filePath);
+            };
+            
+            const tabName = document.createElement('span');
+            tabName.className = 'tab-name';
+            tabName.textContent = fileName;
+            
+            const closeBtn = document.createElement('span');
+            closeBtn.className = 'tab-close';
+            closeBtn.textContent = '×';
+            closeBtn.onclick = (e) => {
+                e.stopPropagation();
+                closeTab(filePath);
+            };
+            
+            tab.appendChild(pinIcon);
+            tab.appendChild(tabName);
+            tab.appendChild(closeBtn);
+            tab.onclick = () => setActiveFile(filePath);
+            
+            // Drag and drop handlers
+            tab.addEventListener('dragstart', handleTabDragStart);
+            tab.addEventListener('dragover', handleTabDragOver);
+            tab.addEventListener('drop', handleTabDrop);
+            tab.addEventListener('dragend', handleTabDragEnd);
+            
+            // Insert tab in correct position (pinned tabs first)
+            const tabsBar = document.getElementById('tabs-bar');
+            if (pinnedTabs.has(filePath)) {
+                // Find position among pinned tabs
+                const pinnedTabElements = Array.from(tabsBar.querySelectorAll('.tab.pinned'));
+                tabsBar.insertBefore(tab, pinnedTabElements[pinnedTabElements.length] || tabsBar.firstChild);
+            } else {
+                tabsBar.appendChild(tab);
+            }
+        }
+        
+        // Tab drag and drop
+        let draggedTab = null;
+        
+        function handleTabDragStart(e) {
+            draggedTab = e.currentTarget;
+            e.currentTarget.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', e.currentTarget.dataset.path);
+        }
+        
+        function handleTabDragOver(e) {
+            if (e.preventDefault) {
+                e.preventDefault();
+            }
+            e.dataTransfer.dropEffect = 'move';
+            
+            const target = e.currentTarget;
+            if (target !== draggedTab && target.classList.contains('tab')) {
+                target.classList.add('drag-over');
+            }
+            return false;
+        }
+        
+        function handleTabDrop(e) {
+            if (e.stopPropagation) {
+                e.stopPropagation();
+            }
+            
+            const target = e.currentTarget;
+            target.classList.remove('drag-over');
+            
+            if (draggedTab !== target) {
+                const tabsBar = document.getElementById('tabs-bar');
+                const allTabs = Array.from(tabsBar.children);
+                const draggedIndex = allTabs.indexOf(draggedTab);
+                const targetIndex = allTabs.indexOf(target);
+                
+                if (draggedIndex < targetIndex) {
+                    tabsBar.insertBefore(draggedTab, target.nextSibling);
+                } else {
+                    tabsBar.insertBefore(draggedTab, target);
+                }
+            }
+            
+            return false;
+        }
+        
+        function handleTabDragEnd(e) {
+            e.currentTarget.classList.remove('dragging');
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('drag-over');
+            });
+        }
+        
+        function togglePinTab(filePath) {
+            if (pinnedTabs.has(filePath)) {
+                pinnedTabs.delete(filePath);
+            } else {
+                pinnedTabs.add(filePath);
+            }
+            
+            // Update tab appearance
+            const tab = document.querySelector(`.tab[data-path="${filePath}"]`);
+            if (tab) {
+                tab.classList.toggle('pinned');
+                const pinIcon = tab.querySelector('.tab-pin');
+                if (pinIcon) {
+                    pinIcon.textContent = pinnedTabs.has(filePath) ? '📌' : '📍';
+                    pinIcon.title = pinnedTabs.has(filePath) ? 'Unpin tab' : 'Pin tab';
+                }
+                
+                // Move tab to correct position
+                const tabsBar = document.getElementById('tabs-bar');
+                tab.remove();
+                
+                if (pinnedTabs.has(filePath)) {
+                    const pinnedTabElements = Array.from(tabsBar.querySelectorAll('.tab.pinned'));
+                    tabsBar.insertBefore(tab, pinnedTabElements[pinnedTabElements.length] || tabsBar.firstChild);
+                } else {
+                    const firstUnpinned = tabsBar.querySelector('.tab:not(.pinned)');
+                    if (firstUnpinned) {
+                        tabsBar.insertBefore(tab, firstUnpinned.nextSibling);
+                    } else {
+                        tabsBar.appendChild(tab);
+                    }
+                }
+            }
+            
+            saveWorkspaceState();
+        }
+
+        function closeTab(filePath) {
+            const fileData = openFiles.get(filePath);
+
+            if (!fileData) return;
+
+            if (fileData.dirty) {
+                if (!confirm(`File has unsaved changes. Close anyway?`)) {
+                    return;
+                }
+            }
+
+            fileData.model.dispose();
+            openFiles.delete(filePath);
+
+            const tab = document.querySelector(`.tab[data-path="${filePath}"]`);
+            if (tab) {
+                tab.remove();
+            }
+
+            if (activeFile === filePath) {
+                const remainingFiles = Array.from(openFiles.keys());
+                if (remainingFiles.length > 0) {
+                    setActiveFile(remainingFiles[0]);
+                } else {
+                    activeFile = null;
+                    editor.setModel(null);
+                    document.getElementById('status-file').textContent = 'No file open';
+                    document.getElementById('status-lang').textContent = '';
+                    updateSaveButtons();
+                }
+            }
+            
+            saveWorkspaceState();
+        }
+
+        function updateTabDirtyState(filePath, dirty) {
+            const tab = document.querySelector(`.tab[data-path="${filePath}"]`);
+            if (!tab) return;
+
+            const fileData = openFiles.get(filePath);
+            const nameSpan = tab.querySelector('.tab-name');
+            
+            if (dirty) {
+                nameSpan.textContent = '● ' + fileData.name;
+            } else {
+                nameSpan.textContent = fileData.name;
+            }
+        }
+
+        // ============================================================================
+        // COMMAND PALETTE
+        // ============================================================================
+        
+        // Commands will be initialized after all functions are defined
+        let commands = [];
+
+        function toggleCommandPalette(mode = 'command') {
+            const palette = document.getElementById('command-palette');
+            const input = document.getElementById('command-input');
+            const overlay = document.getElementById('overlay');
+            
+            if (palette.classList.contains('hidden')) {
+                palette.classList.remove('hidden');
+                overlay.classList.remove('hidden');
+                input.value = '';
+                
+                if (mode === 'file') {
+                    input.placeholder = 'Type to search files...';
+                    renderFileCommands();
+                } else if (mode === 'recent') {
+                    input.placeholder = 'Recent files...';
+                    renderRecentFileCommands();
+                } else {
+                    input.placeholder = 'Type a command or search files...';
+                    renderCommands('');
+                }
+                
+                input.focus();
+                input.dataset.mode = mode;
+            } else {
+                palette.classList.add('hidden');
+                overlay.classList.add('hidden');
+            }
+        }
+
+        function renderCommands(query) {
+            const results = document.getElementById('command-results');
+            selectedCommandIndex = 0;
+            
+            let filtered = commands;
+            
+            if (query) {
+                query = query.toLowerCase();
+                filtered = commands.filter(cmd => 
+                    cmd.label.toLowerCase().includes(query) ||
+                    cmd.id.toLowerCase().includes(query)
+                );
+            }
+            
+            results.innerHTML = filtered.map((cmd, idx) => `
+                <div class="command-item ${idx === 0 ? 'selected' : ''}" data-index="${idx}" onclick="executeCommand('${cmd.id}')">
+                    <span class="command-label">${cmd.label}</span>
+                    ${cmd.keys ? `<span class="command-keys">${cmd.keys}</span>` : ''}
+                </div>
+            `).join('');
+        }
+
+        function renderFileCommands() {
+            const results = document.getElementById('command-results');
+            selectedCommandIndex = 0;
+            
+            const flatFiles = [];
+            const collectFiles = (items) => {
+                items.forEach(item => {
+                    if (item.type !== 'directory') {
+                        flatFiles.push(item);
+                    }
+                    if (item.children) {
+                        collectFiles(item.children);
+                    }
+                });
+            };
+            collectFiles(allFiles);
+            
+            results.innerHTML = flatFiles.map((file, idx) => `
+                <div class="command-item ${idx === 0 ? 'selected' : ''}" data-index="${idx}" onclick="openFileFromPalette('${file.path}', '${file.name}')">
+                    <span class="command-label">${file.path}</span>
+                </div>
+            `).join('');
+        }
+        
+        function renderRecentFileCommands() {
+            const results = document.getElementById('command-results');
+            selectedCommandIndex = 0;
+            
+            if (recentFiles.length === 0) {
+                results.innerHTML = `
+                    <div style="padding: 20px; text-align: center; color: var(--text-secondary);">
+                        No recent files
+                    </div>
+                `;
+                return;
+            }
+            
+            results.innerHTML = recentFiles.map((file, idx) => {
+                const timeAgo = formatTimeAgo(file.timestamp);
+                return `
+                    <div class="command-item ${idx === 0 ? 'selected' : ''}" data-index="${idx}" onclick="openFileFromPalette('${file.path}', '${file.name}')">
+                        <span class="command-label">${file.name}</span>
+                        <span class="command-keys">${timeAgo}</span>
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        function formatTimeAgo(timestamp) {
+            const seconds = Math.floor((Date.now() - timestamp) / 1000);
+            if (seconds < 60) return 'just now';
+            const minutes = Math.floor(seconds / 60);
+            if (minutes < 60) return `${minutes}m ago`;
+            const hours = Math.floor(minutes / 60);
+            if (hours < 24) return `${hours}h ago`;
+            const days = Math.floor(hours / 24);
+            return `${days}d ago`;
+        }
+
+        function executeCommand(commandId) {
+            const cmd = commands.find(c => c.id === commandId);
+            if (cmd && cmd.action) {
+                cmd.action();
+                toggleCommandPalette();
+            }
+        }
+
+        function executeSelectedCommand() {
+            const selected = document.querySelector('.command-item.selected');
+            if (selected) {
+                selected.click();
+            }
+        }
+
+        function openFileFromPalette(path, name) {
+            openFile(path, name);
+            toggleCommandPalette();
+        }
+
+        function navigateCommands(direction) {
+            const items = document.querySelectorAll('.command-item');
+            if (items.length === 0) return;
+            
+            items[selectedCommandIndex].classList.remove('selected');
+            selectedCommandIndex = (selectedCommandIndex + direction + items.length) % items.length;
+            items[selectedCommandIndex].classList.add('selected');
+            
+            items[selectedCommandIndex].scrollIntoView({ block: 'nearest' });
+        }
+
+        // Listen to input changes
+        document.addEventListener('DOMContentLoaded', () => {
+            const input = document.getElementById('command-input');
+            if (input) {
+                input.addEventListener('input', (e) => {
+                    const query = e.target.value;
+                    const mode = e.target.dataset.mode || 'command';
+                    
+                    if (mode === 'command') {
+                        renderCommands(query);
+                    } else if (mode === 'file') {
+                        // Could filter files by query here
+                        renderFileCommands();
+                    } else if (mode === 'recent') {
+                        // Could filter recent files by query here
+                        renderRecentFileCommands();
+                    }
+                });
+            }
+            
+            // Load recent files on startup
+            loadRecentFiles();
+        });
+
+        // ============================================================================
+        // MARKDOWN PREVIEW
+        // ============================================================================
+        
+        function togglePreview() {
+            const pane = document.getElementById('preview-pane');
+            pane.classList.toggle('hidden');
+            
+            if (!pane.classList.contains('hidden')) {
+                updatePreview();
+                updatePreviewHeader();
+            }
+        }
+        
+        function updatePreviewHeader() {
+            const fileData = activeFile ? openFiles.get(activeFile) : null;
+            if (!fileData) return;
+            
+            const language = fileData.model.getLanguageId();
+            const fileName = fileData.name.toLowerCase();
+            const previewHeader = document.querySelector('.preview-header span');
+            
+            if (language === 'markdown') {
+                previewHeader.textContent = '📄 Markdown Preview';
+            } else if (language === 'html') {
+                previewHeader.textContent = '🌐 HTML Preview';
+            } else if (language === 'json') {
+                previewHeader.textContent = '📊 JSON Viewer';
+            } else if (language === 'css') {
+                previewHeader.textContent = '🎨 CSS Preview';
+            } else if (language === 'svg' || fileName.endsWith('.svg')) {
+                previewHeader.textContent = '🖼️ SVG Preview';
+            } else if (fileName.endsWith('.pdf')) {
+                previewHeader.textContent = '📑 PDF Viewer';
+            } else if (/\.(png|jpg|jpeg|gif|webp|bmp|ico)$/i.test(fileName)) {
+                previewHeader.textContent = '🖼️ Image Preview';
+            } else {
+                previewHeader.textContent = '👁️ Preview';
+            }
+        }
+
+        function schedulePreviewUpdate() {
+            if (document.getElementById('preview-pane').classList.contains('hidden')) return;
+            
+            clearTimeout(previewUpdateTimer);
+            previewUpdateTimer = setTimeout(updatePreview, 500);
+        }
+
+        function updatePreview() {
+            const fileData = activeFile ? openFiles.get(activeFile) : null;
+            if (!fileData) return;
+            
+            const language = fileData.model.getLanguageId();
+            const fileName = fileData.name.toLowerCase();
+            const content = fileData.model.getValue();
+            const previewContent = document.getElementById('preview-content');
+            
+            try {
+                if (language === 'markdown') {
+                    // Parse markdown to HTML
+            const html = marked.parse(content);
+                    previewContent.innerHTML = html;
+                    
+                } else if (language === 'html') {
+                    // Render HTML in sandboxed iframe
+                    previewContent.innerHTML = `
+                        <iframe 
+                            id="html-preview-frame" 
+                            style="width: 100%; height: 100%; border: none; background: white;"
+                            sandbox="allow-same-origin allow-scripts"
+                        ></iframe>
+                    `;
+                    const iframe = document.getElementById('html-preview-frame');
+                    const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                    iframeDoc.open();
+                    iframeDoc.write(content);
+                    iframeDoc.close();
+                    
+                } else if (language === 'json') {
+                    // JSON formatted tree view
+                    try {
+                        const parsed = JSON.parse(content);
+                        const formatted = JSON.stringify(parsed, null, 2);
+                        previewContent.innerHTML = `
+                            <div style="padding: 20px; font-family: 'Monaco', monospace; font-size: 13px;">
+                                <div style="display: flex; justify-content: space-between; margin-bottom: 16px; border-bottom: 1px solid #3e3e42; padding-bottom: 12px;">
+                                    <strong style="color: var(--text-active);">JSON Structure</strong>
+                                    <button onclick="copyJsonToClipboard()" class="btn btn-secondary" style="padding: 4px 12px; font-size: 11px;">
+                                        Copy Formatted
+                                    </button>
+                                </div>
+                                <div id="json-tree-view"></div>
+                            </div>
+                        `;
+                        renderJsonTree(parsed, document.getElementById('json-tree-view'));
+                    } catch (e) {
+                        previewContent.innerHTML = `
+                            <div style="color: var(--error-color); padding: 20px;">
+                                <strong>Invalid JSON</strong><br>
+                                ${e.message}
+                                <pre style="margin-top: 12px; padding: 12px; background: var(--bg-secondary); border-radius: 4px; overflow-x: auto;">${content}</pre>
+                            </div>
+                        `;
+                    }
+                    
+                } else if (language === 'css') {
+                    // CSS preview with test HTML
+                    previewContent.innerHTML = `
+                        <iframe 
+                            id="css-preview-frame" 
+                            style="width: 100%; height: 100%; border: none; background: white;"
+                            sandbox="allow-same-origin"
+                        ></iframe>
+                    `;
+                    const iframe = document.getElementById('css-preview-frame');
+                    const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                    const testHTML = `
+                        <!DOCTYPE html>
+                        <html>
+                        <head>
+                            <style>${content}</style>
+                        </head>
+                        <body>
+                            <h1>Heading 1</h1>
+                            <h2>Heading 2</h2>
+                            <h3>Heading 3</h3>
+                            <p>This is a paragraph with <strong>bold</strong> and <em>italic</em> text.</p>
+                            <p>Another paragraph with a <a href="#">link</a>.</p>
+                            <ul>
+                                <li>Unordered list item 1</li>
+                                <li>Unordered list item 2</li>
+                                <li>Unordered list item 3</li>
+                            </ul>
+                            <ol>
+                                <li>Ordered list item 1</li>
+                                <li>Ordered list item 2</li>
+                                <li>Ordered list item 3</li>
+                            </ol>
+                            <button>Button</button>
+                            <input type="text" placeholder="Text input" />
+                            <table>
+                                <tr><th>Header 1</th><th>Header 2</th></tr>
+                                <tr><td>Cell 1</td><td>Cell 2</td></tr>
+                                <tr><td>Cell 3</td><td>Cell 4</td></tr>
+                            </table>
+                            <div class="box">Box with class "box"</div>
+                            <div id="special">Div with id "special"</div>
+                        </body>
+                        </html>
+                    `;
+                    iframeDoc.open();
+                    iframeDoc.write(testHTML);
+                    iframeDoc.close();
+                    
+                } else if (language === 'svg' || fileName.endsWith('.svg')) {
+                    // SVG preview
+                    previewContent.innerHTML = `
+                        <div style="padding: 20px; text-align: center; background: white; height: 100%; overflow: auto;">
+                            ${content}
+                        </div>
+                    `;
+                    
+                } else if (fileName.endsWith('.pdf')) {
+                    // PDF viewer (requires base64 encoded content or URL)
+                    previewContent.innerHTML = `
+                        <div style="padding: 20px; text-align: center;">
+                            <p style="color: var(--text-secondary); margin-bottom: 16px;">
+                                PDF preview requires a URL or base64 encoded content.
+                            </p>
+                            <button onclick="downloadCurrentFile()" class="btn">
+                                Download PDF to View
+                            </button>
+                        </div>
+                    `;
+                    
+                } else if (/\.(png|jpg|jpeg|gif|webp|bmp|ico)$/i.test(fileName)) {
+                    // Image preview
+                    // For images, we need to read as data URL or use the file path
+                    previewContent.innerHTML = `
+                        <div style="padding: 20px; text-align: center; background: #f0f0f0; height: 100%; overflow: auto; display: flex; align-items: center; justify-content: center;">
+                            <div>
+                                <div style="color: #666; margin-bottom: 12px; font-size: 12px;">
+                                    ${fileData.name}
+                                </div>
+                                <div style="color: #999; font-size: 11px;">
+                                    Image preview requires loading from file system or data URL.
+                                    <br>Use Download button to save and view externally.
+                                </div>
+                                <button onclick="downloadCurrentFile()" class="btn" style="margin-top: 16px;">
+                                    Download Image
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+            } catch (error) {
+                console.error('Preview error:', error);
+                previewContent.innerHTML = 
+                    `<div style="color: var(--error-color); padding: 20px;">
+                        <strong>Preview Error</strong><br>
+                        ${error.message}
+                    </div>`;
+            }
+        }
+        
+        // Helper function to render JSON tree
+        function renderJsonTree(obj, container, level = 0) {
+            const indent = level * 20;
+            
+            if (obj === null) {
+                container.innerHTML += `<div style="margin-left: ${indent}px; color: #569cd6;">null</div>`;
+                return;
+            }
+            
+            if (typeof obj !== 'object') {
+                const color = typeof obj === 'string' ? '#ce9178' : 
+                             typeof obj === 'number' ? '#b5cea8' : 
+                             typeof obj === 'boolean' ? '#569cd6' : '#cccccc';
+                const value = typeof obj === 'string' ? `"${obj}"` : String(obj);
+                container.innerHTML += `<div style="margin-left: ${indent}px; color: ${color};">${value}</div>`;
+                return;
+            }
+            
+            const isArray = Array.isArray(obj);
+            const entries = Object.entries(obj);
+            
+            if (entries.length === 0) {
+                container.innerHTML += `<div style="margin-left: ${indent}px; color: #808080;">${isArray ? '[]' : '{}'}</div>`;
+                return;
+            }
+            
+            for (let i = 0; i < entries.length; i++) {
+                const [key, value] = entries[i];
+                const isLast = i === entries.length - 1;
+                const isExpandable = value !== null && typeof value === 'object';
+                
+                const line = document.createElement('div');
+                line.style.marginLeft = indent + 'px';
+                line.style.marginTop = '2px';
+                
+                if (isExpandable) {
+                    const toggle = document.createElement('span');
+                    toggle.textContent = '▼ ';
+                    toggle.style.cursor = 'pointer';
+                    toggle.style.color = '#808080';
+                    toggle.style.fontSize = '10px';
+                    toggle.style.marginRight = '4px';
+                    
+                    const keySpan = document.createElement('span');
+                    keySpan.style.color = '#9cdcfe';
+                    keySpan.textContent = isArray ? `[${key}]` : `"${key}"`;
+                    
+                    const colonSpan = document.createElement('span');
+                    colonSpan.textContent = ': ';
+                    colonSpan.style.color = '#cccccc';
+                    
+                    const typeSpan = document.createElement('span');
+                    typeSpan.style.color = '#808080';
+                    typeSpan.textContent = Array.isArray(value) ? `Array(${value.length})` : 'Object';
+                    
+                    const childContainer = document.createElement('div');
+                    childContainer.style.marginLeft = '20px';
+                    
+                    toggle.onclick = () => {
+                        const isCollapsed = childContainer.style.display === 'none';
+                        childContainer.style.display = isCollapsed ? 'block' : 'none';
+                        toggle.textContent = isCollapsed ? '▼ ' : '▶ ';
+                    };
+                    
+                    line.appendChild(toggle);
+                    line.appendChild(keySpan);
+                    line.appendChild(colonSpan);
+                    line.appendChild(typeSpan);
+                    container.appendChild(line);
+                    container.appendChild(childContainer);
+                    
+                    renderJsonTree(value, childContainer, level + 1);
+                } else {
+                    const keySpan = document.createElement('span');
+                    keySpan.style.color = '#9cdcfe';
+                    keySpan.style.marginLeft = '16px';
+                    keySpan.textContent = isArray ? `[${key}]` : `"${key}"`;
+                    
+                    const colonSpan = document.createElement('span');
+                    colonSpan.textContent = ': ';
+                    colonSpan.style.color = '#cccccc';
+                    
+                    const valueColor = typeof value === 'string' ? '#ce9178' : 
+                                      typeof value === 'number' ? '#b5cea8' : 
+                                      typeof value === 'boolean' ? '#569cd6' : '#cccccc';
+                    const valueSpan = document.createElement('span');
+                    valueSpan.style.color = valueColor;
+                    valueSpan.textContent = typeof value === 'string' ? `"${value}"` : String(value);
+                    
+                    line.appendChild(keySpan);
+                    line.appendChild(colonSpan);
+                    line.appendChild(valueSpan);
+                    container.appendChild(line);
+                }
+            }
+        }
+        
+        function copyJsonToClipboard() {
+            if (!activeFile) return;
+            const fileData = openFiles.get(activeFile);
+            if (!fileData) return;
+            
+            try {
+                const content = fileData.model.getValue();
+                const parsed = JSON.parse(content);
+                const formatted = JSON.stringify(parsed, null, 2);
+                copyToClipboard(formatted);
+            } catch (e) {
+                showToast('Invalid JSON, cannot copy', 'error');
+            }
+        }
+
+        // ============================================================================
+        // SEARCH & REPLACE
+        // ============================================================================
+        
+        function toggleSearch() {
+            const panel = document.getElementById('search-panel');
+            panel.classList.toggle('hidden');
+            
+            if (!panel.classList.contains('hidden')) {
+                document.getElementById('search-input').focus();
+            }
+        }
+
+        function findNext() {
+            const query = document.getElementById('search-input').value;
+            if (!query || !editor) return;
+            
+            const caseSensitive = document.getElementById('search-case').checked;
+            const wholeWord = document.getElementById('search-whole').checked;
+            const regex = document.getElementById('search-regex').checked;
+            
+            // Use Monaco's find controller with our options
+            const findController = editor.getContribution('editor.contrib.findController');
+            if (findController) {
+                findController.start({
+                    forceRevealReplace: false,
+                    seedSearchStringFromSelection: 'never',
+                    seedSearchStringFromGlobalClipboard: false,
+                    shouldFocus: 2, // FindInputFocusType.FindInput
+                    shouldAnimate: true,
+                    updateSearchScope: false,
+                    loop: true
+                });
+                
+                // Set the search string and options
+                const state = findController.getState();
+                if (state) {
+                    state.change({
+                        searchString: query,
+                        isRegex: regex,
+                        matchCase: caseSensitive,
+                        wholeWord: wholeWord
+                    }, false);
+                }
+                
+                // Find next match
+                findController.moveToNextMatch();
+            }
+        }
+
+        function replaceOne() {
+            const find = document.getElementById('search-input').value;
+            const replace = document.getElementById('replace-input').value;
+            if (!find || !editor) return;
+            
+            const caseSensitive = document.getElementById('search-case').checked;
+            const wholeWord = document.getElementById('search-whole').checked;
+            const regex = document.getElementById('search-regex').checked;
+            
+            // Get current selection
+            const selection = editor.getSelection();
+            if (!selection) return;
+            
+            const model = editor.getModel();
+            if (!model) return;
+            
+            const text = model.getValueInRange(selection);
+            
+            // Check if selection matches search (accounting for options)
+            let matches = false;
+            if (regex) {
+                try {
+                    const regexPattern = new RegExp(find, caseSensitive ? '' : 'i');
+                    matches = regexPattern.test(text);
+                } catch (e) {
+                    showToast('Invalid regex pattern', 'error');
+                    return;
+                }
+            } else {
+                matches = caseSensitive ? text === find : text.toLowerCase() === find.toLowerCase();
+                if (wholeWord && matches) {
+                    // Check word boundaries
+                    const start = selection.getStartPosition();
+                    const end = selection.getEndPosition();
+                    const startCol = start.column;
+                    const endCol = end.column;
+                    const line = model.getLineContent(start.lineNumber);
+                    
+                    const beforeChar = startCol > 1 ? line[startCol - 2] : ' ';
+                    const afterChar = endCol <= line.length ? line[endCol - 1] : ' ';
+                    
+                    const wordBoundary = /\W/;
+                    matches = wordBoundary.test(beforeChar) && wordBoundary.test(afterChar);
+                }
+            }
+            
+            if (matches) {
+                editor.executeEdits('replace', [{
+                    range: selection,
+                    text: replace
+                }]);
+                showToast('Replaced 1 occurrence', 'success');
+                
+                // Find next match after replace
+                setTimeout(() => findNext(), 100);
+            } else {
+                showToast('Selection does not match search', 'error');
+            }
+        }
+        
+        function replaceAll() {
+            const find = document.getElementById('search-input').value;
+            const replace = document.getElementById('replace-input').value;
+            if (!find || !editor) return;
+            
+            const caseSensitive = document.getElementById('search-case').checked;
+            const wholeWord = document.getElementById('search-whole').checked;
+            const regex = document.getElementById('search-regex').checked;
+            
+            const model = editor.getModel();
+            if (!model) return;
+            
+            let searchRegex;
+            try {
+                if (regex) {
+                    searchRegex = new RegExp(find, 'g' + (caseSensitive ? '' : 'i'));
+                } else {
+                    const escapedFind = find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const pattern = wholeWord ? `\\b${escapedFind}\\b` : escapedFind;
+                    searchRegex = new RegExp(pattern, 'g' + (caseSensitive ? '' : 'i'));
+                }
+            } catch (e) {
+                showToast('Invalid search pattern', 'error');
+                return;
+            }
+            
+            const content = model.getValue();
+            const newContent = content.replace(searchRegex, replace);
+            const matches = (content.match(searchRegex) || []).length;
+            
+            if (matches > 0) {
+                model.setValue(newContent);
+                showToast(`Replaced ${matches} occurrence${matches === 1 ? '' : 's'}`, 'success');
+            } else {
+                showToast('No matches found', 'error');
+            }
+        }
+
+        // ============================================================================
+        // SETTINGS
+        // ============================================================================
+        
+        function loadSettings() {
+            try {
+            const saved = localStorage.getItem('cosmo-ide-settings');
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    // Validate and merge with defaults
+                    return { ...defaultSettings, ...parsed };
+                }
+            } catch (e) {
+                console.error('Failed to load settings:', e);
+                // Clear corrupted settings
+                localStorage.removeItem('cosmo-ide-settings');
+            }
+            return { ...defaultSettings };
+        }
+
+        function saveSettings() {
+            localStorage.setItem('cosmo-ide-settings', JSON.stringify(settings));
+        }
+
+        function toggleSettings() {
+            const panel = document.getElementById('settings-panel');
+            panel.classList.toggle('open');
+            
+            if (panel.classList.contains('open')) {
+                // Load current settings into UI
+                document.getElementById('setting-theme').value = settings.theme;
+                document.getElementById('setting-font-size').value = settings.fontSize;
+                document.getElementById('setting-tab-size').value = settings.tabSize;
+                document.getElementById('setting-minimap').checked = settings.minimap;
+                document.getElementById('setting-line-numbers').checked = settings.lineNumbers;
+                document.getElementById('setting-word-wrap').checked = settings.wordWrap;
+                document.getElementById('setting-auto-save').value = settings.autoSave;
+                document.getElementById('setting-auto-save-delay').value = settings.autoSaveDelay;
+            }
+        }
+
+        function applyTheme() {
+            settings.theme = document.getElementById('setting-theme').value;
+            monaco.editor.setTheme(settings.theme);
+            saveSettings();
+        }
+
+        function applyFontSize() {
+            settings.fontSize = parseInt(document.getElementById('setting-font-size').value);
+            editor.updateOptions({ fontSize: settings.fontSize });
+            saveSettings();
+        }
+
+        function applyTabSize() {
+            settings.tabSize = parseInt(document.getElementById('setting-tab-size').value);
+            editor.updateOptions({ tabSize: settings.tabSize });
+            saveSettings();
+        }
+
+        function applyMinimap() {
+            settings.minimap = document.getElementById('setting-minimap').checked;
+            editor.updateOptions({ minimap: { enabled: settings.minimap } });
+            saveSettings();
+        }
+
+        function applyLineNumbers() {
+            settings.lineNumbers = document.getElementById('setting-line-numbers').checked;
+            editor.updateOptions({ lineNumbers: settings.lineNumbers ? 'on' : 'off' });
+            saveSettings();
+        }
+
+        function applyWordWrap() {
+            settings.wordWrap = document.getElementById('setting-word-wrap').checked;
+            editor.updateOptions({ wordWrap: settings.wordWrap ? 'on' : 'off' });
+            saveSettings();
+        }
+
+        function applyAutoSave() {
+            settings.autoSave = document.getElementById('setting-auto-save').value;
+            settings.autoSaveDelay = parseInt(document.getElementById('setting-auto-save-delay').value);
+            saveSettings();
+            setupAutoSave();
+        }
+
+        function setupAutoSave() {
+            if (autoSaveTimer) {
+                clearInterval(autoSaveTimer);
+                autoSaveTimer = null;
+            }
+            
+            if (settings.autoSave === 'afterDelay') {
+                autoSaveTimer = setInterval(() => {
+                    const hasDirty = Array.from(openFiles.values()).some(f => f.dirty);
+                    if (hasDirty) {
+                        saveAllFiles();
+                    }
+                }, settings.autoSaveDelay);
+            }
+        }
+
+        function resetSettings() {
+            if (!confirm('Reset all settings to defaults?')) return;
+            
+            settings = { ...defaultSettings };
+            saveSettings();
+            toggleSettings();
+            
+            // Reload to apply all defaults
+            location.reload();
+        }
+
+        // ============================================================================
+        // WORKSPACE STATE PERSISTENCE
+        // ============================================================================
+        
+        function saveWorkspaceState() {
+            const state = {
+                openTabs: Array.from(openFiles.keys()),
+                activeFile: activeFile,
+                sidebarCollapsed: document.getElementById('sidebar').classList.contains('collapsed'),
+                pinnedTabs: Array.from(pinnedTabs),
+            };
+            
+            const key = `cosmo-workspace-${runName}-${systemId}`;
+            localStorage.setItem(key, JSON.stringify(state));
+        }
+
+        function restoreWorkspaceState() {
+            const key = `cosmo-workspace-${runName}-${systemId}`;
+            const saved = localStorage.getItem(key);
+            
+            if (!saved) return;
+            
+            try {
+                const state = JSON.parse(saved);
+                
+                // Restore sidebar state
+                if (state.sidebarCollapsed) {
+                    toggleSidebar();
+                }
+                
+                // Restore pinned tabs
+                if (state.pinnedTabs && Array.isArray(state.pinnedTabs)) {
+                    pinnedTabs = new Set(state.pinnedTabs);
+                }
+                
+                // Note: Files are already opened by loadFileTree()
+                // Pinned status will be applied when tabs are created
+            } catch (e) {
+                console.error('Failed to restore workspace:', e);
+            }
+        }
+
+        // ============================================================================
+        // UI HELPERS
+        // ============================================================================
+        
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('collapsed');
+        }
+
+        function toggleKeyboardHelp() {
+            const help = document.getElementById('keyboard-help');
+            const overlay = document.getElementById('overlay');
+            help.classList.toggle('hidden');
+            overlay.classList.toggle('hidden');
+        }
+
+        function closeAllModals() {
+            document.getElementById('command-palette').classList.add('hidden');
+            document.getElementById('keyboard-help').classList.add('hidden');
+            document.getElementById('search-panel').classList.add('hidden');
+            document.getElementById('context-menu').classList.add('hidden');
+            document.getElementById('overlay').classList.add('hidden');
+            // Note: Don't close AI panel on Escape - it's a persistent panel like preview
+        }
+
+        function showContextMenu(x, y, items) {
+            const menu = document.getElementById('context-menu');
+            
+            // Clear previous content and event listeners
+            menu.innerHTML = '';
+            
+            // Build menu items with proper event handlers
+            items.forEach((item, index) => {
+                if (item.type === 'separator') {
+                    const separator = document.createElement('div');
+                    separator.className = 'context-menu-separator';
+                    menu.appendChild(separator);
+                } else {
+                    const menuItem = document.createElement('div');
+                    menuItem.className = 'context-menu-item';
+                    menuItem.textContent = item.label;
+                    menuItem.dataset.index = index;
+                    
+                    // Add click handler
+                    menuItem.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        if (item.action && typeof item.action === 'function') {
+                            item.action();
+                        }
+                        menu.classList.add('hidden');
+                    });
+                    
+                    menu.appendChild(menuItem);
+                }
+            });
+            
+            // Position menu
+            menu.style.left = x + 'px';
+            menu.style.top = y + 'px';
+            menu.classList.remove('hidden');
+            
+            // Ensure menu stays within viewport
+            setTimeout(() => {
+                const rect = menu.getBoundingClientRect();
+                if (rect.right > window.innerWidth) {
+                    menu.style.left = (window.innerWidth - rect.width - 10) + 'px';
+                }
+                if (rect.bottom > window.innerHeight) {
+                    menu.style.top = (window.innerHeight - rect.height - 10) + 'px';
+                }
+            }, 0);
+            
+            // Close on click outside
+            setTimeout(() => {
+                const closeHandler = (e) => {
+                    if (!menu.contains(e.target)) {
+                    menu.classList.add('hidden');
+                        document.removeEventListener('click', closeHandler);
+                    }
+                };
+                document.addEventListener('click', closeHandler);
+            }, 0);
+        }
+
+        function copyToClipboard(text) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => {
+                showToast('Copied to clipboard', 'success');
+                }).catch(err => {
+                    console.error('Clipboard copy failed:', err);
+                    fallbackCopyToClipboard(text);
+                });
+            } else {
+                fallbackCopyToClipboard(text);
+            }
+        }
+        
+        function fallbackCopyToClipboard(text) {
+            // Fallback for browsers that don't support clipboard API
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-999999px';
+            document.body.appendChild(textArea);
+            textArea.select();
+            try {
+                document.execCommand('copy');
+                showToast('Copied to clipboard', 'success');
+            } catch (err) {
+                console.error('Fallback copy failed:', err);
+                showToast('Copy failed', 'error');
+            }
+            document.body.removeChild(textArea);
+        }
+
+        function updateSaveButtons() {
+            const currentFileDirty = activeFile ? openFiles.get(activeFile)?.dirty : false;
+            const hasDirtyFiles = Array.from(openFiles.values()).some(f => f.dirty);
+            const hasActiveFile = activeFile !== null;
+
+            document.getElementById('save-btn').disabled = !currentFileDirty;
+            document.getElementById('save-all-btn').disabled = !hasDirtyFiles;
+            document.getElementById('download-btn').disabled = !hasActiveFile;
+
+            const dirtyCount = Array.from(openFiles.values()).filter(f => f.dirty).length;
+            if (dirtyCount > 0) {
+                document.getElementById('status-dirty').textContent = 
+                    `${dirtyCount} unsaved ${dirtyCount === 1 ? 'file' : 'files'}`;
+                document.getElementById('status-dirty').style.color = 'var(--warning-color)';
+            } else {
+                document.getElementById('status-dirty').textContent = '';
+            }
+        }
+
+        function updateFileStats() {
+            const fileData = activeFile ? openFiles.get(activeFile) : null;
+            if (!fileData) {
+                document.getElementById('status-size').textContent = '';
+                document.getElementById('status-words').textContent = '';
+                return;
+            }
+            
+            const content = fileData.model.getValue();
+            const bytes = new Blob([content]).size;
+            const size = bytes < 1024 ? `${bytes} B` : 
+                        bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : 
+                        `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+            
+            const words = content.split(/\s+/).filter(w => w.length > 0).length;
+            
+            document.getElementById('status-size').textContent = size;
+            document.getElementById('status-words').textContent = `${words} words`;
+        }
+
+        function updateSelectionInfo() {
+            const selection = editor.getSelection();
+            if (!selection) return;
+            
+            const model = editor.getModel();
+            if (!model) return;
+            
+            const start = model.getOffsetAt(selection.getStartPosition());
+            const end = model.getOffsetAt(selection.getEndPosition());
+            const length = end - start;
+            
+            if (length > 0) {
+                const lines = selection.endLineNumber - selection.startLineNumber + 1;
+                document.getElementById('status-selection').textContent = 
+                    `${length} chars, ${lines} lines selected`;
+            } else {
+                document.getElementById('status-selection').textContent = '';
+            }
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.animation = 'slideIn 0.3s ease-out reverse';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        // ============================================================================
+        // SYSTEM SWITCHING
+        // ============================================================================
+        
+        async function loadAvailableSystems() {
+            try {
+                const response = await fetch('/api/compiled-docs/all');
+                const data = await response.json();
+                
+                if (data.success) {
+                    availableSystems = data.systems;
+                    
+                    const picker = document.getElementById('system-picker');
+                    picker.innerHTML = '';
+                    
+                    if (availableSystems.length === 0) {
+                        picker.innerHTML = '<option value="">No systems compiled yet</option>';
+                        picker.disabled = true;
+                        return;
+                    }
+                    
+                    const byRun = {};
+                    availableSystems.forEach(sys => {
+                        if (!byRun[sys.runName]) byRun[sys.runName] = [];
+                        byRun[sys.runName].push(sys);
+                    });
+                    
+                    for (const [run, systems] of Object.entries(byRun)) {
+                        const group = document.createElement('optgroup');
+                        group.label = run;
+                        
+                        systems.forEach(sys => {
+                            const option = document.createElement('option');
+                            option.value = `${sys.runName}:${sys.systemId}`;
+                            option.textContent = sys.systemId;
+                            
+                            if (sys.runName === runName && sys.systemId === systemId) {
+                                option.selected = true;
+                            }
+                            
+                            group.appendChild(option);
+                        });
+                        
+                        picker.appendChild(group);
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to load available systems:', error);
+            }
+        }
+        
+        function switchSystem() {
+            const picker = document.getElementById('system-picker');
+            const value = picker.value;
+            
+            if (!value) return;
+            
+            const hasDirty = Array.from(openFiles.values()).some(f => f.dirty);
+            if (hasDirty) {
+                if (!confirm('You have unsaved changes. Switch anyway?')) {
+                    picker.value = `${runName}:${systemId}`;
+                    return;
+                }
+            }
+            
+            const [newRun, newSystem] = value.split(':');
+            window.location.href = `/docs-ide?run=${newRun}&system=${newSystem}`;
+        }
+
+        // ============================================================================
+        // FILE MANAGEMENT
+        // ============================================================================
+        
+        function closeOtherTabs() {
+            if (!activeFile) return;
+            
+            const tabsToClose = Array.from(openFiles.keys()).filter(path => path !== activeFile);
+            
+            if (tabsToClose.length === 0) {
+                showToast('No other tabs to close', 'error');
+                return;
+            }
+            
+            const dirtyTabs = tabsToClose.filter(path => openFiles.get(path)?.dirty);
+            if (dirtyTabs.length > 0) {
+                if (!confirm(`${dirtyTabs.length} tab(s) have unsaved changes. Close anyway?`)) {
+                    return;
+                }
+            }
+            
+            tabsToClose.forEach(path => closeTab(path));
+            showToast(`Closed ${tabsToClose.length} tab(s)`, 'success');
+        }
+        
+        function closeUnpinnedTabs() {
+            const tabsToClose = Array.from(openFiles.keys()).filter(path => !pinnedTabs.has(path));
+            
+            if (tabsToClose.length === 0) {
+                showToast('No unpinned tabs to close', 'error');
+                return;
+            }
+            
+            const dirtyTabs = tabsToClose.filter(path => openFiles.get(path)?.dirty);
+            if (dirtyTabs.length > 0) {
+                if (!confirm(`${dirtyTabs.length} unpinned tab(s) have unsaved changes. Close anyway?`)) {
+                    return;
+                }
+            }
+            
+            tabsToClose.forEach(path => closeTab(path));
+            showToast(`Closed ${tabsToClose.length} unpinned tab(s)`, 'success');
+        }
+        
+        function showNewFileDialog() {
+            showToast('File creation requires backend API support', 'error');
+            // TODO: Implement file creation via API
+            // const fileName = prompt('Enter new file name:');
+            // if (fileName) {
+            //     createNewFile(fileName);
+            // }
+        }
+        
+        function renameFileDialog(filePath) {
+            const fileData = openFiles.get(filePath);
+            if (!fileData) return;
+            
+            showToast('File rename requires backend API support', 'error');
+            // TODO: Implement file rename via API
+            // const newName = prompt('Enter new file name:', fileData.name);
+            // if (newName && newName !== fileData.name) {
+            //     renameFile(filePath, newName);
+            // }
+        }
+        
+        function deleteFileDialog(filePath) {
+            const fileData = openFiles.get(filePath);
+            if (!fileData) return;
+            
+            if (!confirm(`Delete ${fileData.name}? This action cannot be undone.`)) {
+                return;
+            }
+            
+            showToast('File deletion requires backend API support', 'error');
+            // TODO: Implement file deletion via API
+            // deleteFile(filePath);
+        }
+        
+        function showFindInFiles() {
+            const query = prompt('Find in all files:');
+            if (!query) return;
+            
+            showToast('Searching...', 'success');
+            
+            // Search through all open files and potentially all files in the system
+            const results = [];
+            
+            // Search in open files
+            for (const [path, fileData] of openFiles.entries()) {
+                const content = fileData.model.getValue();
+                const lines = content.split('\n');
+                
+                lines.forEach((line, lineNumber) => {
+                    if (line.toLowerCase().includes(query.toLowerCase())) {
+                        results.push({
+                            path,
+                            name: fileData.name,
+                            line: lineNumber + 1,
+                            content: line.trim()
+                        });
+                    }
+                });
+            }
+            
+            if (results.length === 0) {
+                showToast('No results found in open files', 'error');
+                return;
+            }
+            
+            // Show results in command palette
+            const palette = document.getElementById('command-palette');
+            const input = document.getElementById('command-input');
+            const resultsDiv = document.getElementById('command-results');
+            const overlay = document.getElementById('overlay');
+            
+            palette.classList.remove('hidden');
+            overlay.classList.remove('hidden');
+            input.value = query;
+            input.placeholder = `Found ${results.length} result(s)`;
+            
+            resultsDiv.innerHTML = results.map((result, idx) => `
+                <div class="command-item ${idx === 0 ? 'selected' : ''}" data-index="${idx}" onclick="openFileFromPalette('${result.path}', '${result.name}')">
+                    <div>
+                        <div class="command-label">${result.name}:${result.line}</div>
+                        <div style="font-size: 11px; color: var(--text-secondary); margin-top: 2px;">${result.content.substring(0, 80)}...</div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // ============================================================================
+        // AI ASSISTANT
+        // ============================================================================
+        
+        let aiConversationHistory = [];
+        let aiProcessing = false;
+        
+        function toggleAI() {
+            const panel = document.getElementById('ai-panel');
+            panel.classList.toggle('hidden');
+            
+            if (!panel.classList.contains('hidden')) {
+                document.getElementById('ai-input').focus();
+            }
+        }
+        
+        async function sendAIMessage() {
+            const input = document.getElementById('ai-input');
+            const message = input.value.trim();
+            
+            if (!message || aiProcessing) return;
+            
+            // Get current file context
+            const fileData = activeFile ? openFiles.get(activeFile) : null;
+            const documentContent = fileData ? fileData.model.getValue() : '';
+            const fileName = fileData ? fileData.name : 'untitled';
+            const language = fileData ? fileData.model.getLanguageId() : 'text';
+            
+            // Get selected text if any
+            const selection = editor.getSelection();
+            const selectedText = selection && !selection.isEmpty() ? 
+                editor.getModel().getValueInRange(selection) : null;
+            
+            // Add user message to chat
+            addChatMessage('user', message);
+            
+            // Clear input
+            input.value = '';
+            
+            // Show thinking indicator
+            aiProcessing = true;
+            document.getElementById('ai-send-btn').disabled = true;
+            addThinkingIndicator();
+            
+            try {
+                const response = await fetch('/api/ide/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message,
+                        documentContent,
+                        selectedText,
+                        fileName,
+                        language,
+                        conversationHistory: aiConversationHistory.slice(-6) // Last 3 exchanges
+                    })
+                });
+                
+                const data = await response.json();
+                
+                removeThinkingIndicator();
+                
+                if (!data.success) {
+                    throw new Error(data.error || 'AI request failed');
+                }
+                
+                // Add AI response to chat
+                addChatMessage('assistant', data.response, {
+                    canApply: !!selectedText || message.toLowerCase().includes('improve') || message.toLowerCase().includes('rewrite'),
+                    tokensUsed: data.tokensUsed
+                });
+                
+                // Update conversation history
+                aiConversationHistory.push(
+                    { role: 'user', content: message },
+                    { role: 'assistant', content: data.response }
+                );
+                
+                // Limit history size
+                if (aiConversationHistory.length > 20) {
+                    aiConversationHistory = aiConversationHistory.slice(-20);
+                }
+                
+            } catch (error) {
+                removeThinkingIndicator();
+                addChatMessage('error', `Error: ${error.message}`);
+                console.error('AI chat error:', error);
+            } finally {
+                aiProcessing = false;
+                document.getElementById('ai-send-btn').disabled = false;
+                input.focus();
+            }
+        }
+        
+        function addChatMessage(type, content, options = {}) {
+            const messagesDiv = document.getElementById('ai-chat-messages');
+            
+            // Remove welcome message if present
+            const welcome = messagesDiv.querySelector('[style*="text-align: center"]');
+            if (welcome) {
+                welcome.remove();
+            }
+            
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `ai-message ${type}`;
+            
+            const headerText = type === 'user' ? 'You' : 
+                              type === 'assistant' ? 'AI Assistant' : 
+                              'Error';
+            
+            let html = `
+                <div class="ai-message-header">${headerText}</div>
+                <div class="ai-message-content">${escapeHtml(content)}</div>
+            `;
+            
+            // Add action buttons for assistant messages
+            if (type === 'assistant' && options.canApply) {
+                html += `
+                    <div class="ai-message-actions">
+                        <button class="btn btn-secondary" onclick="applyAISuggestion(this)" style="padding: 4px 12px; font-size: 11px;">
+                            ✓ Apply
+                        </button>
+                        <button class="btn btn-secondary" onclick="copyAISuggestion(this)" style="padding: 4px 12px; font-size: 11px;">
+                            📋 Copy
+                        </button>
+                    </div>
+                `;
+            }
+            
+            messageDiv.innerHTML = html;
+            
+            // Store response content for apply button
+            if (options.canApply) {
+                messageDiv.dataset.response = content;
+                
+                // Store original text for diff view
+                const selection = editor.getSelection();
+                const model = editor.getModel();
+                if (selection && !selection.isEmpty()) {
+                    messageDiv.dataset.originalText = model.getValueInRange(selection);
+                } else if (model) {
+                    messageDiv.dataset.originalText = model.getValue();
+                }
+            }
+            
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        function addThinkingIndicator() {
+            const messagesDiv = document.getElementById('ai-chat-messages');
+            const thinking = document.createElement('div');
+            thinking.id = 'ai-thinking';
+            thinking.className = 'ai-thinking';
+            thinking.innerHTML = `
+                <div class="ai-thinking-spinner"></div>
+                <span>AI is thinking...</span>
+            `;
+            messagesDiv.appendChild(thinking);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        function removeThinkingIndicator() {
+            const thinking = document.getElementById('ai-thinking');
+            if (thinking) {
+                thinking.remove();
+            }
+        }
+        
+        async function aiQuickAction(action) {
+            const fileData = activeFile ? openFiles.get(activeFile) : null;
+            if (!fileData) {
+                showToast('No file open', 'error');
+                return;
+            }
+            
+            // Get selected text if any
+            const selection = editor.getSelection();
+            const selectedText = selection && !selection.isEmpty() ? 
+                editor.getModel().getValueInRange(selection) : null;
+            
+            const actionMap = {
+                'improve': selectedText ? 
+                    'Improve this selected text - make it clearer and more professional' : 
+                    'Review this document and suggest improvements',
+                'summarize': 'Provide a concise summary of this document',
+                'grammar': selectedText ? 
+                    'Check grammar and fix any issues in the selected text' : 
+                    'Check grammar and fix any issues in this document',
+                'examples': 'Add relevant examples to illustrate the concepts'
+            };
+            
+            const message = actionMap[action] || action;
+            
+            // Set the message and send
+            document.getElementById('ai-input').value = message;
+            await sendAIMessage();
+        }
+        
+        function applyAISuggestion(button) {
+            const messageDiv = button.closest('.ai-message');
+            const suggestion = messageDiv.dataset.response;
+            const originalText = messageDiv.dataset.originalText;
+            
+            if (!suggestion || !editor) return;
+            
+            // Get current selection or full document
+            const selection = editor.getSelection();
+            const model = editor.getModel();
+            const currentText = selection && !selection.isEmpty() ? 
+                model.getValueInRange(selection) : model.getValue();
+            
+            // Show diff preview before applying
+            if (suggestion.length > 100 || currentText.length > 100) {
+                showDiffPreview(currentText, suggestion, () => {
+                    applyEdit(selection, suggestion);
+                });
+            } else {
+                // For small changes, apply directly with confirmation
+                if (confirm('Apply AI suggestion?')) {
+                    applyEdit(selection, suggestion);
+                }
+            }
+        }
+        
+        function applyEdit(selection, newText) {
+            if (selection && !selection.isEmpty()) {
+                // Replace selection
+                editor.executeEdits('ai-edit', [{
+                    range: selection,
+                    text: newText
+                }]);
+                showToast('Applied AI suggestion to selection', 'success');
+            } else {
+                // Replace entire document
+                editor.setValue(newText);
+                showToast('Document updated with AI suggestion', 'success');
+            }
+            
+            // Mark as dirty
+            if (activeFile) {
+                const fileData = openFiles.get(activeFile);
+                if (fileData) {
+                    fileData.dirty = true;
+                    updateTabDirtyState(activeFile, true);
+                    updateSaveButtons();
+                }
+            }
+        }
+        
+        function showDiffPreview(original, modified, onAccept) {
+            // Create diff modal
+            const modal = document.createElement('div');
+            modal.style.cssText = `
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                width: 80vw;
+                max-width: 1200px;
+                height: 70vh;
+                background: var(--bg-tertiary);
+                border: 1px solid var(--border-color);
+                border-radius: 8px;
+                box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+                z-index: 10001;
+                display: flex;
+                flex-direction: column;
+            `;
+            
+            modal.innerHTML = `
+                <div style="padding: 16px; background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-weight: 600;">📝 Review AI Changes</span>
+                    <button onclick="this.closest('[style]').remove(); document.getElementById('overlay').classList.add('hidden');" 
+                            style="background: none; border: none; color: var(--text-primary); cursor: pointer; font-size: 18px;">×</button>
+                </div>
+                <div style="flex: 1; overflow: hidden; display: flex;">
+                    <div style="flex: 1; overflow: auto; padding: 20px; border-right: 1px solid var(--border-color);">
+                        <div style="font-size: 11px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px;">ORIGINAL</div>
+                        <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word; font-family: Monaco, monospace; font-size: 13px; line-height: 1.6;">${escapeHtml(original)}</pre>
+                    </div>
+                    <div style="flex: 1; overflow: auto; padding: 20px; background: #1e3a1e;">
+                        <div style="font-size: 11px; font-weight: 600; color: #10b981; margin-bottom: 8px;">AI SUGGESTION</div>
+                        <pre style="margin: 0; white-space: pre-wrap; word-wrap: break-word; font-family: Monaco, monospace; font-size: 13px; line-height: 1.6;">${escapeHtml(modified)}</pre>
+                    </div>
+                </div>
+                <div style="padding: 16px; background: var(--bg-secondary); border-top: 1px solid var(--border-color); display: flex; gap: 12px; justify-content: flex-end;">
+                    <button onclick="this.closest('[style]').remove(); document.getElementById('overlay').classList.add('hidden');" 
+                            class="btn btn-secondary">
+                        Cancel
+                    </button>
+                    <button onclick="acceptDiffChange()" class="btn" id="accept-diff-btn">
+                        ✓ Accept Changes
+                    </button>
+                </div>
+            `;
+            
+            // Store callback for accept button
+            window.currentDiffCallback = onAccept;
+            
+            document.body.appendChild(modal);
+            document.getElementById('overlay').classList.remove('hidden');
+        }
+        
+        function acceptDiffChange() {
+            if (window.currentDiffCallback) {
+                window.currentDiffCallback();
+                window.currentDiffCallback = null;
+            }
+            
+            // Close modal
+            const modal = document.querySelector('[style*="position: fixed"][style*="transform: translate(-50%, -50%)"]');
+            if (modal) {
+                modal.remove();
+            }
+            document.getElementById('overlay').classList.add('hidden');
+        }
+        
+        function copyAISuggestion(button) {
+            const messageDiv = button.closest('.ai-message');
+            const suggestion = messageDiv.dataset.response;
+            
+            if (suggestion) {
+                copyToClipboard(suggestion);
+                showToast('Copied AI suggestion', 'success');
+            }
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        function clearAIChat() {
+            const messagesDiv = document.getElementById('ai-chat-messages');
+            messagesDiv.innerHTML = `
+                <div style="padding: 20px; text-align: center; color: var(--text-secondary); font-size: 12px;">
+                    👋 Chat cleared. Ask me anything!
+                </div>
+            `;
+            aiConversationHistory = [];
+        }
+
+        // ============================================================================
+        // EXPORT & DOWNLOAD
+        // ============================================================================
+        
+        function downloadCurrentFile() {
+            if (!activeFile) {
+                showToast('No file open', 'error');
+                return;
+            }
+            
+            const fileData = openFiles.get(activeFile);
+            if (!fileData) {
+                showToast('File data not found', 'error');
+                return;
+            }
+            
+            try {
+            const content = fileData.model.getValue();
+            const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = fileData.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+            showToast(`Downloaded: ${fileData.name}`, 'success');
+            } catch (error) {
+                console.error('Download error:', error);
+                showToast('Failed to download file: ' + error.message, 'error');
+            }
+        }
+        
+        async function downloadAllFiles() {
+            showToast('Preparing download...', 'success');
+            
+            // For a simple implementation without JSZip, we'll download files one by one
+            // Or offer to download a bundle via API
+            
+            try {
+                const response = await fetch(`/api/compiled-docs/${runName}/${systemId}/download`);
+                
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = URL.createObjectURL(blob);
+                    
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `${systemId}-docs.zip`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    
+                    showToast('Downloaded all files', 'success');
+                } else {
+                    throw new Error('Download failed');
+                }
+            } catch (error) {
+                console.error('Download failed:', error);
+                showToast('Download failed. Downloading current file only.', 'error');
+                downloadCurrentFile();
+            }
+        }
+        
+        function exportMarkdownToPDF() {
+            if (!activeFile) {
+                showToast('No file open', 'error');
+                return;
+            }
+            
+            const fileData = openFiles.get(activeFile);
+            if (!fileData || fileData.model.getLanguageId() !== 'markdown') {
+                showToast('Only markdown files can be exported to PDF', 'error');
+                return;
+            }
+            
+            try {
+            // Use browser print for PDF export
+            const content = fileData.model.getValue();
+            const html = marked.parse(content);
+            
+            const printWindow = window.open('', '_blank');
+                if (!printWindow) {
+                    showToast('Pop-up blocked. Please allow pop-ups to export to PDF.', 'error');
+                    return;
+                }
+                
+            printWindow.document.write(`
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>${fileData.name}</title>
+                    <style>
+                        body {
+                            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                            max-width: 800px;
+                            margin: 40px auto;
+                            padding: 0 20px;
+                            line-height: 1.6;
+                            color: #333;
+                        }
+                        h1, h2, h3 { margin-top: 24px; margin-bottom: 12px; }
+                        code {
+                            background: #f5f5f5;
+                            padding: 2px 6px;
+                            border-radius: 3px;
+                            font-family: 'Monaco', 'Courier New', monospace;
+                        }
+                        pre {
+                            background: #f5f5f5;
+                            padding: 16px;
+                            border-radius: 6px;
+                            overflow-x: auto;
+                        }
+                        pre code {
+                            background: none;
+                            padding: 0;
+                        }
+                    </style>
+                </head>
+                <body>
+                    ${html}
+                </body>
+                </html>
+            `);
+            printWindow.document.close();
+            
+            setTimeout(() => {
+                printWindow.print();
+            }, 250);
+                
+                showToast('Opening print dialog...', 'success');
+            } catch (error) {
+                console.error('PDF export error:', error);
+                showToast('Failed to export to PDF: ' + error.message, 'error');
+            }
+        }
+        
+        function exportMarkdownToHTML() {
+            if (!activeFile) {
+                showToast('No file open', 'error');
+                return;
+            }
+            
+            const fileData = openFiles.get(activeFile);
+            if (!fileData || fileData.model.getLanguageId() !== 'markdown') {
+                showToast('Only markdown files can be exported to HTML', 'error');
+                return;
+            }
+            
+            try {
+            const content = fileData.model.getValue();
+            const html = marked.parse(content);
+            
+            const fullHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${fileData.name}</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 0 20px;
+            line-height: 1.6;
+            color: #333;
+        }
+        h1, h2, h3 { margin-top: 24px; margin-bottom: 12px; color: #1a1a1a; }
+        h1 { font-size: 32px; }
+        h2 { font-size: 24px; }
+        h3 { font-size: 20px; }
+        p { margin-bottom: 12px; }
+        code {
+            background: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+        pre {
+            background: #f5f5f5;
+            padding: 16px;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin: 12px 0;
+        }
+        pre code {
+            background: none;
+            padding: 0;
+        }
+        a { color: #0066cc; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        blockquote {
+            border-left: 4px solid #ddd;
+            margin: 12px 0;
+            padding-left: 16px;
+            color: #666;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 12px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px 12px;
+            text-align: left;
+        }
+        th {
+            background: #f5f5f5;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+${html}
+</body>
+</html>`;
+            
+            const blob = new Blob([fullHTML], { type: 'text/html;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = fileData.name.replace(/\.md$/, '.html');
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+            showToast('Exported to HTML', 'success');
+            } catch (error) {
+                console.error('HTML export error:', error);
+                showToast('Failed to export to HTML: ' + error.message, 'error');
+            }
+        }
+
+        // ============================================================================
+        // BEFORE UNLOAD WARNING
+        // ============================================================================
+        
+        window.addEventListener('beforeunload', (e) => {
+            const hasDirty = Array.from(openFiles.values()).some(f => f.dirty);
+            if (hasDirty) {
+                e.preventDefault();
+                e.returnValue = 'You have unsaved changes. Are you sure you want to leave?';
+                return e.returnValue;
+            }
+        });
+
+        // ============================================================================
+        // PANEL RESIZING
+        // ============================================================================
+        
+        function initPanelResizing() {
+            const handles = document.querySelectorAll('.resize-handle-vertical');
+            
+            console.log('Initializing panel resizing, found', handles.length, 'handles');
+            
+            handles.forEach((handle, index) => {
+                console.log('Setting up resize handle', index, 'for', handle.dataset.target);
+                
+                let isResizing = false;
+                let startX = 0;
+                let startWidth = 0;
+                let targetPanel = null;
+                let targetId = null;
+                
+                const handleMouseDown = (e) => {
+                    console.log('Resize mousedown on', handle.dataset.target);
+                    isResizing = true;
+                    startX = e.clientX;
+                    targetId = handle.dataset.target;
+                    targetPanel = document.getElementById(targetId);
+                    
+                    if (targetPanel) {
+                        startWidth = targetPanel.offsetWidth;
+                        handle.classList.add('active');
+                        document.body.style.cursor = 'col-resize';
+                        document.body.style.userSelect = 'none';
+                        console.log('Started resizing', targetId, 'from width', startWidth);
+                        
+                        // Add move and up listeners
+                        document.addEventListener('mousemove', handleMouseMove);
+                        document.addEventListener('mouseup', handleMouseUp);
+                    } else {
+                        console.error('Target panel not found:', targetId);
+                    }
+                    
+                    e.preventDefault();
+                    e.stopPropagation();
+                };
+                
+                const handleMouseMove = (e) => {
+                    if (!isResizing || !targetPanel) return;
+                    
+                    e.preventDefault();
+                    e.stopPropagation();
+                    
+                    let newWidth;
+                    
+                    if (targetId === 'sidebar') {
+                        // Sidebar: resize from left to right
+                        const delta = e.clientX - startX;
+                        newWidth = startWidth + delta;
+                    } else {
+                        // Preview/AI panels: resize from right to left
+                        const delta = startX - e.clientX;
+                        newWidth = startWidth + delta;
+                    }
+                    
+                    // Apply constraints
+                    const minWidth = parseInt(getComputedStyle(targetPanel).minWidth) || 200;
+                    const maxWidth = parseInt(getComputedStyle(targetPanel).maxWidth) || 800;
+                    newWidth = Math.max(minWidth, Math.min(maxWidth, newWidth));
+                    
+                    targetPanel.style.width = newWidth + 'px';
+                    targetPanel.style.flexGrow = '0';
+                    targetPanel.style.flexShrink = '0';
+                    targetPanel.style.flexBasis = 'auto';
+                };
+                
+                const handleMouseUp = (e) => {
+                    if (isResizing && targetPanel) {
+                        const finalWidth = targetPanel.offsetWidth;
+                        
+                        savePanelSize(targetId, finalWidth);
+                        console.log('Resize complete:', targetId, 'final width:', finalWidth);
+                        
+                        isResizing = false;
+                        handle.classList.remove('active');
+                        document.body.style.cursor = '';
+                        document.body.style.userSelect = '';
+                        
+                        // Remove event listeners
+                        document.removeEventListener('mousemove', handleMouseMove);
+                        document.removeEventListener('mouseup', handleMouseUp);
+                        
+                        targetPanel = null;
+                        targetId = null;
+                        
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }
+                };
+                
+                // Attach initial mousedown listener
+                handle.addEventListener('mousedown', handleMouseDown);
+            });
+        }
+        
+        function savePanelSize(panelId, width) {
+            try {
+                const key = `cosmo-panel-size-${panelId}`;
+                localStorage.setItem(key, width.toString());
+            } catch (e) {
+                console.error('Failed to save panel size:', e);
+            }
+        }
+        
+        function restorePanelSizes() {
+            const panels = ['sidebar', 'preview-pane', 'ai-panel'];
+            
+            panels.forEach(panelId => {
+                try {
+                    const key = `cosmo-panel-size-${panelId}`;
+                    const saved = localStorage.getItem(key);
+                    if (saved) {
+                        const panel = document.getElementById(panelId);
+                        if (panel) {
+                            panel.style.width = saved + 'px';
+                        }
+                    }
+                } catch (e) {
+                    console.error(`Failed to restore ${panelId} size:`, e);
+                }
+            });
+        }
+
+        // ============================================================================
+        // COMMAND REGISTRY INITIALIZATION
+        // ============================================================================
+        
+        function initializeCommands() {
+            commands = [
+                { id: 'file.save', label: 'Save File', action: saveCurrentFile, keys: 'Cmd+S' },
+                { id: 'file.saveAll', label: 'Save All Files', action: saveAllFiles, keys: 'Cmd+Shift+S' },
+                { id: 'file.close', label: 'Close File', action: () => { if (activeFile) closeTab(activeFile); }, keys: 'Cmd+W' },
+                { id: 'file.closeOthers', label: 'Close Other Tabs', action: closeOtherTabs },
+                { id: 'file.closeUnpinned', label: 'Close Unpinned Tabs', action: closeUnpinnedTabs },
+                { id: 'file.download', label: 'Download Current File', action: downloadCurrentFile },
+                { id: 'file.downloadAll', label: 'Download All Files', action: downloadAllFiles },
+                { id: 'file.recent', label: 'Recent Files', action: showRecentFiles, keys: 'Cmd+E' },
+                { id: 'file.new', label: 'New File', action: showNewFileDialog },
+                { id: 'file.rename', label: 'Rename File', action: () => { if (activeFile) renameFileDialog(activeFile); } },
+                { id: 'file.delete', label: 'Delete File', action: () => { if (activeFile) deleteFileDialog(activeFile); } },
+                { id: 'export.html', label: 'Export Markdown to HTML', action: exportMarkdownToHTML },
+                { id: 'export.pdf', label: 'Export Markdown to PDF', action: exportMarkdownToPDF },
+                { id: 'view.toggleSidebar', label: 'Toggle Sidebar', action: toggleSidebar, keys: 'Cmd+B' },
+                { id: 'view.togglePreview', label: 'Toggle Preview (MD/HTML/JSON/CSS/SVG/Images)', action: togglePreview, keys: 'Cmd+K V' },
+                { id: 'view.settings', label: 'Open Settings', action: toggleSettings, keys: 'Cmd+,' },
+                { id: 'editor.action.formatDocument', label: 'Format Document', action: () => editor && editor.getAction('editor.action.formatDocument').run() },
+                { id: 'editor.find', label: 'Find', action: toggleSearch, keys: 'Cmd+F' },
+                { id: 'editor.findInFiles', label: 'Find in All Files', action: showFindInFiles, keys: 'Cmd+Shift+F' },
+                { id: 'tab.pin', label: 'Pin/Unpin Current Tab', action: () => { if (activeFile) togglePinTab(activeFile); } },
+                { id: 'ai.toggle', label: 'Toggle AI Assistant', action: toggleAI, keys: 'Cmd+K A' },
+                { id: 'ai.improve', label: 'AI: Improve Selection', action: () => aiQuickAction('improve') },
+                { id: 'ai.grammar', label: 'AI: Check Grammar', action: () => aiQuickAction('grammar') },
+                { id: 'ai.summarize', label: 'AI: Summarize', action: () => aiQuickAction('summarize') },
+                { id: 'help.keyboard', label: 'Keyboard Shortcuts', action: toggleKeyboardHelp, keys: '?' },
+            ];
+        }
+
+        // ============================================================================
+        // INITIALIZATION - Setup auto-save on load
+        // ============================================================================
+        
+        initializeCommands();
+        setupAutoSave();
+        
+        // Initialize panel resizing after DOM loaded
+        document.addEventListener('DOMContentLoaded', () => {
+            initPanelResizing();
+            restorePanelSizes();
+        });
+    </script>
+</body>
+</html>
+

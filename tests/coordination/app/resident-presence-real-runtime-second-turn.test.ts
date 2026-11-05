@@ -86,7 +86,7 @@ async function startHoldingModel() {
       response.writeHead(503).end();
       return;
     }
-    if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
+    if (request.method !== "POST" || (request.url !== "/v1/chat/completions" && request.url !== "/api/chat")) {
       response.writeHead(404).end();
       return;
     }
@@ -107,8 +107,10 @@ async function startHoldingModel() {
     try {
       const text = await promise;
       response.writeHead(200, { "content-type": "application/json" });
+      const message = { role: "assistant", content: text };
       response.end(JSON.stringify({
-        choices: [{ message: { role: "assistant", content: text } }],
+        message,
+        choices: [{ message }],
       }));
     } catch {
       if (!response.headersSent) response.writeHead(500).end();

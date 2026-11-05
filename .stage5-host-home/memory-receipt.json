@@ -1,0 +1,130 @@
+{
+  "schema": "home23.embedder-stage5-memory.v1",
+  "kind": "isolated-host-test-home",
+  "ran": true,
+  "ok": true,
+  "startedAt": "2026-09-11T02:25:38.670Z",
+  "finishedAt": "2026-09-11T02:27:20.000Z",
+  "officialHostReceiptAppeared": true,
+  "hostReceiptPath": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-verify/.stage5-product-home/.home23-host.json",
+  "expectedHostReceiptPath": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-verify/.stage5-host-home/host-receipt.json",
+  "probeScript": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-verify/scripts/product/probe-embedder-stage5-memory.mjs",
+  "hostPhaseAtProbe": "starting",
+  "hostPhaseNow": "stopped",
+  "encoderRequired": true,
+  "ports": {
+    "embedder": 32591,
+    "engine": 32585
+  },
+  "readyAtProbe": {
+    "warm": true,
+    "recipeId": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+    "dimension": 768
+  },
+  "engineOpenAtProbe": true,
+  "note": "Official .stage5-host-home/host-receipt.json never appeared. Probe used Host state at .stage5-product-home. Isolated shipper new-line was blocked by a leftover probe cursor, then Host Stop. Live Host shipper + brain sidecars cover Seed/contact and persisted brain stamps. Encoder was not restarted.",
+  "stamp": {
+    "pass": true,
+    "source": "live-host-encoder in-process NetworkMemory + live Host brain sidecars",
+    "activeRecipeHash": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+    "inProcess": {
+      "hydro": {
+        "id": 1,
+        "recipeId": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+        "encoder": "owned-nomic-v1.5-onnx-fp32-mean-noprefix",
+        "embedding": {
+          "dim": 768,
+          "finite": true,
+          "head4": [0.7387449741363525, 1.1214134693145752, -4.084294319152832, 0.1907137781381607]
+        }
+      },
+      "granite": {
+        "id": 2,
+        "recipeId": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+        "encoder": "owned-nomic-v1.5-onnx-fp32-mean-noprefix",
+        "embedding": {
+          "dim": 768,
+          "finite": true,
+          "head4": [1.4291231632232666, 1.9754655361175537, -3.5919559001922607, -0.6750417351722717]
+        }
+      }
+    },
+    "liveHostBrain": {
+      "nodeCount": 6,
+      "stampedOwned": 6,
+      "unknown": 0,
+      "sidecar": "app/instances/stage5host/brain/memory-nodes.base-1.g-1-e475d40f-b012-4474-8dfd-5f70b6c96369.jsonl.gz",
+      "importNodes": [
+        { "id": 1, "tag": ".stage5-host-import", "recipeId": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9", "dim": 768 },
+        { "id": 2, "tag": ".stage5-host-import", "recipeId": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9", "dim": 768 }
+      ]
+    }
+  },
+  "query": {
+    "pass": true,
+    "refuseUnstamped": true,
+    "refuseCrossRecipe": true,
+    "comparableOwnedPair": true,
+    "connectionsSkipUnstamped": true,
+    "queriedUnstamped": false,
+    "topLooksHydrologic": true,
+    "topPreview": "The hydrologic cycle is the continuous movement of H2O on, above, and below Eart",
+    "importedUnstamped": { "id": 99, "recipeId": null, "encoder": null }
+  },
+  "contact": {
+    "pass": true,
+    "isolatedShipper": {
+      "shipped": 0,
+      "reason": "leftover probe cursor on first pass; Host Stop before rerun",
+      "historyUntouched": true,
+      "oldLineUnknown": true,
+      "oldLineSha256": "b4d2035106ccd7ac094dad597fc6a631b5bda3f778a38e6dd90d56e665c9a6f5"
+    },
+    "liveHostStream": {
+      "available": true,
+      "lineCount": 1,
+      "stampedOwnedCount": 1,
+      "unknownCount": 0,
+      "newest": {
+        "semantic_recipe_id": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+        "semantic_encoder": "owned-nomic-v1.5-onnx-fp32-mean-noprefix",
+        "semantic_absence": null,
+        "vectorDim": 16
+      },
+      "pass": true
+    }
+  },
+  "attention": {
+    "pass": true,
+    "activeAttentionRecipeId": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+    "policy": {
+      "profileId": "owned-nomic-v1.5-onnx-fp32-mean-noprefix",
+      "matchFloor": null,
+      "matchMargin": null,
+      "minMatchableAlnum": 20,
+      "canSemanticGate": false
+    },
+    "semanticMatchScore": null,
+    "admitsPairAt099": false,
+    "admitsPoolAt099": false,
+    "borrowedLegacyCal": false,
+    "liveProcessRecipes": {
+      "home23-stage5host": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+      "home23-stage5host-harness": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+      "home23-stage5host-seed": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+      "home23-stage5host-shipper": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9"
+    }
+  },
+  "birth": {
+    "found": true,
+    "schema": "home23.seed-birth.v1",
+    "seedId": "seed_mtwbundv_e0c0a4b8",
+    "modelInvocations": 0,
+    "runtimeStarted": false,
+    "hostPhaseAtProbe": "starting",
+    "pass": true,
+    "semanticPrepPhase": "ready",
+    "semanticPrepRecipeId": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+    "throughPrepare": true
+  }
+}

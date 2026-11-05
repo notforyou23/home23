@@ -27,7 +27,7 @@ const model = createServer(async (req, res) => {
   const message = latest.includes('substantial-') && !text.includes('owner-result contract') && !toolReturned
     ? { role: 'assistant', content: null, tool_calls: [{ id: `selected-${slug}-${label}`, type: 'function', function: { name: 'spawn_agent', arguments: JSON.stringify({ task: label, sentinel: `${slug}-exact-arguments` }) } }] }
     : { role: 'assistant', content: text.includes('owner-result contract') ? `${slug}: the substantial assignment finished exactly once.` : toolReturned ? 'I started a separate Working Thread.' : `${slug}: independent answer.` };
-  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message, finish_reason: message.tool_calls ? 'tool_calls' : 'stop' }] }));
+  res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ message, choices: [{ message }], finish_reason: message.tool_calls ? 'tool_calls' : 'stop' }));
 });
 await new Promise<void>(resolve => model.listen(0, '127.0.0.1', resolve));
 process.env.LOCAL_LLM_BASE_URL = `http://127.0.0.1:${(model.address() as {port:number}).port}/v1`;

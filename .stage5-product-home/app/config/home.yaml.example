@@ -1,0 +1,486 @@
+home:
+  name: home23
+  version: 1.0.0
+  primaryAgent: ""
+
+# M12 shadow composition. The process definition is generated exactly once,
+# but exits without opening its database, socket, or listener until enabled.
+# Legacy Home23 processes and routes remain authoritative.
+coordination:
+  process:
+    enabled: false
+  publicApi:
+    enabled: false
+    host: 127.0.0.1
+    port: 7346
+  # Independent read-surface kill switch. Canonical Activity authority is
+  # still required; this setting alone can never activate the capability.
+  activity:
+    enabled: false
+  # Independent admission kill switch. Canonical attachments authority is
+  # still required; this setting alone can never activate the capability.
+  attachments:
+    enabled: false
+  # Authenticated Apple device registration and privacy-minimal completion
+  # wake hints. Requires a complete `apns` block in secrets.yaml.
+  push:
+    enabled: false
+  # Registry flags are projected literally. Every value defaults false; flags
+  # gate reachability only and never change a canonical authority epoch.
+  flags:
+    coordination.resident.jerry.enabled: false
+    coordination.resident.forrest.enabled: false
+    coordination.channels.enabled: false
+    coordination.search.canonical: false
+    coordination.import.shadow_enabled: false
+    coordination.apple.mac_cutover: false
+    coordination.apple.iphone_cutover: false
+    coordination.bot_lifecycle.enabled: false
+    coordination.compaction.enabled: false
+
+evobrew:
+  port: 3415
+
+cosmo23:
+  # Independently installed research service; Home23 does not start or update it.
+  baseUrl: http://127.0.0.1:43210
+  # Optional local source path for discovery of existing research runs.
+  # source: /absolute/path/to/cosmo23
+  ports:
+    app: 43210
+    websocket: 43240
+    dashboard: 43244
+    mcp: 43247
+
+dashboard:
+  vibe:
+    autoGenerate: false
+    generationIntervalHours: 1
+    rotationIntervalSeconds: 120
+    galleryLimit: 100
+    sourcePaths: []
+    dreams:
+      enabled: false
+      lookback: 3
+      extraction: llm
+  tiles:
+    version: 1
+    homeLayout:
+      - tileId: chat
+        enabled: true
+        size: third
+      - tileId: system-summary
+        enabled: true
+        size: half
+      - tileId: good-life
+        enabled: true
+        size: third
+      - tileId: brain-log
+        enabled: true
+        size: third
+      - tileId: feeder
+        enabled: true
+        size: half
+    customTiles: []
+
+screenlogic:
+  enabled: false
+  host: ""
+  adapterPort: 80
+  discovery: false
+  bridgeHost: 127.0.0.1
+  bridgePort: 5023
+  pollSeconds: 60
+
+providers:
+  ollama-cloud:
+    baseUrl: https://ollama.com/v1
+    defaultModels:
+      - gpt-oss:120b
+      - gpt-oss:20b
+      - kimi-k3:cloud
+      - gemma4:31b
+      - glm-5.2:cloud
+      - glm-5.1
+      - qwen3.5:397b
+      - qwen3-coder:480b
+      - qwen3-coder-next
+      - deepseek-v4-pro
+      - deepseek-v4-flash
+      - nemotron-3-super
+      - nemotron-3-nano:30b
+  ollama-local:
+    baseUrl: http://127.0.0.1:11434
+    # Local models (keyless, served from baseUrl). Requires Ollama running and the
+    # model pulled; a GPU is recommended for the full tool-using agent on CPU.
+    defaultModels:
+      - qwen2.5:7b
+      - llama3.2
+  anthropic:
+    defaultModels:
+      - claude-sonnet-4-7
+      - claude-opus-4-8
+      - claude-haiku-4-5
+  openai:
+    defaultModels:
+      - gpt-5.5
+      - gpt-5.5-pro
+      - gpt-5.4
+      - gpt-5.4-pro
+      - gpt-5.4-mini
+      - gpt-5.4-nano
+  openai-codex:
+    defaultModels:
+      - gpt-5.6-sol
+      - gpt-5.6-terra
+      # src/agent/text-generation.ts defaults openai-codex text generation to
+      # this model. A fresh install seeded from this example must know it, or
+      # the default resolves to a model the config never declares.
+      - gpt-5.6-luna
+      - gpt-5.5
+      - gpt-5.3-codex-spark
+      - gpt-5.4
+      - gpt-5.4-mini
+      - gpt-6-astra
+  minimax:
+    baseUrl: https://api.minimax.io/anthropic
+    defaultModels:
+      - MiniMax-M3
+  xai:
+    baseUrl: https://api.x.ai/v1
+    defaultModels:
+      - grok-4.3
+      - grok-4.20-0309-reasoning
+      - grok-4.20-0309-non-reasoning
+      - grok-4.20-multi-agent-0309
+
+embeddings:
+  providers:
+    - provider: ollama-local
+      model: nomic-embed-text
+      dimensions: 768
+      endpoint: http://127.0.0.1:11434/api/embeddings
+    - provider: openai
+      model: text-embedding-3-small
+      dimensions: 1536
+    - provider: ollama-cloud
+      model: nomic-embed-text
+      dimensions: 768
+
+# Filesystem scope for resident tools (shell, read_file, list, search).
+# New homes begin with the Home23 install, resident instance, and folders selected
+# during setup. This tool-level guard reduces accidental access; it is not an OS sandbox.
+# Existing homes that omit this section retain their historical full-machine access.
+# To grant full machine access:
+#   shell:
+#     machineAccess: true
+# To grant selected extra folders:
+#   shell:
+#     roots:
+#       - /absolute/path/to/home23
+#       - /absolute/path/to/instances/agent
+#       - /absolute/path/extra
+shell:
+  machineAccess: false
+  roots: []
+
+chat:
+  defaultProvider: ollama-cloud
+  defaultModel: kimi-k3:cloud
+  reasoningEffort: medium
+  maxTokens: 4096
+  temperature: 0.7
+  historyBudget: 400000
+  sessionGapMs: 1800000
+
+query:
+  defaultProvider: anthropic
+  defaultModel: claude-opus-4-8
+  defaultMode: full
+  enablePGSByDefault: false
+  pgsSweepProvider: minimax
+  pgsSweepModel: MiniMax-M3
+  pgsSynthProvider: anthropic
+  pgsSynthModel: claude-opus-4-8
+  pgsDepth: 0.25
+
+synthesis:
+  provider: minimax
+  model: MiniMax-M3
+  intervalHours: 4
+
+situationalAwareness:
+  bootstrap:
+    reads:
+      - NOW.md
+      - PLAYBOOK.md
+
+osEngine:
+  channels:
+    machine:
+      enabled: true
+    os:
+      enabled: true
+    domain:
+      enabled: true
+      readers:
+        pressure:
+          path: ~/.pressure_log.jsonl
+          tail: true
+          enabled: false
+        health:
+          path: ~/.health_log.jsonl
+          tail: true
+          enabled: false
+        sauna:
+          path: ~/.sauna_usage_log.jsonl
+          tail: true
+          enabled: false
+        weather:
+          enabled: false
+        goodLife:
+          enabled: true
+          poll: 5m
+    build:
+      enabled: true
+    work:
+      enabled: true
+    neighbor:
+      enabled: false
+      poll: 3m
+      peers: []
+  verification:
+    flagRequired: true
+    zeroContextAsLegal: true
+  crystallization:
+    backpressure:
+      cyclesWithoutReceiptThreshold: 10
+    confidenceCaps:
+      sensor_primary: 0.95
+      sensor_derived: 0.8
+      build_event: 0.9
+      work_event: 0.9
+      neighbor_gossip: 0.7
+      zero_context_audit: 0.2
+      good_life: 0.88
+  decay:
+    worker:
+      cadence: 30m
+    halfLife:
+      warning_node: 48h
+      surreal_transform: 24h
+      unfinished_goal_review: 72h
+      unreferenced_edge: 30d
+  roleIntegrity:
+    enforce: false
+    rejectLogPath: brain/role-integrity-violations.jsonl
+  closer:
+    terminationContractRequired: false
+    dedupeBeforeSpawn: false
+  publish:
+    targets:
+      workspace_insights:
+        cadence: 50cycles
+        path: workspace/insights/
+      signals:
+        cadence: on_verdict_keep
+      bridge_chat:
+        salience_threshold: 0.75
+      dashboard:
+        cadence: 5m
+      dream_log:
+        cadence: on_critic_keep
+        path: workspace/dreams/
+    starvationFloor:
+      workspace_insights: 6h
+      dashboard: 15m
+
+agency:
+  enabled: true
+  mode: live
+  charterPath: agency/charter.yaml
+  residentTickMs: 60000
+
+# Coding-backend bridge (Step 29) — durable coding jobs delegated to headless
+# Codex / Cursor CLIs. Usually set per-agent in instances/<name>/config.yaml.
+# acp:
+#   enabled: true                        # master switch for the bridge + coding_* tools
+#   defaultAgent: codex                  # backend used when coding_run omits `backend`
+#   allowedAgents: [codex, cursor]       # only selectable launch backends
+#   permissionMode: bypassPermissions    # 'bypassPermissions' (full authority) or backend-native gating
+#   maxConcurrentJobs: 3                 # concurrent running jobs before startJob refuses
+#   jobTimeoutMs: 3600000                # hard per-job timeout in milliseconds
+#   backends:
+#     codex:
+#       bin: codex                       # Codex CLI binary (jobs fail fast when not installed)
+#       model: gpt-5.5                   # default model for this backend; omit to use CLI config
+#       sandbox: danger-full-access      # codex sandbox mode
+#       extraArgs: []                    # extra CLI args appended verbatim
+#     cursor:
+#       bin: cursor-agent                # Cursor Agent CLI binary; do not use the GUI `cursor` launcher
+#       model: auto                      # default model for this backend; Cursor supports parameterized model strings
+#       extraArgs: []                    # extra CLI args appended verbatim
+#   envPassthrough: []                   # env var names forwarded to job children (secrets are NOT forwarded by default)
+#   hooks:
+#     onComplete: ""                     # shell command run after a job completes (HOME23_JOB_* env vars)
+#     onFail: ""                         # shell command run after a job fails
+
+# Async work (Step 31): durable records for detached work (coding jobs +
+# sub-agents) with post-completion review + delivery behavior.
+# asyncWork:
+#   review:
+#     coding: true                       # successful coding jobs get an agent review turn before reporting
+#     subagent: false                    # sub-agent results deliver directly
+#   reviewIdleTimeoutMs: 120000          # how long the review defers to a busy origin conversation
+
+media:
+  imageGeneration:
+    provider: openai
+    model: gpt-image-2
+
+models:
+  reasoningEffort:
+    gpt-5.6-sol: high
+  aliases:
+    qwen2.5:
+      provider: ollama-local
+      model: qwen2.5:7b
+    llama3.2:
+      provider: ollama-local
+      model: llama3.2
+    sonnet:
+      provider: anthropic
+      model: claude-sonnet-4-7
+    opus:
+      provider: anthropic
+      model: claude-opus-4-8
+    haiku:
+      provider: anthropic
+      model: claude-haiku-4-5
+    gpt:
+      provider: openai-codex
+      model: gpt-5.5
+    gpt5:
+      provider: openai-codex
+      model: gpt-5.5
+    gpt56:
+      provider: openai-codex
+      model: gpt-5.6-sol
+      reasoningEffort: xhigh
+    luna:
+      provider: openai-codex
+      model: gpt-5.6-luna
+    gpt-pro:
+      provider: openai
+      model: gpt-5.5-pro
+    mini:
+      provider: openai-codex
+      model: gpt-5.4-mini
+    grok:
+      provider: xai
+      model: grok-4.3
+    grok4:
+      provider: xai
+      model: grok-4.3
+    grok420:
+      provider: xai
+      model: grok-4.20-0309-reasoning
+    kimi:
+      provider: ollama-cloud
+      model: kimi-k3:cloud
+    'kimi-k3:cloud':
+      provider: ollama-cloud
+      model: kimi-k3:cloud
+    qwen:
+      provider: ollama-cloud
+      model: qwen3.5:397b
+    deepseek:
+      provider: ollama-cloud
+      model: deepseek-v4-pro
+    deepseek-v4:
+      provider: ollama-cloud
+      model: deepseek-v4-pro
+    deepseek-v4-flash:
+      provider: ollama-cloud
+      model: deepseek-v4-flash
+    minimax:
+      provider: minimax
+      model: MiniMax-M3
+    nemotron:
+      provider: ollama-cloud
+      model: nemotron-3-super
+    qwen-coder:
+      provider: ollama-cloud
+      model: qwen3-coder:480b
+    gemma4:
+      provider: ollama-cloud
+      model: gemma4:31b
+    gemma:
+      provider: ollama-cloud
+      model: gemma4:31b
+    glm:
+      provider: ollama-cloud
+      model: glm-5.2:cloud
+    glm5:
+      provider: ollama-cloud
+      model: glm-5.2:cloud
+    glm52:
+      provider: ollama-cloud
+      model: glm-5.2:cloud
+    codex:
+      provider: openai-codex
+      model: gpt-5.5
+    astra:
+      provider: openai-codex
+      model: gpt-6-astra
+
+skills:
+  x-research:
+    defaults:
+      quick: true
+      saveMarkdown: true
+
+# ── Substrate auxiliary services (optional) ──
+# Generated into ecosystem.config.cjs by cli/lib/generate-ecosystem.js, so
+# `home23 start` recreates them. Omit this block entirely and none are emitted.
+#
+# Per-agent processes are DERIVED and need nothing here: an agent with
+# substrate.enabled gets its seed runner and conversation shipper
+# automatically, and substrate.houseSense on the agent adds house sensing.
+# Only things that cannot be derived are declared below.
+substrate:
+  observatory:
+    # The terrarium — a read-only page over every individual's chain.
+    # Emitted only when at least one agent runs a seed.
+    port: 5050
+    # Individuals that are NOT agents of this install: a resident living on
+    # another machine and mirrored locally, or an archived lineage. Paths are
+    # relative to the install root.
+    extraIndividuals: []
+    #  - name: bobby
+    #    stateDir: instances/bobby/seed-01-mirror
+    #  - name: clay
+    #    stateDir: instances/clay/seed-01
+    #    note: archived
+
+  # Lobe brokers carry a remote resident's exchange over ssh. Remote paths are
+  # that machine's filesystem and are used verbatim; *Dest paths are local
+  # mirrors resolved against this install.
+  brokers: []
+  #  - name: bobby
+  #    sshHost: 192.168.1.50
+  #    remoteDir: /home/you/bobby/lobe-exchange
+  #    model: claude-haiku-4-5
+  #    intervalMs: 20000
+  #    stateDest: instances/bobby/seed-01-mirror
+  #    stateRemote: /home/you/bobby/seed-01
+  #    formsDest: instances/bobby/forms-mirror
+  #    formsRemote: /home/you/bobby/forms
+  #    formsEveryTicks: 30
+
+  # Long-running feed scripts. Keep the script itself under instances/ (which
+  # is gitignored) so nothing machine-specific enters the repository.
+  shippers: []
+  #  - name: bobby-house-shipper
+  #    script: instances/jerry/substrate/house-stream-shipper.sh
+  #    interpreter: bash

@@ -1,0 +1,46 @@
+{
+  "schema": "home23.embedder-linux-incremental-transfer.v1",
+  "createdAt": "2026-09-11T17:22:00Z",
+  "kind": "incremental-source-followup",
+  "prerequisiteSha": "1905b5798b6d1a49252f715d9a5cd55c6697b054",
+  "followupSha": "5e567a8f0bd0cceaf1e40f5edae81c69f844aef1",
+  "installedArtifactSha": "be6254879fc8c22a6265e6010ac0284f70f4329b",
+  "installedArtifactUnchanged": true,
+  "sourceOverlayForbidden": true,
+  "doNotModifyInstalledHome": true,
+  "doNotModifyEarlierTransfers": true,
+  "pushed": false,
+  "github": "not available — do not git pull origin",
+  "branch": "home23-agent/owned-embedder-stage5-verify",
+  "bundle": {
+    "file": "home23-owned-embedder-1905b579-to-5e567a8f.bundle",
+    "sha256": "7406edc363f7c657e520758c6d9e6c84221935bb54f16341d6dde13e7cbcc71b",
+    "sha256NamesBasenameOnly": true,
+    "head": "5e567a8f0bd0cceaf1e40f5edae81c69f844aef1",
+    "ref": "refs/heads/owned-embedder-scan-budget",
+    "requires": "1905b5798b6d1a49252f715d9a5cd55c6697b054",
+    "commits": ["5e567a8f0bd0cceaf1e40f5edae81c69f844aef1"]
+  },
+  "earlierTransfersUnchanged": {
+    "installBundleSha256": "1ac7adf9972e99fe83b0ea251dd60909935fb6b41e281f62ffa0543c3f23923d",
+    "outageFollowupBundleSha256": "88c4d114f1424b5cdb9f6c0d4ac77a3ecd6c5a983a5fdd0ec2fd14a01dac3a71"
+  },
+  "linuxRoot": "/home/box/home23-owned-embedder-test",
+  "homeRootVar": "HOME_ROOT",
+  "doNotExportShellHOME": true,
+  "preserve": ["/home/box/home23-test", "Keep/GrokBot", "host Ollama :11434"],
+  "repeat": {
+    "packageCreateInterruptIngestRetrieve": false,
+    "sourceUnitTests": [
+      "tests/engine/dashboard/memory-search.test.js"
+    ],
+    "node": "$H23_ROOT/toolchain/node-v22.19.0-linux-x64/bin/node",
+    "nodeVersion": "v22.19.0"
+  },
+  "evidence": [
+    "2026-09-11-owned-embedder-context-outage-scan-budget.md",
+    "CANDIDATE-RECORD.md"
+  ],
+  "attention": "null-cal policy only; measured calibration unfinished",
+  "stage6": "NO-GO"
+}

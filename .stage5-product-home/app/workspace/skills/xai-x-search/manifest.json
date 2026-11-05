@@ -1,0 +1,42 @@
+{
+  "id": "xai-x-search",
+  "version": "1.0.0",
+  "name": "xAI X Search",
+  "description": "Search X/Twitter in real-time using Grok's native x_search tool through the xAI API. No X developer API credits required — uses the xAI API key already configured in Home23.",
+  "layer": "skill",
+  "runtime": "nodejs",
+  "category": "research",
+  "author": "home23",
+  "entry": "index.js",
+  "keywords": [
+    "x search",
+    "twitter search",
+    "search x",
+    "grok search",
+    "xai search",
+    "what are people saying",
+    "twitter discourse",
+    "live x",
+    "real-time x"
+  ],
+  "triggers": [
+    "search x for",
+    "search twitter for",
+    "what are people saying on x",
+    "what's twitter saying",
+    "check x discourse",
+    "grok search x",
+    "find tweets about"
+  ],
+  "requiresTools": [],
+  "dependsOn": [],
+  "composes": [
+    "source-validation",
+    "deep-research-synthesizer"
+  ],
+  "actions": [
+    "search",
+    "thread",
+    "profile"
+  ]
+}

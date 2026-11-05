@@ -952,7 +952,7 @@ export async function assembleContext(
 
   const block = `[SITUATIONAL AWARENESS]\n\n${
     brainCues.length > 0
-      ? '[CONTINUITY ENRICHMENT] This block includes automatic pre-turn brain cues. Do not treat them as brain_search results.\n\n'
+      ? '[CONTINUITY ENRICHMENT] This block includes automatic pre-turn brain cues. Use them as working memory. Prefer their wording over general knowledge when they answer the question. They are not brain_search tool results.\n\n'
       : ''
   }${hybridRetrievalSection}${brainSection}${surfaceSection}\n\n[/SITUATIONAL AWARENESS]`;
 

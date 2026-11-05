@@ -1,0 +1,15 @@
+{
+  "success": true,
+  "operationId": "brop_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "state": "complete",
+  "resultHandle": "brres_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "canonicalEvidence": true,
+  "exportHandle": "brexp_cccccccccccccccccccccccccccccccc",
+  "relativePath": "workspace/brain-exports/contract-smoke.md",
+  "bytes": 148,
+  "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "sourceOperationId": "brop_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "sourceResultHandleHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "format": "markdown",
+  "exportedTo": "workspace/brain-exports/contract-smoke.md"
+}

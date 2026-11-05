@@ -1,0 +1,1172 @@
+const { BaseAgent } = require('./base-agent');
+const { DeliverableManifest } = require('./deliverable-manifest');
+
+/**
+ * Governing rule (jtr, 2026-07-15): "something happened" -> event, worth
+ * keeping. "A loop ticked" -> not an event, no record. A synthesis report
+ * generated over zero evidence nodes is GPT free-associating from mission
+ * text alone (see this.zeroEvidenceSynthesis in execute()) -- nothing was
+ * actually synthesized from the brain, so nothing should be written back
+ * into it. A report backed by real evidence nodes still persists.
+ *
+ * @param {number} evidenceNodeCount - knowledgeBase.nodes.length for this run
+ * @returns {boolean} true iff the report should be written to memory
+ */
+function shouldPersistSynthesisReport(evidenceNodeCount) {
+  return evidenceNodeCount > 0;
+}
+
+/**
+ * SynthesisAgent - Report writing and knowledge consolidation specialist
+ * 
+ * Purpose:
+ * - Synthesizes accumulated knowledge on a topic into coherent reports
+ * - Consolidates insights from multiple sources and agents
+ * - Creates structured summaries of complex information
+ * - Identifies knowledge gaps and areas for further exploration
+ * 
+ * Use Cases:
+ * - Creating comprehensive reports on completed research
+ * - Consolidating insights from multiple analysis sessions
+ * - Summarizing what the system has learned about a topic
+ * - Generating documentation of cognitive work
+ */
+class SynthesisAgent extends BaseAgent {
+  constructor(mission, config, logger) {
+    super(mission, config, logger);
+    this.sourceNodes = [];
+    this.sections = [];
+    this.zeroEvidenceSynthesis = false;
+  }
+
+  /**
+   * Main execution logic
+   */
+  async execute() {
+    this.logger.info('📝 SynthesisAgent: Starting synthesis mission', {
+      agentId: this.agentId,
+      goal: this.mission.goalId,
+      taskId: this.mission.taskId,
+      description: this.mission.description
+    }, 3);
+
+    // NEW: Check if this is final deliverable assembly
+    const isFinalDeliverable = this.mission.metadata?.isFinalSynthesis || 
+                                (this.mission.description && 
+                                 this.mission.description.includes('Assemble Final Deliverable'));
+    
+    if (isFinalDeliverable) {
+      this.logger.info('📦 Executing final deliverable assembly', {
+        agentId: this.agentId,
+        taskId: this.mission.taskId
+      }, 3);
+      return await this.assembleFinalDeliverable();
+    }
+
+    await this.reportProgress(10, 'Gathering relevant knowledge');
+
+    // NEW: Check what's been synthesized before
+    const previousSynthesis = await this.checkExistingKnowledge(this.mission.description, 2);
+    if (previousSynthesis && previousSynthesis.hasKnowledge) {
+      this.logger.info('📚 Found previous synthesis work', {
+        relevantNodes: previousSynthesis.relevantNodes,
+        willUpdate: true
+      });
+      
+      await this.addInsight(
+        `Updating previous synthesis work. Found ${previousSynthesis.relevantNodes} related nodes. ` +
+        `This synthesis will incorporate latest findings.`
+      );
+    }
+
+    // NEW: Get coordinator context for strategic alignment
+    const strategicContext = await this.getStrategicContext();
+    if (strategicContext) {
+      this.logger.info('🎯 Synthesis aligned with strategic priorities', {
+        hasRecommendations: !!strategicContext.recommendations
+      });
+    }
+
+    // NEW: Check recent agent activity for fresh findings
+    const agentActivity = await this.checkAgentActivity();
+    if (agentActivity) {
+      const recentWorkTypes = agentActivity.recentTypes.slice(0, 5);
+      this.logger.info('🤝 Recent agent work detected', {
+        types: recentWorkTypes,
+        willIncorporate: true
+      });
+      
+      // Agents recently completed - their findings are fresh in memory
+      const hasRecentResearch = recentWorkTypes.includes('research');
+      const hasRecentAnalysis = recentWorkTypes.includes('analysis');
+      const hasRecentCode = recentWorkTypes.includes('code_execution');
+      
+      if (hasRecentResearch || hasRecentAnalysis || hasRecentCode) {
+        await this.addInsight(
+          `Synthesis incorporates fresh work from: ${recentWorkTypes.join(', ')}. ` +
+          `Recent agent findings integrated for comprehensive overview.`
+        );
+      }
+    }
+
+    // Step 1: Gather relevant knowledge from memory
+    const knowledgeBase = await this.gatherRelevantKnowledge();
+    
+    if (knowledgeBase.nodes.length === 0) {
+      this.logger.info('📭 No existing knowledge in memory (fresh start)', {
+        agentId: this.agentId
+      });
+      this.zeroEvidenceSynthesis = true;
+      if (this.requiresGroundedSynthesis() && !this.allowsZeroEvidenceSynthesis()) {
+        const message = 'Synthesis halted: zero evidence nodes available. Refusing to generate a report from mission text alone.';
+        this.logger.warn(`❌ ${message}`, {
+          agentId: this.agentId,
+          mission: this.mission.description,
+        });
+        this.results.push({
+          type: 'diagnostic',
+          status: 'needs_input',
+          reason: 'zero_evidence',
+          message,
+          evidence: {
+            inputCount: 0,
+            evidenceRefs: [],
+            zeroContextAllowed: false,
+          },
+          timestamp: new Date(),
+        });
+        await this.reportProgress(100, 'Synthesis halted: needs evidence');
+        return {
+          success: false,
+          status: 'needs_input',
+          reason: 'zero_evidence',
+          sourcesConsulted: 0,
+          sectionsGenerated: 0,
+          metadata: {
+            reportGenerated: false,
+            sectionsGenerated: 0,
+            sourcesConsulted: 0,
+            status: 'needs_input',
+            evidence: {
+              inputCount: 0,
+              evidenceRefs: [],
+              zeroContextAllowed: false,
+              groundingStrength: 'none',
+            },
+          },
+        };
+      }
+      this.logger.warn('⚠️ Zero-evidence synthesis proceeding as an uncertified draft', {
+        agentId: this.agentId,
+      });
+      this.results.push({
+        type: 'grounding_notice',
+        status: 'uncertified_draft',
+        reason: 'zero_evidence',
+        message: 'No memory nodes were available. Output may still be useful as a draft, but it is not evidence-backed.',
+        evidence: {
+          inputCount: 0,
+          evidenceRefs: [],
+          zeroContextAllowed: true,
+          groundingStrength: 'none',
+        },
+        timestamp: new Date(),
+      });
+    }
+
+    // NEW: Use cluster analysis to understand knowledge domains
+    const clusters = await this.getKnowledgeClusters();
+    this.logger.info('🗺️  Knowledge clusters for synthesis', {
+      clusterCount: clusters.size,
+      largestClusterSize: Math.max(...Array.from(clusters.values()).map(nodes => nodes.length), 0)
+    });
+
+    // NEW: Identify hot topics to prioritize in synthesis
+    const hotTopics = await this.getHotTopics(10);
+    this.logger.info('🔥 Hot topics to emphasize', {
+      topics: hotTopics.slice(0, 5).map(t => t.concept?.substring(0, 40))
+    });
+
+    // NEW: Check recent insights from all agent types
+    const recentInsights = await this.aggregateAgentInsights(
+      ['research', 'analysis', 'code_execution', 'exploration'],
+      7200000 // Last 2 hours
+    );
+    this.logger.info('🤝 Recent agent insights', {
+      research: recentInsights.research?.count || 0,
+      analysis: recentInsights.analysis?.count || 0,
+      code_execution: recentInsights.code_execution?.count || 0,
+      exploration: recentInsights.exploration?.count || 0
+    });
+
+    await this.reportProgress(30, `Gathered ${knowledgeBase.nodes.length} memory nodes`);
+
+    // Step 2: Structure the synthesis
+    const structure = await this.createSynthesisStructure(knowledgeBase);
+    this.sections = structure.sections;
+    
+    await this.reportProgress(45, 'Synthesis structure created');
+
+    // Step 3: Generate sections
+    const generatedSections = [];
+    
+    for (let i = 0; i < structure.sections.length; i++) {
+      const section = structure.sections[i];
+      
+      this.logger.info('✍️  Generating section', {
+        agentId: this.agentId,
+        sectionTitle: section.title,
+        sectionNum: i + 1,
+        total: structure.sections.length
+      }, 3);
+
+      try {
+        const content = await this.generateSection(section, knowledgeBase);
+        
+        // CRITICAL: Skip failed sections instead of adding placeholder noise
+        if (content === null || content === undefined) {
+          this.logger.error('❌ Section generation returned null - SKIPPING', {
+            section: section.title,
+            action: 'Section omitted from report'
+          });
+          continue; // Skip to next section
+        }
+        
+        generatedSections.push({
+          title: section.title,
+          content
+        }, 3);
+        
+        await this.reportProgress(
+          45 + (i + 1) * (35 / structure.sections.length),
+          `Generated section: ${section.title}`
+        );
+      } catch (error) {
+        this.logger.error('❌ Section generation threw error - SKIPPING', {
+          section: section.title,
+          error: error.message,
+          action: 'Section omitted from report'
+        });
+        
+        // Add finding to flag this for follow-up
+        await this.addFinding(
+          `Synthesis section "${section.title}" failed with error: ${error.message}. Section omitted.`,
+          'synthesis_section_failure'
+        );
+        
+        // Don't add placeholder - just skip to next section
+        continue;
+      }
+    }
+
+    // Step 4: Create executive summary
+    await this.reportProgress(85, 'Creating executive summary');
+    const executiveSummary = await this.createExecutiveSummary(generatedSections);
+
+    // Step 5: Identify knowledge gaps
+    await this.reportProgress(92, 'Identifying knowledge gaps');
+    const gaps = await this.identifyKnowledgeGaps(knowledgeBase, generatedSections);
+
+    // Step 6: Compile final report
+    const report = this.compileReport({
+      executiveSummary,
+      sections: generatedSections,
+      knowledgeGaps: gaps,
+      metadata: {
+        sourcesConsulted: knowledgeBase.nodes.length,
+        sectionsGenerated: generatedSections.length,
+        createdAt: new Date()
+      }
+    }, 3);
+
+    // Step 7: Add report to memory -- gated by shouldPersistSynthesisReport()
+    // (see governing-rule comment above). Kept in this.results either way so
+    // the caller/mission result is unaffected; only the brain write is gated.
+    await this.reportProgress(97, 'Adding synthesis to memory');
+    if (shouldPersistSynthesisReport(knowledgeBase.nodes.length)) {
+      await this.addFinding(report, 'synthesis_report');
+    } else {
+      this.logger.debug?.('Zero-evidence synthesis report kept as draft result only, not persisted', {
+        agentId: this.agentId,
+        goal: this.mission.goalId
+      });
+    }
+
+    // Store final results
+    this.results.push({
+      type: 'synthesis_report',
+      content: report,
+      executiveSummary,
+      sectionsGenerated: generatedSections.length,
+      sourcesConsulted: knowledgeBase.nodes.length,
+      knowledgeGaps: gaps,
+      timestamp: new Date()
+    }, 3);
+
+    await this.reportProgress(100, 'Synthesis complete');
+
+    this.logger.info('✅ SynthesisAgent: Mission complete', {
+      agentId: this.agentId,
+      goal: this.mission.goalId,
+      sectionsGenerated: generatedSections.length,
+      sourcesConsulted: knowledgeBase.nodes.length,
+      reportLength: report.length
+    }, 3);
+
+    return {
+      success: true,
+      sectionsGenerated: generatedSections.length,
+      sourcesConsulted: knowledgeBase.nodes.length,
+      reportLength: report.length,
+      
+      // NEW: Explicitly set DoD fields for Executive Ring validation
+      metadata: {
+        reportGenerated: true,
+        wordCount: report.split(/\s+/).length,
+        sectionsGenerated: generatedSections.length,
+        sourcesConsulted: knowledgeBase.nodes.length,
+        groundingStrength: knowledgeBase.nodes.length > 0 ? 'memory-backed' : 'none',
+        evidenceStatus: knowledgeBase.nodes.length > 0 ? 'grounded' : 'uncertified_draft',
+        status: knowledgeBase.nodes.length > 0 ? 'complete' : 'uncertified_draft'
+      }
+    };
+  }
+
+  /**
+   * Gather relevant knowledge from memory network
+   */
+  async gatherRelevantKnowledge() {
+    if (!this.memory) {
+      throw new Error('No memory system available');
+    }
+
+    // Query memory for nodes related to mission
+    const queryResults = await this.memory.query(this.mission.description, 30);
+    
+    this.sourceNodes = queryResults;
+
+    this.logger.info('Knowledge gathered from memory', {
+      nodesFound: queryResults.length,
+      topSimilarity: queryResults[0]?.similarity || 0
+    }, 3);
+
+    return {
+      nodes: queryResults,
+      totalNodes: queryResults.length
+    };
+  }
+
+  /**
+   * Create structure for the synthesis report
+   */
+  async createSynthesisStructure(knowledgeBase) {
+    // Sample top nodes for context
+    const topNodes = knowledgeBase.nodes
+      .slice(0, 10)
+      .map(n => (n.concept || '').substring(0, 150))
+      .join('\n');
+
+    const prompt = `You are structuring a synthesis report.
+
+MISSION: ${this.mission.description}
+
+SUCCESS CRITERIA:
+${this.mission.successCriteria.map((c, i) => `${i + 1}. ${c}`).join('\n')}
+
+AVAILABLE KNOWLEDGE (sample):
+${topNodes}
+
+Create a 3-4 section structure for this synthesis report.
+
+Each section should:
+- Have a clear, descriptive title
+- Cover a distinct aspect of the topic
+- Build on previous sections logically
+
+Respond in JSON format:
+{
+  "sections": [
+    {
+      "title": "Section 1 Title",
+      "focus": "What this section covers..."
+    },
+    {
+      "title": "Section 2 Title",
+      "focus": "What this section covers..."
+    }
+  ]
+}`;
+
+    try {
+      const response = await this.gpt5.generateWithRetry({
+        instructions: prompt,
+        messages: [{ role: 'user', content: 'Create synthesis structure.' }],
+        maxTokens: 6000, // Increased from 1500 - knowledge gap analysis needs comprehensive output
+        reasoningEffort: 'low'
+      }, 3);
+
+      // Check for valid content
+      if (!response.content || response.content.trim() === '' || response.content.includes('[Error:')) {
+        this.logger.warn('Empty response for synthesis structure, using fallback');
+        return this.getFallbackStructure();
+      }
+
+      const match = response.content.match(/\{[\s\S]*\}/);
+      if (match) {
+        return JSON.parse(match[0]);
+      }
+
+      // Fallback structure
+      return this.getFallbackStructure();
+    } catch (error) {
+      this.logger.error('Structure creation failed', { error: error.message }, 3);
+      return this.getFallbackStructure();
+    }
+  }
+
+  /**
+   * Get fallback structure when GPT-5.5 fails
+   */
+  getFallbackStructure() {
+    return {
+      sections: [
+        { title: 'Overview', focus: 'General overview of the topic' },
+        { title: 'Key Findings', focus: 'Main discoveries and insights' },
+        { title: 'Implications', focus: 'Consequences and applications' }
+      ]
+    };
+  }
+
+  allowsZeroEvidenceSynthesis() {
+    return Boolean(
+      this.mission?.allowZeroEvidence === true ||
+      this.mission?.allow_zero_evidence === true ||
+      this.mission?.metadata?.allowZeroEvidence === true ||
+      this.mission?.metadata?.allow_zero_evidence === true ||
+      this.mission?.metadata?.zeroContextAllowed === true ||
+      this.mission?.metadata?.zero_context_allowed === true
+    );
+  }
+
+  requiresGroundedSynthesis() {
+    if (
+      this.mission?.requireEvidence === true ||
+      this.mission?.require_evidence === true ||
+      this.mission?.metadata?.requireEvidence === true ||
+      this.mission?.metadata?.require_evidence === true ||
+      this.mission?.metadata?.mustBeGrounded === true ||
+      this.mission?.metadata?.must_be_grounded === true
+    ) {
+      return true;
+    }
+    const text = `${this.mission?.description || ''} ${(this.mission?.successCriteria || []).join(' ')}`.toLowerCase();
+    return /\b(verify|fact[- ]?check|prove|audit|evidence-backed|grounded|cite sources|with citations)\b/.test(text);
+  }
+
+  /**
+   * Generate content for a specific section
+   */
+  async generateSection(section, knowledgeBase) {
+    // Get most relevant nodes for this section
+    const sectionQuery = `${section.title} ${section.focus}`;
+    const relevantNodes = await this.memory.query(sectionQuery, 10);
+    
+    const nodesSummary = relevantNodes
+      .map(n => `- ${n.concept}`)
+      .join('\n');
+
+    const prompt = `You are writing a section of a synthesis report.
+
+SECTION TITLE: ${section.title}
+SECTION FOCUS: ${section.focus}
+
+RELEVANT KNOWLEDGE:
+${nodesSummary}
+
+OVERALL MISSION: ${this.mission.description}
+
+Write a comprehensive section (3-4 well-developed paragraphs) that:
+- Synthesizes the available knowledge on this aspect
+- Presents information clearly and coherently
+- Connects ideas and shows relationships
+- Provides specific insights and examples
+
+Write in a clear, informative style. Be substantive and specific.`;
+
+    try {
+      const response = await this.gpt5.generate({
+        component: 'agents',
+        purpose: 'synthesis',
+        model: this.config.models?.strategicModel || 'gpt-5.5', // Use strategic model for synthesis writing
+        instructions: prompt,
+        messages: [{ role: 'user', content: `Write section: ${section.title}` }],
+        maxTokens: 16000, // Increased from 12000 to prevent truncation
+        reasoningEffort: 'low' // Efficient for synthesis - tokens increased from 1500 to 16000, safe to use 'medium' if needed
+      });
+
+      // Handle empty or error responses - SKIP section instead of placeholder
+      if (!response.content || response.content.trim() === '' || response.content.includes('[Error:')) {
+        this.logger.error('❌ Section generation failed - SKIPPING to avoid noise', {
+          section: section.title,
+          hadError: response.hadError,
+          errorType: response.errorType,
+          action: 'Section will be omitted from report'
+        });
+        
+        // Add finding to flag this for follow-up
+        await this.addFinding(
+          `Synthesis section "${section.title}" failed to generate. API returned ${response.errorType || 'empty response'}. Section omitted to prevent placeholder noise.`,
+          'synthesis_section_failure'
+        );
+        
+        return null; // Return null instead of placeholder
+      }
+
+      return response.content;
+    } catch (error) {
+      this.logger.error('❌ Section generation failed - SKIPPING to avoid noise', {
+        section: section.title,
+        error: error.message,
+        action: 'Section will be omitted from report'
+      });
+      
+      // Add finding to flag this for follow-up
+      await this.addFinding(
+        `Synthesis section "${section.title}" failed with error: ${error.message}. Section omitted to prevent placeholder noise.`,
+        'synthesis_section_failure'
+      );
+      
+      return null; // Return null instead of placeholder
+    }
+  }
+
+  /**
+   * Create executive summary
+   */
+  async createExecutiveSummary(sections) {
+    const sectionsSummary = sections
+      .map(s => `${s.title}:\n${(s.content || '[Section incomplete]').substring(0, 300)}...`)
+      .join('\n\n');
+
+    const prompt = `You are creating an executive summary of a synthesis report.
+
+MISSION: ${this.mission.description}
+
+REPORT SECTIONS:
+${sectionsSummary}
+
+Create a concise executive summary (1-2 paragraphs) that:
+- Captures the most important findings
+- Provides clear value and insights
+- Can stand alone as a complete summary
+
+Be clear, direct, and informative.`;
+
+    try {
+      const response = await this.gpt5.generateWithRetry({
+        instructions: prompt,
+        messages: [{ role: 'user', content: 'Create executive summary.' }],
+        maxTokens: 10000, // Executive synthesis needs space
+        reasoningEffort: 'medium' // Reasoning about what's most important
+      }, 3);
+
+      // Handle empty or error responses
+      if (!response.content || response.content.trim() === '' || response.content.includes('[Error:')) {
+        this.logger.warn('Empty response for executive summary, using fallback');
+        return '[Executive summary unavailable due to API error]';
+      }
+
+      return response.content;
+    } catch (error) {
+      this.logger.error('Executive summary creation failed', { error: error.message }, 3);
+      return 'Executive summary: See detailed sections below for comprehensive synthesis of available knowledge.';
+    }
+  }
+
+  /**
+   * Identify knowledge gaps
+   */
+  async identifyKnowledgeGaps(knowledgeBase, sections) {
+    const sectionTitles = sections.map(s => s.title).join(', ');
+
+    const prompt = `Based on this synthesis work, identify 2-3 specific knowledge gaps.
+
+MISSION: ${this.mission.description}
+
+SECTIONS COVERED: ${sectionTitles}
+SOURCES CONSULTED: ${knowledgeBase.nodes.length} memory nodes
+
+What specific areas need more information? What questions remain unanswered?
+
+Respond with JSON array:
+["Gap 1: Specific gap...", "Gap 2: Another gap...", "Gap 3: Third gap..."]`;
+
+    try {
+      const response = await this.gpt5.generateFast({
+        instructions: prompt,
+        messages: [{ role: 'user', content: 'Identify knowledge gaps.' }],
+        maxTokens: 6000 // Increased from 1500 to prevent incomplete responses
+      }, 3);
+
+      // Check for incomplete response
+      if (response.hadError || response.errorType === 'response.incomplete') {
+        this.logger.warn('Incomplete response for knowledge gaps, returning empty array');
+        return [];
+      }
+
+      const match = response.content.match(/\[[\s\S]*?\]/);
+      if (match) {
+        return JSON.parse(match[0]).slice(0, 3);
+      }
+      return [];
+    } catch (error) {
+      this.logger.error('Gap identification failed', { error: error.message }, 3);
+      return [];
+    }
+  }
+
+  /**
+   * Compile final report
+   */
+  compileReport(data) {
+    const { executiveSummary, sections, knowledgeGaps, metadata } = data;
+
+    let report = `# SYNTHESIS REPORT\n\n`;
+    report += `**Mission:** ${this.mission.description}\n\n`;
+    report += `**Generated:** ${metadata.createdAt.toISOString()}\n`;
+    report += `**Sources:** ${metadata.sourcesConsulted} memory nodes\n`;
+    report += `**Sections:** ${metadata.sectionsGenerated}\n\n`;
+    if (metadata.sourcesConsulted === 0) {
+      report += `**Evidence status:** UNCERTIFIED DRAFT — no memory nodes were available. Treat this as generated drafting, not grounded synthesis.\n\n`;
+    }
+    
+    report += `---\n\n`;
+    
+    report += `## EXECUTIVE SUMMARY\n\n`;
+    report += `${executiveSummary}\n\n`;
+    
+    report += `---\n\n`;
+    
+    for (const section of sections) {
+      const title = (section.title || 'UNTITLED SECTION').toUpperCase();
+      const content = section.content || '[Section content unavailable]';
+      report += `## ${title}\n\n`;
+      report += `${content}\n\n`;
+      report += `---\n\n`;
+    }
+    
+    if (knowledgeGaps.length > 0) {
+      report += `## KNOWLEDGE GAPS\n\n`;
+      for (const gap of knowledgeGaps) {
+        report += `- ${gap}\n`;
+      }
+      report += `\n`;
+    }
+
+    return report;
+  }
+
+  /**
+   * Called on successful completion
+   */
+  async onComplete() {
+    this.logger.info('🎉 SynthesisAgent completed successfully', {
+      agentId: this.agentId,
+      goal: this.mission.goalId,
+      sectionsGenerated: this.sections.length,
+      sourcesConsulted: this.sourceNodes.length
+    }, 3);
+  }
+
+  /**
+   * NEW: Assemble final deliverable from tracked artifacts
+   */
+  async assembleFinalDeliverable() {
+    const fs = require('fs').promises;
+    const path = require('path');
+    
+    await this.reportProgress(10, 'Gathering phase artifacts');
+    
+    // Get deliverable spec from mission metadata
+    const deliverableSpec = this.mission.metadata?.deliverableSpec || this.mission.deliverable;
+    
+    if (!deliverableSpec) {
+      throw new Error('No deliverable specification found for synthesis task');
+    }
+    
+    this.logger.info('📦 Deliverable spec loaded', {
+      type: deliverableSpec.type,
+      filename: deliverableSpec.filename,
+      requiredSections: deliverableSpec.requiredSections?.length || 0
+    }, 3);
+    
+    // Gather all phase artifacts
+    const artifacts = await this.gatherPhaseArtifacts();
+    
+    await this.reportProgress(30, `Reading ${artifacts.length} artifact files`);
+    
+    // Read artifact files
+    const artifactContents = await this.readArtifactFiles(artifacts);
+    
+    await this.reportProgress(50, 'Assembling final deliverable with GPT-5.5');
+    
+    // Use GPT-5.5 to intelligently combine artifacts into final format
+    const assembled = await this.assembleDeliverable(artifactContents, deliverableSpec);
+    
+    await this.reportProgress(75, 'Writing final deliverable');
+    
+    // Write final deliverable
+    const outputPath = await this.writeFinalDeliverable(assembled, deliverableSpec);
+    
+    await this.reportProgress(90, 'Storing in memory');
+    
+    // Register as deliverable result
+    this.results.push({
+      type: 'deliverable',
+      label: `Final Deliverable: ${deliverableSpec.filename}`,
+      path: outputPath,
+      format: deliverableSpec.type || 'markdown',
+      createdAt: new Date().toISOString(),
+      agentId: this.agentId,
+      isFinalDeliverable: true
+    });
+    
+    await this.addFinding(`Final deliverable assembled: ${outputPath}`, 'deliverable_synthesis');
+    
+    await this.reportProgress(100, 'Synthesis complete');
+    
+    this.logger.info('✅ SynthesisAgent: Final deliverable complete', {
+      agentId: this.agentId,
+      path: outputPath,
+      artifactsAssembled: artifacts.length,
+      size: assembled.length
+    }, 3);
+    
+    return {
+      success: true,
+      deliverablePath: outputPath,
+      artifactsAssembled: artifacts.length,
+      deliverableSize: assembled.length
+    };
+  }
+
+  /**
+   * Gather all phase artifacts from memory and filesystem
+   */
+  async gatherPhaseArtifacts() {
+    const fs = require('fs').promises;
+    const path = require('path');
+    
+    const inputGoalIds = new Set(
+      (this.mission.metadata?.inputGoalIds || []).filter(Boolean)
+    );
+    if (inputGoalIds.size === 0) {
+      throw new Error('Final synthesis requires metadata.inputGoalIds; refusing unscoped output scan');
+    }
+
+    const outputsDir = this.config.logsDir
+      ? path.join(this.config.logsDir, 'outputs')
+      : path.join(process.cwd(), 'runtime', 'outputs');
+    const artifacts = [];
+    const seen = new Set();
+    const agentTypes = ['code-creation', 'document-creation', 'synthesis', 'analysis', 'research'];
+
+    // Fail closed: canonical assembly may consume only manifests/metadata whose
+    // goalId belongs to this guided plan. A global memory query or top-level
+    // outputs scan can silently import unrelated work from another domain.
+    for (const agentType of agentTypes) {
+      const typeDir = path.join(outputsDir, agentType);
+      let agentDirs = [];
+      try {
+        agentDirs = await fs.readdir(typeDir);
+      } catch (error) {
+        if (error.code !== 'ENOENT') {
+          this.logger.warn('Could not scan agent output directory', { path: typeDir, error: error.message }, 3);
+        }
+        continue;
+      }
+
+      for (const agentDir of agentDirs) {
+        const agentOutputDir = path.join(typeDir, agentDir);
+        let entries = [];
+        try {
+          entries = await fs.readdir(agentOutputDir);
+        } catch {
+          continue;
+        }
+
+        const provenanceFiles = entries.filter((name) =>
+          name === 'manifest.json' || name.endsWith('_metadata.json')
+        );
+        let provenance = null;
+        for (const name of provenanceFiles) {
+          try {
+            const parsed = JSON.parse(await fs.readFile(path.join(agentOutputDir, name), 'utf8'));
+            if (inputGoalIds.has(parsed.goalId)) {
+              provenance = parsed;
+              break;
+            }
+          } catch {
+            // Invalid provenance cannot authorize canonical package admission.
+          }
+        }
+        if (!provenance) continue;
+
+        const candidatePaths = Array.isArray(provenance.files)
+          ? provenance.files.map((file) => file?.path).filter(Boolean)
+          : [provenance.filePath].filter(Boolean);
+        for (const candidate of candidatePaths) {
+          const filePath = path.resolve(agentOutputDir, candidate);
+          const relativePath = path.relative(agentOutputDir, filePath);
+          if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+            this.logger.warn('Rejected artifact outside its producing agent directory', {
+              goalId: provenance.goalId,
+              manifestDir: agentOutputDir,
+              candidate,
+            }, 3);
+            continue;
+          }
+          if (seen.has(filePath)) continue;
+          const ext = path.extname(filePath).slice(1).toLowerCase();
+          if (!['md', 'html', 'json', 'txt', 'csv', 'yaml', 'yml'].includes(ext)) continue;
+          try {
+            const stat = await fs.stat(filePath);
+            if (!stat.isFile()) continue;
+          } catch {
+            continue;
+          }
+          artifacts.push({
+            path: filePath,
+            title: path.basename(filePath),
+            format: ext,
+            source: 'scoped-filesystem',
+            goalId: provenance.goalId,
+          });
+          seen.add(filePath);
+        }
+      }
+    }
+
+    if (artifacts.length === 0) {
+      throw new Error(`No phase artifacts found for input goals: ${[...inputGoalIds].join(', ')}`);
+    }
+
+    this.logger.info('📦 Gathered scoped artifacts for assembly', {
+      count: artifacts.length,
+      inputGoalIds: [...inputGoalIds],
+    }, 3);
+
+    return artifacts;
+  }
+
+  /**
+   * Read contents of artifact files
+   */
+  async readArtifactFiles(artifacts) {
+    const fs = require('fs').promises;
+    const contents = [];
+    
+    for (const artifact of artifacts) {
+      try {
+        const content = await fs.readFile(artifact.path, 'utf-8');
+        contents.push({
+          ...artifact,
+          content,
+          size: content.length
+        });
+        this.logger.debug('Read artifact', { 
+          path: artifact.path, 
+          size: content.length 
+        }, 4);
+      } catch (error) {
+        this.logger.warn('Could not read artifact', { 
+          path: artifact.path, 
+          error: error.message 
+        }, 3);
+      }
+    }
+    
+    return contents;
+  }
+
+  /**
+   * Assemble deliverable using GPT-5
+   */
+  async assembleDeliverable(artifactContents, deliverableSpec) {
+    const artifactsDescription = artifactContents.map(a => 
+      `### ${a.title} (${a.format})\n${a.content.substring(0, 2000)}${a.content.length > 2000 ? '...[truncated]' : ''}`
+    ).join('\n\n');
+    
+    const prompt = `You are assembling a final deliverable for a completed guided task.
+
+DELIVERABLE SPECIFICATION:
+- Type: ${deliverableSpec.type || 'markdown'}
+- Filename: ${deliverableSpec.filename}
+- Required Sections: ${deliverableSpec.requiredSections?.join(', ') || 'All phase outputs'}
+- Minimum Content: ${deliverableSpec.minimumContent || 'Comprehensive coverage'}
+
+AVAILABLE ARTIFACTS:
+${artifactsDescription}
+
+YOUR TASK:
+Create a cohesive, professional ${deliverableSpec.type || 'document'} that:
+1. Integrates all artifacts into a unified narrative
+2. Includes ALL required sections with appropriate headings
+3. Maintains technical accuracy from source artifacts
+4. Provides clear navigation and structure
+5. Meets the minimum content requirements
+6. Is polished and presentation-ready
+
+${deliverableSpec.type === 'html' ? 'Format as a complete HTML document with proper structure, styling, and interactivity where appropriate.' : ''}
+${deliverableSpec.type === 'markdown' ? 'Use proper markdown formatting with clear headings, lists, code blocks, and links.' : ''}
+
+Generate the complete final deliverable now:`;
+
+    try {
+      const response = await this.gpt5.generateWithRetry({
+        model: this.config.models?.strategicModel || 'gpt-5.5',
+        instructions: prompt,
+        messages: [{ role: 'user', content: 'Assemble the final deliverable.' }],
+        maxTokens: 16000, // Allow large output for comprehensive documents
+        reasoningEffort: 'high' // High effort for quality assembly
+      }, 3);
+      
+      return response.content;
+    } catch (error) {
+      this.logger.error('Failed to assemble deliverable with GPT-5.5', {
+        error: error.message
+      }, 3);
+      
+      // Fallback: Simple concatenation with headers
+      let fallback = `# ${deliverableSpec.filename}\n\n`;
+      fallback += `*Automated assembly (GPT-5.5 unavailable)*\n\n`;
+      
+      for (const artifact of artifactContents) {
+        fallback += `\n\n## ${artifact.title}\n\n`;
+        fallback += artifact.content;
+        fallback += `\n\n---\n\n`;
+      }
+      
+      this.logger.warn('Using fallback concatenation for deliverable assembly', 3);
+      return fallback;
+    }
+  }
+
+  /**
+   * Write final deliverable to filesystem
+   * 
+   * CRITICAL: SynthesisAgent outputs are CANONICAL by default
+   * They consolidate multiple agent outputs and mark prior versions as superseded
+   */
+  async writeFinalDeliverable(content, deliverableSpec) {
+    const fs = require('fs').promises;
+    const path = require('path');
+    
+    // Resolve output path
+    let outputDir = deliverableSpec.location || 'runtime/outputs/synthesis';
+    if (outputDir.startsWith('@outputs/')) {
+      outputDir = outputDir.replace('@outputs/', 'runtime/outputs/');
+    }
+    
+    // Use agent-specific output directory for consistency
+    const agentOutputDir = this.config.logsDir
+      ? path.join(this.config.logsDir, 'outputs', 'synthesis', this.agentId)
+      : path.join(process.cwd(), 'runtime', 'outputs', 'synthesis', this.agentId);
+    await fs.mkdir(agentOutputDir, { recursive: true });
+    
+    const outputPath = path.join(agentOutputDir, deliverableSpec.filename || 'final_deliverable.md');
+    
+    // Write via Capabilities
+    if (this.capabilities) {
+      const result = await this.capabilities.writeFile(
+        outputPath,
+        content,
+        {
+          agentId: this.agentId,
+          agentType: 'synthesis',
+          missionGoal: this.mission.goalId
+        }
+      );
+
+      if (!result?.success && !result?.skipped) {
+        throw new Error(`Capabilities declined write: ${result?.reason || result?.error || 'unknown reason'}`);
+      }
+    } else {
+      await fs.writeFile(outputPath, content, 'utf-8');
+    }
+    
+    this.logger.info('📄 Final deliverable written', {
+      path: outputPath,
+      size: content.length,
+      type: deliverableSpec.type
+    }, 3);
+    
+    // Find prior deliverables for this goal
+    const priorAgents = await this.findPriorDeliverablesForGoal(this.mission.goalId);
+    
+    // Create standardized manifest with canonical flag
+    const manifest = DeliverableManifest.create({
+      agentId: this.agentId,
+      agentType: 'synthesis',
+      mission: this.mission,
+      spawnCycle: this.mission.spawnCycle,
+      coordinatorReview: this.mission.coordinatorReview
+    });
+    
+    manifest.deliverableType = 'synthesis';
+    manifest.canonical = true; // Synthesis outputs are canonical by default
+    manifest.supersedes = priorAgents.map(a => a.agentId);
+    manifest.completedAt = new Date().toISOString();
+    manifest.files = [{ 
+      path: outputPath, 
+      type: deliverableSpec.type || 'markdown',
+      size: content.length
+    }];
+    
+    // Write manifest
+    const manifestPath = path.join(agentOutputDir, 'manifest.json');
+    await DeliverableManifest.save(manifest, manifestPath, {
+      capabilities: this.capabilities,
+      agentContext: { agentId: this.agentId, agentType: 'synthesis', missionGoal: this.mission.goalId }
+    });
+    
+    this.logger.info('✅ Canonical manifest created', {
+      manifestPath,
+      supersedes: manifest.supersedes.length,
+      canonical: true
+    }, 3);
+    
+    // Mark prior deliverables as superseded
+    if (priorAgents.length > 0) {
+      await this.markPriorDeliverablesSuperseded(priorAgents, this.agentId);
+    }
+    
+    return outputPath;
+  }
+
+  /**
+   * Find prior deliverables for the same goal
+   * Scans runtime/outputs/ for manifests/metadata with matching goalId
+   */
+  async findPriorDeliverablesForGoal(goalId) {
+    const fs = require('fs').promises;
+    const path = require('path');
+    
+    if (!goalId) return [];
+    
+    const priorDeliverables = [];
+    const outputsDir = this.config.logsDir
+      ? path.join(this.config.logsDir, 'outputs')
+      : path.join(process.cwd(), 'runtime', 'outputs');
+    
+    try {
+      // Check code-creation, document-creation, and other synthesis agents
+      const agentTypes = ['code-creation', 'document-creation', 'synthesis'];
+      
+      for (const agentType of agentTypes) {
+        const agentTypeDir = path.join(outputsDir, agentType);
+        
+        try {
+          const agentDirs = await fs.readdir(agentTypeDir);
+          
+          for (const agentDir of agentDirs) {
+            // Skip our own directory
+            if (agentDir === this.agentId) continue;
+            
+            const agentPath = path.join(agentTypeDir, agentDir);
+            const manifestPath = path.join(agentPath, 'manifest.json');
+            const metadataPath = path.join(agentPath, `${agentDir}_metadata.json`);
+            
+            // Try manifest.json first (code-creation, synthesis)
+            try {
+              const manifestData = await fs.readFile(manifestPath, 'utf8');
+              const manifest = JSON.parse(manifestData);
+              
+              if (manifest.goalId === goalId) {
+                priorDeliverables.push({
+                  agentId: manifest.agentId,
+                  agentType: manifest.agentType || agentType,
+                  manifestPath,
+                  goalId: manifest.goalId
+                });
+              }
+            } catch (manifestError) {
+              // Try metadata files (document-creation uses different naming)
+              try {
+                const files = await fs.readdir(agentPath);
+                const metadataFile = files.find(f => f.endsWith('_metadata.json'));
+                
+                if (metadataFile) {
+                  const metadataContent = await fs.readFile(path.join(agentPath, metadataFile), 'utf8');
+                  const metadata = JSON.parse(metadataContent);
+                  
+                  if (metadata.goalId === goalId) {
+                    priorDeliverables.push({
+                      agentId: metadata.agentId || metadata.createdBy,
+                      agentType: metadata.agentType || agentType,
+                      manifestPath: path.join(agentPath, metadataFile),
+                      goalId: metadata.goalId
+                    });
+                  }
+                }
+              } catch (metadataError) {
+                // No metadata file, skip
+              }
+            }
+          }
+        } catch (agentTypeError) {
+          // Agent type directory doesn't exist, skip
+        }
+      }
+    } catch (error) {
+      this.logger.warn('Could not scan for prior deliverables', {
+        error: error.message
+      }, 3);
+    }
+    
+    return priorDeliverables;
+  }
+
+  /**
+   * Mark prior deliverables as superseded by this synthesis output
+   */
+  async markPriorDeliverablesSuperseded(priorDeliverables, supersedingAgentId) {
+    const fs = require('fs').promises;
+    
+    for (const prior of priorDeliverables) {
+      try {
+        // Read existing manifest/metadata
+        const manifestData = await fs.readFile(prior.manifestPath, 'utf8');
+        const manifest = JSON.parse(manifestData);
+        
+        // Update with superseded info
+        manifest.canonical = false;
+        manifest.supersededBy = supersedingAgentId;
+        manifest.supersededAt = new Date().toISOString();
+        
+        // Write back via Capabilities
+        if (this.capabilities) {
+          await this.capabilities.writeFile(
+            path.relative(process.cwd(), prior.manifestPath),
+            JSON.stringify(manifest, null, 2),
+            { agentId: this.agentId, agentType: 'synthesis', missionGoal: this.mission.goalId }
+          );
+        } else {
+          await fs.writeFile(prior.manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+        }
+        
+        this.logger.info('📝 Marked deliverable as superseded', {
+          agentId: prior.agentId,
+          supersededBy: supersedingAgentId
+        }, 3);
+      } catch (error) {
+        this.logger.warn('Could not mark deliverable as superseded', {
+          agentId: prior.agentId,
+          error: error.message
+        }, 3);
+      }
+    }
+  }
+}
+
+module.exports = { SynthesisAgent, shouldPersistSynthesisReport };

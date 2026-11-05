@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://home23.local/contracts/home-surfaces.schema.json",
+  "title": "Home23 Dashboard Home Surfaces",
+  "$defs": {
+    "flexibleTimestamp": {
+      "anyOf": [
+        { "type": "string" },
+        { "type": "number" },
+        { "type": "null" }
+      ]
+    },
+    "homeSummary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "cycleCount": { "type": ["integer", "null"] },
+        "thoughtCount": { "type": ["integer", "null"] },
+        "memoryNodes": { "type": ["integer", "null"] },
+        "lastThoughtAt": { "type": ["string", "null"] },
+        "lastThoughtRole": { "type": ["string", "null"] },
+        "lastThoughtText": { "type": ["string", "null"] },
+        "temporalState": { "type": ["string", "null"] }
+      }
+    },
+    "pulseRemark": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": ["string", "null"] },
+        "ts": { "type": ["string", "null"] },
+        "cycle": { "type": ["integer", "null"] },
+        "text": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] },
+        "stats": { "type": ["array", "null"] }
+      }
+    },
+    "goalsResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "active": { "type": ["array", "null"], "items": { "$ref": "#/$defs/goal" } },
+        "completed": { "type": ["array", "null"], "items": { "$ref": "#/$defs/goal" } }
+      }
+    },
+    "goal": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": ["string", "null"] },
+        "title": { "type": ["string", "null"] },
+        "description": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"] },
+        "createdAt": { "type": ["string", "null"] }
+      }
+    },
+    "dreamsResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["dreams"],
+      "properties": {
+        "dreams": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["id", "content"],
+            "properties": {
+              "id": { "type": "string" },
+              "cycle": { "type": ["integer", "null"] },
+              "timestamp": { "$ref": "#/$defs/flexibleTimestamp" },
+              "content": { "type": "string" },
+              "source": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "sensorsResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["sensors"],
+      "properties": {
+        "count": { "type": ["integer", "null"] },
+        "sensors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": ["string", "null"] },
+              "category": { "type": ["string", "null"] },
+              "source": { "type": ["string", "null"] },
+              "value": { "type": ["string", "null"] },
+              "ok": { "type": ["boolean", "null"] },
+              "ts": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "vibeGallery": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "total": { "type": ["integer", "null"] },
+        "images": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string" },
+              "imagePath": { "type": ["string", "null"] },
+              "caption": { "type": ["string", "null"] },
+              "generatedAt": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "memorySearch": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "query": { "type": ["string", "null"] },
+        "results": { "type": ["array", "null"] }
+      }
+    },
+    "tileAction": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "label", "method"],
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "method": { "type": "string" },
+        "confirmationText": { "type": ["string", "null"] },
+        "fields": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["id", "label", "type"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "type": { "type": "string" },
+              "defaultValue": {},
+              "min": { "type": ["number", "null"] },
+              "max": { "type": ["number", "null"] },
+              "step": { "type": ["number", "null"] },
+              "unit": { "type": ["string", "null"] },
+              "required": { "type": ["boolean", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "tileActionDryRunResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["ok", "dryRun", "action"],
+      "properties": {
+        "ok": { "type": "boolean", "const": true },
+        "dryRun": { "type": "boolean", "const": true },
+        "action": { "$ref": "#/$defs/tileAction" }
+      }
+    },
+    "tileActionResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["ok", "action", "data"],
+      "properties": {
+        "ok": { "type": "boolean", "const": true },
+        "action": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}

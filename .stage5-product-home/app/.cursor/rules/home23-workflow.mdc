@@ -1,0 +1,6 @@
+---
+description: Home23 shared development and source ownership
+alwaysApply: true
+---
+
+Read the repository AGENTS.md before working. Follow its shared development agreement and current platform/source instructions. Preserve existing work; do not switch a shared checkout beneath another active session. Report committed, pushed, deployed and installed states separately. Authorization already given by the owner persists within the task.

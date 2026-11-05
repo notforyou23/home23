@@ -1,0 +1,41 @@
+{
+  "id": "autoresearch",
+  "version": "2.0.0",
+  "name": "Autoresearch",
+  "description": "Iteratively improve a weak skill through score, tweak, and retest loops. Runs prompts against a target skill, scores outputs across defined dimensions, auto-revises SKILL.md on the weakest dimension, and returns a scored report with recommendations. actionAutoresearchLoop runs in the AgentLoop (not Node.js) so it has direct access to skills_run, spawn_agent, and file tools.",
+  "layer": "skill",
+  "runtime": "nodejs",
+  "category": "meta",
+  "author": "home23",
+  "entry": "index.js",
+  "keywords": [
+    "skill",
+    "improve",
+    "autoresearch",
+    "optimize",
+    "iterate",
+    "quality"
+  ],
+  "triggers": [
+    "improve this skill",
+    "autoresearch this skill",
+    "optimize the skill",
+    "why is this skill weak"
+  ],
+  "requiresTools": [
+    "skills_run",
+    "skills_list",
+    "skills_get",
+    "skills_audit"
+  ],
+  "dependsOn": [
+    "skill-loader"
+  ],
+  "composes": [
+    "knowledge-structuring",
+    "source-validation"
+  ],
+  "actions": [
+    "autoresearch_loop"
+  ]
+}

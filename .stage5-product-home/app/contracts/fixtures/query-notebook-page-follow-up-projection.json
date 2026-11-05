@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "items": [
+    {
+      "schemaVersion": 1,
+      "operationId": "brop_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      "requestKind": "direct",
+      "requesterAgent": "jerry",
+      "brain": { "id": "brain-jerry", "displayName": "Jerry" },
+      "question": "What changed in the brain today?",
+      "questionTitle": "What changed in the brain today?",
+      "configuration": {
+        "directMode": "grounded",
+        "directModel": { "provider": "xai", "model": "grok-4-0709" }
+      },
+      "executionState": "running",
+      "humanClassification": "running",
+      "acceptedAt": "2026-07-13T20:00:00.000Z",
+      "startedAt": "2026-07-13T20:00:01.000Z",
+      "updatedAt": "2026-07-13T20:00:03.000Z",
+      "completedAt": null,
+      "progress": {
+        "version": 1,
+        "stage": "preparing_source",
+        "eventSequence": 3,
+        "sourceNodes": 141900,
+        "sourceEdges": 464000,
+        "lastProgressAt": "2026-07-13T20:00:03.000Z"
+      },
+      "error": null,
+      "resultAvailability": "absent",
+      "expiresAt": null,
+      "answerPreviewAvailable": false,
+      "resultVersion": null,
+      "coverage": null,
+      "continuation": null,
+      "actions": [{ "kind": "cancel" }],
+      "notification": { "subscribed": false, "deliveryState": null },
+      "followUpLineage": null
+    },
+    {
+      "schemaVersion": 1,
+      "operationId": "brop_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "requestKind": "direct",
+      "requesterAgent": "jerry",
+      "brain": { "id": "brain-jerry", "displayName": "Jerry" },
+      "question": "What changed after that?",
+      "questionTitle": "What changed after that?",
+      "configuration": {
+        "directMode": "dive",
+        "directModel": { "provider": "openai", "model": "gpt-5.2" }
+      },
+      "executionState": "complete",
+      "humanClassification": "finished",
+      "acceptedAt": "2026-07-13T20:10:00.000Z",
+      "startedAt": "2026-07-13T20:10:01.000Z",
+      "updatedAt": "2026-07-13T20:12:00.000Z",
+      "completedAt": "2026-07-13T20:12:00.000Z",
+      "progress": {
+        "version": 1,
+        "stage": "terminal",
+        "eventSequence": 8,
+        "lastProgressAt": "2026-07-13T20:12:00.000Z"
+      },
+      "error": null,
+      "resultAvailability": "available",
+      "expiresAt": "2026-07-20T20:12:00.000Z",
+      "answerPreviewAvailable": true,
+      "resultVersion": "qrv1_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      "coverage": null,
+      "continuation": null,
+      "actions": [{ "kind": "openResult" }, { "kind": "export" }],
+      "notification": { "subscribed": false, "deliveryState": null },
+      "followUpLineage": {
+        "rootOperationId": "brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "parentOperationId": "brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "parentResultVersion": "qrv1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "depth": 1,
+        "availableExchangeCount": 1,
+        "includedExchangeCount": 1,
+        "contextTruncated": false,
+        "sourceAnswerTruncated": false
+      }
+    }
+  ],
+  "nextCursor": null,
+  "omittedIncompatibleCount": 1
+}

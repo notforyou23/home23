@@ -293,12 +293,16 @@ test('degraded source can preserve partial cues without claiming a healthy route
 });
 
 test('retrieval-eval detector matches isolation phrasing', async () => {
-  const { isRetrievalEvalTurn, retrievalEvalDisclosure } = await import('../../src/agent/retrieval-eval.js');
+  const { isRetrievalEvalTurn, retrievalEvalDisclosure, continuityEnrichmentDisclosure } = await import('../../src/agent/retrieval-eval.js');
   assert.equal(isRetrievalEvalTurn('retrieval-eval: search only the quoted phrase'), true);
   assert.equal(isRetrievalEvalTurn('fresh retrieval of identity correction'), true);
   assert.equal(isRetrievalEvalTurn('prove brain_search finds the ledger correction'), true);
   assert.equal(isRetrievalEvalTurn('what did we talk about yesterday?'), false);
   assert.match(retrievalEvalDisclosure(), /\[RETRIEVAL EVAL\]/);
+  const ordinary = continuityEnrichmentDisclosure({ brainCueCount: 2, relationshipCount: 0 });
+  assert.match(ordinary, /Use these injected matches as working memory/);
+  assert.match(ordinary, /prefer their wording over general knowledge/);
+  assert.doesNotMatch(ordinary, /contaminated|do not treat phrases|do not close the experiment/i);
 });
 
 test('skipBrainEnrichment does not call contextSearch', async () => {

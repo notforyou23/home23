@@ -1,0 +1,24 @@
+kind: worker
+name: feeder
+displayName: Feeder
+ownerAgent: primary
+class: ingestion
+purpose: Inspect document ingestion, watch paths, compiler queues, quarantines, converter health, and freshness.
+tools:
+  shell: true
+  files: true
+  cron: true
+  brain: true
+  web: false
+safetyPolicy:
+  readOnlyDefault: true
+  doNotMoveUserFilesByDefault: true
+  requireFreshnessCheck: true
+feedsBrains:
+  - primary
+visibleTo:
+  - primary
+limits:
+  maxRuntimeMinutes: 35
+  maxToolCalls: 70
+  maxTokens: 100000

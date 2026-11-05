@@ -1,0 +1,35 @@
+{
+  "id": "code-review",
+  "version": "1.0.0",
+  "name": "Code Review",
+  "description": "Review a diff or PR for concrete behavioral defects and Home23 invariants.",
+  "layer": "skill",
+  "runtime": "docs",
+  "category": "coding",
+  "author": "home23",
+  "keywords": [
+    "code review",
+    "review",
+    "diff",
+    "pr",
+    "regression",
+    "tests",
+    "bug"
+  ],
+  "triggers": [
+    "review this diff",
+    "review this pr",
+    "what bugs do you see",
+    "check this implementation for regressions"
+  ],
+  "requiresTools": [
+    "read_file",
+    "search_files",
+    "list_files"
+  ],
+  "dependsOn": [],
+  "composes": [],
+  "actions": [
+    "review"
+  ]
+}

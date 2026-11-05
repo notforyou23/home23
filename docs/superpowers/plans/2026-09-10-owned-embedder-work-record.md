@@ -4,7 +4,9 @@ Date: 2026-09-10
 Plan: `docs/superpowers/plans/2026-09-10-owned-embedder-host-integration.md`  
 Plan commit verified: `3c7495d6dd5b424a7e17307364b1b5a26586e49a`
 
-**The two remaining Stage 5 proofs passed on the isolated TEST home.** Product retrieve (`POST /api/memory/search` with `mode: "context"`) ranked hydrologic 0.7111 above granite 0.5555. Chat e2e on `llama3.2:1b` mentioned the hydrologic cycle and not granite. Product default flip remains **NO-GO**. Do not read that as a blanket “Stages 1–5 complete”: the 1b answer invented a quote, and `host.mjs stop` alone did not leave `/ready` refused on this retry.
+**Do not use local Ollama chat for Stage 5.** That path downloaded `qwen2.5:7b`, `llama3.2:3b`, and `llama3.2:1b`/`latest`. All three chat models are removed. Pre-existing `nomic-embed-text` (274MB, ~2 weeks old) remains; `ollama ps` is empty. Chat proof is **cloud**: Home23 live `openai` key via `updateHome23Secrets` into the isolated TEST `app/config/secrets.yaml`, model `gpt-5.5`.
+
+**Faithful retrieve-then-answer is now proven on the isolated TEST home.** Product retrieve ranked hydrologic **0.7111** above granite **0.5555**. Cloud chat used the imported USGS wording (solar / vapor / seas / storms / porous rock). TEST home left **stopped**; `/ready` refused. Product default flip remains **NO-GO**.
 
 ## Isolation
 
@@ -93,7 +95,7 @@ Owner: Memory worker. No Memory source commit. Probe script untracked: `scripts/
 | Packaged Host create / prepare / start / restart / stop | untracked host-receipt on `.stage5-product-home` | One Mac arm64 TEST home |
 | Real ONNX `/ready` + paraphrase rank (0.711 vs 0.555) | Live packaged `bin/node` + owned `/v1/embeddings` after product watch ingest | Raw embeddings are Encoder proof, not product retrieve |
 | Product retrieve ranks hydro above granite | Live `POST /api/memory/search` `mode: "context"` 0.7111 vs 0.5555; after conversation ingest, context mode must exclude conversation/consolidated echoes or those bury the import | Bare POST without `mode` is keyword-tie |
-| Chat retrieve-then-answer mention bar | Coordination turn 2 mentions hydrologic, not granite | `llama3.2:1b` invented the quote; turn 1 ignored the note |
+| Chat retrieve-then-answer (cloud) | Coordination result used imported USGS wording | Local 1b/3b/7b failed; do not pull them again |
 | Chat URL decoupled from encoder on Host create | `product-host` create unit test | — |
 
 ## Independent review vs source
@@ -120,7 +122,7 @@ Findings from the 2026-09-11 independent review, checked against this branch aft
 | Lane | Status | Next |
 |---|---|---|
 | Encoder | Packaged Node/ORT `/ready` on a Host-created home | Optional interrupt/resume of a truncated `.part` |
-| Memory | Live stamps, query refuse, null-cal attention, birth 0; context search now keeps hydro first after conversation ingest | 3b still does not quote the imported note. Bare POST without `mode` still keyword-tie |
+| Memory | Live stamps, query refuse, null-cal attention, birth 0; context search keeps hydro first; cloud chat used the imported note | Bare POST without `mode` still keyword-tie |
 | Host | Isolated TEST create/prepare/start/restart/stop evidenced | Empty-jlist Stop source-fixed. Do not wire source `setup.js`. Do not create a product/owner home |
 | Apple | `88123ded` polls semantic-prepare | Interrupt tests; structured `error.code` |
 | Lead | Encoder + Host + Memory + Stage 5 closer receipts exist | Keep off shared main. Do not flip defaults. Do not claim a faithful 1b quote |
@@ -136,8 +138,9 @@ Findings from the 2026-09-11 independent review, checked against this branch aft
 | Create a product/owner home with this Host | **NO-GO** — isolated TEST only |
 | Isolated Host TEST create | **done** on `.stage5-product-home` |
 | Isolated product retrieve (context-mode search) | **done on a 2-doc catalog; re-proved after conversation ingest** — context mode now excludes conversation/consolidated echoes so hydro 0.7111 leads granite 0.5555 |
-| Isolated chat mention bar | **done** — turn 2 mentions hydrologic, not granite; quote not faithful |
-| Stages 1–5 as a product-ready milestone | **not claimed** — context ranking fixed; 3b still does not quote the imported USGS paragraph; default flip still NO-GO |
+| Isolated chat mention bar | **superseded** — 1b/3b/7b local turns failed the wording bar |
+| Isolated chat retrieve-then-answer (cloud) | **done 2026-09-11** — `openai` / `gpt-5.5` via live Home23 secrets; answer used Solar energy / vapor / storms / porous rock; no granite; no invented closer quote. Receipt `.stage5-host-home/stage5-chat3b-receipt.json` |
+| Stages 1–5 as a product-ready milestone | **retrieve + cloud answer claimed on this TEST home only** — default flip still NO-GO |
 
 ## Handoff
 
@@ -150,10 +153,10 @@ Shared:   home23 remains codex/jerry-continuity-20260907
 Apple:    Host Stage 4 is 88123ded on home23-apple-agent/owned-embedder-host-stage4
           Shared Apple remains codex/mac-dashboard2-20260908
 Do not:   push, flip defaults, migrate existing homes, delete TEST homes,
-          create a product/owner home, commit scripts/embedder/node_modules
-          or the TEST home / payload
-Next:     Faithful retrieve-then-answer still needs a model that uses the
-          imported note now that context search ranks it first. Optional
-          Host-path download interrupt/resume. Apple interrupt / error.code.
-          Not Stage 6. Not a default flip.
+          create a product/owner home, pull local chat models, commit
+          scripts/embedder/node_modules or the TEST home / payload
+Next:     Commit source (disclosure + ollama-local native ctx + tests) if
+          asked. Optional Host-path download interrupt/resume. Apple
+          interrupt / error.code. Not Stage 6. Not a default flip.
+          Do not start another local generation.
 ```

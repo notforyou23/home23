@@ -1,0 +1,28 @@
+{
+  "schema": "home23.embedder-stage5-reconcile.v1",
+  "home": ".stage5-product-home",
+  "seedId": "seed_mtwbundv_e0c0a4b8",
+  "checkedAt": "2026-09-11T15:45:00.000Z",
+  "identityUnchanged": true,
+  "streamLines": 20,
+  "ownedStampedContacts": 20,
+  "importNodes": [
+    { "id": 1, "tag": ".stage5-host-import", "recipePrefix": "12e9f736ef4a" },
+    { "id": 2, "tag": ".stage5-host-import", "recipePrefix": "12e9f736ef4a" }
+  ],
+  "cloudChatWork": "wrk_01a090b5-ec26-77bc-99a1-50491c96ebb1",
+  "cloudChatFilePresent": true,
+  "readyAfterStart": {
+    "warm": true,
+    "recipeId": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+    "dimension": 768,
+    "pid": 29676
+  },
+  "afterStop": {
+    "status": "stopped",
+    "ready": "ECONNREFUSED",
+    "portsClosed": [32584, 32585, 32586, 32591]
+  },
+  "searchNotRerun": "reused prior context-mode 0.7111/0.5555 and cloud wording; no new chat",
+  "installedStopCode": "packaged d8f45ba3 jlist-only loop after overlay restore"
+}

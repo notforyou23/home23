@@ -1,0 +1,141 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Secrets
+config/secrets.yaml
+config/secrets.yaml.*.tmp
+config/.brain-operations-capability.lock
+
+# Runtime — per-agent (entire instances dir is runtime/personal data)
+instances/
+
+# Auto-generated agent manifest
+config/agents.json
+
+# Runtime — system
+runtime/
+logs/
+*.log
+.home23-state.json
+
+# Runtime — generated local config
+config/home.yaml
+config/cron-jobs.json
+config/targets.yaml
+
+# PM2 (auto-generated)
+ecosystem.config.cjs
+ecosystem.config.cjs.*.tmp
+
+# macOS
+.DS_Store
+
+# SSL/TLS
+*.pem
+**/*.pem
+
+# Engine data (generated images, etc.)
+engine/data/images/*
+!engine/data/images/.gitkeep
+engine/data/sensor-cache.json
+
+# Engine artifacts
+engine/runtime/
+engine/runs/
+engine/logs/
+engine/backups/
+engine/.backups/
+engine/queries-archive/
+engine/brain-studio/
+engine/brain-studio-new/
+engine/artifacts/
+engine/test-frontier/
+engine/prisma/dev.db
+engine/.env
+engine/.cursor/
+engine/.vscode/
+engine/outputs/
+engine/test-results/
+
+# Feeder artifacts
+feeder/manifest-*.json
+feeder/pending-*.json
+
+# Evobrew artifacts
+evobrew/.evobrew-config.json
+evobrew/config.json
+evobrew/.evobrew-workspaces/
+evobrew/conversations/
+evobrew/snapshots/
+evobrew/prisma/dev.db
+evobrew/.env
+evobrew/.codex-evobrew.*
+evobrew/model-catalog-cache.json
+evobrew/runtime-state.json
+evobrew/REFERENCE-v1.html
+evobrew/.superpowers/
+
+# COSMO 2.3 artifacts
+cosmo23/runs/
+cosmo23/runtime
+cosmo23/.cosmo23-config/
+cosmo23/prisma/dev.db
+cosmo23/.env
+cosmo23/exports/
+cosmo23/engine/outputs/
+cosmo23/.playwright-mcp/
+cosmo23/.superpowers/
+cosmo23/.worktrees/
+
+# Plugin/tool state
+.playwright-mcp/
+.superpowers/
+.worktrees/
+.claude/
+AGENTS.local.md
+CLAUDE.local.md
+workspace/skills/.telemetry/
+workspace/skills/*/data/cache/
+workspace/skills/*/outputs/
+workspace/skills/*/reports/
+workspace/skills/x-research/data/*.json
+workspace/reports/
+cosmo23/engine/brain-studio-new/ssl/
+reports/pm2-recovery/
+tmp/
+
+# IDE
+.vscode/
+.idea/
+
+# Scratch files (conversation dumps, brain analysis, temp notes)
+brainthoughts.md
+jerry2.md
+thoughts.md
+todocosmo23.md
+step20review.md
+query-*.md
+x-trae-harness-snapshot.md
+brainandjerrylogs.md
+evolve.md
+server.pid
+probe/
+__pycache__/
+*.pyc
+
+# Screenshots (session artifacts)
+*.png
+!docs/audits/**/screenshots/*.png
+!docs/design/evidence/**/*.png
+
+# Published docs (runtime, served separately)
+published/
+
+# Playwright CLI
+.playwright-cli/
+
+# Coding-job worktrees (Step 29)
+.home23-worktrees/

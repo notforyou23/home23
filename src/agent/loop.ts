@@ -2615,11 +2615,18 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             type ResponseMessage = { role: string; content?: string | null; tool_calls?: ToolCallObj[] };
             let respMsg: ResponseMessage;
 
-            if (isOllamaCloud) {
-              // Native Ollama /api/chat — proper tool support + num_ctx
-              const res = await fetch('https://ollama.com/api/chat', {
+            if (isOllamaCloud || isOllamaLocal) {
+              // Native Ollama /api/chat — local OpenAI-compat stays at the model
+              // default (4096 for llama3.2) and truncates injected working memory.
+              const baseURL = isOllamaLocal
+                ? (process.env.LOCAL_LLM_BASE_URL || 'http://127.0.0.1:11434')
+                : 'https://ollama.com';
+              const ollamaRoot = baseURL.replace(/\/+$/, '').replace(/\/(?:v1|api\/chat)$/, '');
+              const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+              if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+              const res = await fetch(`${ollamaRoot}/api/chat`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+                headers,
                 body: JSON.stringify({
                   model: runtimeModel,
                   messages: apiMessages,
@@ -2631,16 +2638,14 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               });
               if (!res.ok) {
                 const errText = await res.text().catch(() => '');
-                throw new Error(`ollama-cloud HTTP ${res.status}: ${errText.slice(0, 300)}`);
+                throw new Error(`${isOllamaLocal ? 'ollama-local' : 'ollama-cloud'} HTTP ${res.status}: ${errText.slice(0, 300)}`);
               }
               const data = await res.json() as { message?: ResponseMessage };
               reportCacheUsage(undefined);
               respMsg = data.message ?? { role: 'assistant', content: '(no response)' };
             } else {
-              // OpenAI-compatible /v1/chat/completions (OpenAI, or local Ollama via LOCAL_LLM_BASE_URL)
-              const baseUrl = isOllamaLocal
-                ? (process.env.LOCAL_LLM_BASE_URL || 'http://127.0.0.1:11434/v1')
-                : 'https://api.openai.com/v1';
+              // OpenAI-compatible /v1/chat/completions
+              const baseUrl = 'https://api.openai.com/v1';
               const isGpt5Plus = runtimeModel.includes('gpt-5') || runtimeModel.includes('gpt5');
               const tokenParam = isGpt5Plus ? { max_completion_tokens: this.maxTokens } : { max_tokens: this.maxTokens };
 

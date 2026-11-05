@@ -1,0 +1,47 @@
+{
+  "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+  "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+  "bots": [
+    {
+      "id": "bot_0198d95f-6c00-7000-8000-000000000011",
+      "principalId": "bot_0198d95f-6c00-7000-8000-000000000011",
+      "name": "Jerry",
+      "purpose": "Primary persistent household assistant.",
+      "lifecycle": "active",
+      "availability": "available",
+      "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031",
+      "residentBinding": "jerry",
+      "version": 4,
+      "createdAt": "2026-08-24T15:00:00.000Z",
+      "updatedAt": "2026-08-24T15:59:00.000Z"
+    },
+    {
+      "id": "bot_0198d95f-6c00-7000-8000-000000000012",
+      "principalId": "bot_0198d95f-6c00-7000-8000-000000000012",
+      "name": "Forrest",
+      "purpose": "Persistent specialist with a durable mailbox.",
+      "lifecycle": "active",
+      "availability": "available",
+      "conversationId": null,
+      "residentBinding": "forrest",
+      "version": 3,
+      "createdAt": "2026-08-24T15:01:00.000Z",
+      "updatedAt": "2026-08-24T15:58:00.000Z"
+    },
+    {
+      "id": "bot_0198d95f-6c00-7000-8000-000000000013",
+      "principalId": "bot_0198d95f-6c00-7000-8000-000000000013",
+      "name": "Archivist",
+      "purpose": "Continuing records specialist.",
+      "lifecycle": "active",
+      "availability": "offline",
+      "conversationId": null,
+      "residentBinding": "archivist",
+      "version": 1,
+      "createdAt": "2026-08-24T15:02:00.000Z",
+      "updatedAt": "2026-08-24T15:57:00.000Z"
+    }
+  ],
+  "nextCursor": null,
+  "throughEventSequence": 127
+}

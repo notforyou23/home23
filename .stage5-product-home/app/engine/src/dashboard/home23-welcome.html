@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Home23 — Welcome</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@300..900&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/home23-dashboard.css">
+  <style>
+    .welcome-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      text-align: center;
+      padding: 40px 24px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .welcome-card {
+      background: var(--glass-primary);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-lg);
+      padding: 48px 40px;
+      box-shadow: var(--shadow-glass);
+      max-width: 520px;
+      width: 100%;
+    }
+
+    .welcome-logo {
+      font-size: 64px;
+      margin-bottom: 16px;
+    }
+
+    .welcome-title {
+      font-size: 36px;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.5px;
+      margin-bottom: 8px;
+    }
+
+    .welcome-subtitle {
+      font-size: 16px;
+      color: var(--text-secondary);
+      margin-bottom: 48px;
+      max-width: 440px;
+      line-height: 1.6;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .welcome-btn {
+      display: inline-block;
+      background: var(--accent-blue);
+      color: #fff;
+      padding: 14px 40px;
+      border-radius: 10px;
+      font-size: 16px;
+      font-weight: 600;
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .welcome-btn:hover {
+      background: #3b82f6;
+    }
+
+    .welcome-version {
+      margin-top: 48px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    /* Glass Light welcome surface */
+    body.h23-welcome-page {
+      --glass-primary: var(--h23-glass-card);
+      --glass-border: var(--h23-glass-border);
+      --text-primary: var(--h23-text-primary);
+      --text-secondary: var(--h23-text-secondary);
+      --text-muted: var(--h23-text-muted-aa);
+      --accent-blue: var(--h23-accent);
+      --shadow-glass: var(--h23-shadow-overlay);
+      min-height: 100vh;
+      color: var(--h23-text-body);
+      font-family: var(--h23-font-ui);
+      background: var(--h23-bg-wash-1), var(--h23-bg-wash-2), var(--h23-bg);
+      background-attachment: fixed;
+    }
+
+    body.h23-welcome-page::before {
+      background: none;
+    }
+
+    body.h23-welcome-page #particles-js {
+      opacity: 0.12;
+      pointer-events: none;
+    }
+
+    body.h23-welcome-page .welcome-wrap {
+      min-height: 100dvh;
+      padding: 28px 20px;
+    }
+
+    body.h23-welcome-page .welcome-card {
+      background: var(--h23-glass-overlay);
+      border: 1px solid var(--h23-glass-border);
+      border-radius: var(--h23-radius-overlay);
+      padding: 50px 44px 38px;
+      box-shadow: var(--h23-shadow-overlay);
+      backdrop-filter: blur(var(--h23-glass-blur-overlay));
+      -webkit-backdrop-filter: blur(var(--h23-glass-blur-overlay));
+    }
+
+    body.h23-welcome-page .welcome-logo {
+      width: 82px;
+      height: 82px;
+      margin: 0 auto 22px;
+      display: grid;
+      place-items: center;
+      color: var(--h23-accent);
+      border: 1px solid var(--h23-accent-tint-border);
+      border-radius: 24px;
+      background: var(--h23-accent-tint);
+      box-shadow: var(--h23-shadow-pill);
+      font-family: var(--h23-font-mono);
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.04em;
+    }
+
+    body.h23-welcome-page .welcome-title {
+      color: var(--h23-text-heading);
+      font-size: 40px;
+      font-weight: 600;
+      letter-spacing: -0.045em;
+    }
+
+    body.h23-welcome-page .welcome-subtitle {
+      margin-bottom: 34px;
+      color: var(--h23-text-secondary);
+      line-height: 1.65;
+    }
+
+    body.h23-welcome-page .welcome-btn {
+      padding: 13px 30px;
+      color: #fff;
+      border-radius: var(--h23-radius-pill);
+      background: var(--h23-accent);
+      box-shadow: var(--h23-shadow-accent-btn);
+    }
+
+    body.h23-welcome-page .welcome-btn:hover {
+      background: #356fd0;
+    }
+
+    body.h23-welcome-page .welcome-btn:focus-visible {
+      outline: 3px solid var(--h23-accent-tint-border);
+      outline-offset: 4px;
+    }
+
+    body.h23-welcome-page .welcome-version {
+      margin-top: 32px;
+      color: var(--h23-text-muted-aa);
+      font-family: var(--h23-font-mono);
+      font-size: 11px;
+    }
+
+    @media (max-width: 540px) {
+      body.h23-welcome-page .welcome-card {
+        padding: 38px 24px 30px;
+      }
+
+      body.h23-welcome-page .welcome-title {
+        font-size: 34px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      body.h23-welcome-page #particles-js {
+        display: none;
+      }
+
+      body.h23-welcome-page *,
+      body.h23-welcome-page *::before,
+      body.h23-welcome-page *::after {
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+      }
+    }
+  </style>
+</head>
+<body class="h23-welcome-page">
+  <div id="particles-js"></div>
+  <div class="welcome-wrap">
+    <div class="welcome-card">
+      <div class="welcome-logo" aria-label="Home23">H23</div>
+      <div class="welcome-title">Home23</div>
+      <div class="welcome-subtitle">
+        Installable AI operating system. Persistent agents with Good Life governance, verifier-backed operations, research engines, and creative tools.
+      </div>
+      <a class="welcome-btn" href="/home23/setup">Get Started</a>
+      <div class="welcome-version" id="welcome-version">Home23</div>
+    </div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
+  <script>
+    (async () => {
+      const versionEl = document.getElementById('welcome-version');
+      try {
+        const res = await fetch('/home23/api/settings/update-status');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const current = data.currentVersion ? `v${data.currentVersion}` : 'local build';
+        versionEl.textContent = data.updateAvailable && data.latestVersion
+          ? `Home23 ${current} · v${data.latestVersion} available`
+          : `Home23 ${current}`;
+      } catch {
+        versionEl.textContent = 'Home23 v0.6.0';
+      }
+    })();
+
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (!reduceMotion && typeof particlesJS !== 'undefined') {
+      particlesJS('particles-js', {
+        particles: {
+          number: { value: 40, density: { enable: true, value_area: 1000 } },
+          color: { value: ['#ffffff', '#007AFF', '#00C7BE', '#30D158'] },
+          shape: { type: 'circle' },
+          opacity: { value: 0.3, random: true, anim: { enable: true, speed: 1, opacity_min: 0.1, sync: false } },
+          size: { value: 3, random: true, anim: { enable: true, speed: 2, size_min: 1, sync: false } },
+          line_linked: { enable: true, distance: 200, color: '#ffffff', opacity: 0.15, width: 1 },
+          move: { enable: true, speed: 0.8, direction: 'none', random: true, straight: false, out_mode: 'out', bounce: false }
+        },
+        interactivity: {
+          detect_on: 'canvas',
+          events: { onhover: { enable: true, mode: 'bubble' }, onclick: { enable: false }, resize: true },
+          modes: { bubble: { distance: 200, size: 6, duration: 2, opacity: 0.6, speed: 3 } }
+        },
+        retina_detect: true
+      });
+    }
+  </script>
+</body>
+</html>

@@ -25,7 +25,8 @@ test("fresh arbitrary resident pairs, answers through canonical Work, and retain
     for await (const _chunk of request) { /* drain model request */ }
     calls++;
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "Milo remembers this home." } }] }));
+    const message = { role: "assistant", content: "Milo remembers this home." };
+    response.end(JSON.stringify({ message, choices: [{ message }] }));
   });
   await new Promise<void>(resolve => model.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise<void>(resolve => model.close(() => resolve())));

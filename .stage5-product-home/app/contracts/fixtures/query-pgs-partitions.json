@@ -1,0 +1,20 @@
+{
+  "ok": true,
+  "operationId": "brop_pppppppppppppppppppppppppppppppp",
+  "complete": true,
+  "totalNodes": 42,
+  "totalPartitions": 1,
+  "estimatedWorkUnits": 1,
+  "maxNodesPerWorkUnit": 250,
+  "partitions": [
+    {
+      "partitionId": "c-alpha",
+      "nodeCount": 42,
+      "estimatedWorkUnits": 1
+    }
+  ],
+  "sourceEvidence": {
+    "sourceHealth": "healthy",
+    "completeCoverage": true
+  }
+}

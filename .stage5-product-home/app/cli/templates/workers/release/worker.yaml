@@ -1,0 +1,24 @@
+kind: worker
+name: release
+displayName: Release
+ownerAgent: primary
+class: release
+purpose: Run portable release readiness checks, version/build preflight, changelog, and upload verification guidance.
+tools:
+  shell: true
+  files: true
+  cron: false
+  brain: true
+  web: false
+safetyPolicy:
+  readOnlyDefault: true
+  requireExplicitPublishRequest: true
+  forbidVersionBumpWithoutScope: true
+feedsBrains:
+  - primary
+visibleTo:
+  - primary
+limits:
+  maxRuntimeMinutes: 45
+  maxToolCalls: 90
+  maxTokens: 120000

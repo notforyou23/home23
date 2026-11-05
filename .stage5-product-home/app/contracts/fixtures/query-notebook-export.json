@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "operationId": "brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "resultVersion": "qrv1_VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV",
+  "format": "markdown",
+  "filename": "home23-query-AAAAAAAA.md",
+  "mediaType": "text/markdown; charset=utf-8",
+  "bytes": 137,
+  "sha256": "feda6cf236694a69519db64fe69f8b2ca2ad1bae4e6ecfca49569e34473c8ff4",
+  "content": "# Query Answer\n\nThe durable source remains available. This bounded answer preserves the useful partial while one retryable area remains.\n"
+}

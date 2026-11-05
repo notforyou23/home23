@@ -1,0 +1,40 @@
+{
+  "id": "coding-agent",
+  "version": "1.0.0",
+  "name": "Coding Agent",
+  "description": "Delegate coding through Home23 coding jobs, with isolation and verified integration.",
+  "layer": "skill",
+  "runtime": "docs",
+  "category": "coding",
+  "author": "home23",
+  "keywords": [
+    "coding",
+    "delegate",
+    "worker",
+    "refactor",
+    "feature",
+    "implementation"
+  ],
+  "triggers": [
+    "delegate this coding task",
+    "spin up a worker for this feature",
+    "use a coding agent",
+    "hand this off to codex"
+  ],
+  "requiresTools": [
+    "coding_backends",
+    "coding_run",
+    "coding_jobs",
+    "coding_status",
+    "coding_result",
+    "coding_continue",
+    "coding_cancel"
+  ],
+  "dependsOn": [],
+  "composes": [],
+  "actions": [
+    "brief",
+    "model-selection",
+    "handoff"
+  ]
+}

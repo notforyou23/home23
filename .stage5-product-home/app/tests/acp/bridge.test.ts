@@ -1,0 +1,634 @@
+/**
+ * Bridge lifecycle tests against a FAKE Codex CLI: a node script that
+ * ignores its argv and prints canned stream-json lines. Pointing the
+ * codex backend's config bin at the fake exercises the REAL arg builder,
+ * detached spawn, events.jsonl tail, finalize, cancel, and recovery paths.
+ */
+
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { test } from 'node:test';
+import { ACPBridge, normalizeBridgeConfig } from '../../src/acp/bridge.js';
+import type { BridgeLifecycleEvent, CodingJobRecord } from '../../src/acp/types.js';
+
+const FIXTURE_LINES = [
+  JSON.stringify({ type: 'thread.started', thread_id: 'sess-fixture-1' }),
+  JSON.stringify({ type: 'item.completed', item: { item_type: 'agent_message', text: 'Working on it' } }),
+  JSON.stringify({ type: 'item.completed', item: { item_type: 'command_execution', command: 'ls' } }),
+];
+const FIXTURE_RESULT = JSON.stringify({ type: 'turn.completed' });
+
+function writeFakeCli(dir: string, name: string, body: string): string {
+  const file = path.join(dir, name);
+  writeFileSync(file, `#!/usr/bin/env node\n${body}`);
+  chmodSync(file, 0o755);
+  return file;
+}
+
+function happyCli(dir: string): string {
+  return writeFakeCli(dir, 'fake-codex.js', [
+    `const lines = ${JSON.stringify(FIXTURE_LINES)};`,
+    'for (const l of lines) process.stdout.write(l + "\\n");',
+    `process.stdout.write(${JSON.stringify(JSON.stringify({ type: 'item.completed', item: { item_type: 'agent_message', text: 'All done' } }))} + "\\n");`,
+    'setTimeout(() => {',
+    `  process.stdout.write(${JSON.stringify(FIXTURE_RESULT)} + "\\n");`,
+    '  process.exit(0);',
+    '}, 200);',
+  ].join('\n'));
+}
+
+function sleepyCli(dir: string): string {
+  return writeFakeCli(dir, 'fake-sleepy.js', [
+    `process.stdout.write(${JSON.stringify(FIXTURE_LINES[0])} + "\\n");`,
+    'setTimeout(() => process.exit(0), 30000);',
+  ].join('\n'));
+}
+
+function grokErrorCli(dir: string): string {
+  return writeFakeCli(dir, 'fake-grok-error.js', [
+    `process.stdout.write(${JSON.stringify(JSON.stringify({ type: 'error', message: '402 Payment Required: usage balance exhausted' }))} + "\\n");`,
+    'setTimeout(() => process.exit(1), 20);',
+  ].join('\n'));
+}
+
+function makeBridge(root: string, bin: string, configOverrides: Record<string, unknown> = {}): ACPBridge {
+  return new ACPBridge({
+    config: normalizeBridgeConfig({
+      defaultAgent: 'codex',
+      allowedAgents: ['codex', 'cursor'],
+      backends: { codex: { bin } },
+      ...configOverrides,
+    }),
+    jobsDir: path.join(root, 'coding-jobs'),
+    projectRoot: root,
+    log: () => undefined,
+  });
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test('startJob → waitForJob completes with receipt, events on disk, ordered lifecycle', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
+  const bridge = makeBridge(root, happyCli(root));
+  try {
+    const seen: BridgeLifecycleEvent[] = [];
+    bridge.addListener(e => seen.push(e));
+
+    const started = await bridge.startJob({ prompt: 'do the thing', label: 'happy path' });
+    assert.equal(started.status, 'running');
+    assert.equal(started.backend, 'codex');
+    assert.ok(started.pid && started.pid > 0);
+    assert.equal(started.pgid, started.pid);
+    // Prompt is elided from the recorded argv but present as job.prompt.
+    assert.equal(started.argv?.[started.argv.length - 1], '<prompt>');
+    assert.equal(started.prompt, 'do the thing');
+    // Codex reports its thread id from the stream; the bridge must not invent one.
+    assert.equal(started.sessionId, undefined);
+    assert.equal(started.argv?.includes('--session-id'), false);
+
+    const done = await bridge.waitForJob(started.id, 15_000);
+    assert.equal(done.status, 'completed');
+    // The stream-reported session id (system/init) wins over bookkeeping —
+    // resumed claude sessions fork under a NEW id only the stream knows.
+    assert.equal(done.sessionId, 'sess-fixture-1');
+
+    const receipt = bridge.getReceipt(started.id);
+    assert.ok(receipt);
+    assert.equal(receipt!.status, 'completed');
+    assert.equal(receipt!.resultTail, 'All done');
+    assert.equal(receipt!.costUsd, undefined);
+    assert.equal(receipt!.numTurns, undefined);
+    assert.equal(receipt!.toolUseCount, 1);
+    assert.equal(receipt!.eventsCount, 5);
+
+    // Raw stream is durable on disk.
+    const eventsFile = path.join(root, 'coding-jobs', started.id, 'events.jsonl');
+    assert.ok(existsSync(eventsFile));
+    assert.match(readFileSync(eventsFile, 'utf8'), /sess-fixture-1/);
+    const jobJson = JSON.parse(readFileSync(path.join(root, 'coding-jobs', started.id, 'job.json'), 'utf8')) as CodingJobRecord;
+    assert.equal(jobJson.status, 'completed');
+
+    // Lifecycle ordering: started first, finished last, events in between.
+    assert.equal(seen[0]!.type, 'job_started');
+    assert.equal(seen[seen.length - 1]!.type, 'job_finished');
+    const kinds = seen.filter(e => e.type === 'job_event').map(e => (e as { event: { kind: string } }).event.kind);
+    assert.deepEqual(kinds, ['session', 'text', 'tool_use', 'text', 'result']);
+
+    // Normalized tail reader agrees with the live parse.
+    const tail = bridge.readEventsTail(started.id, 10);
+    assert.equal(tail[tail.length - 1]!.kind, 'result');
+  } finally {
+    bridge.dispose();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('cancelJob stops the process and labels the job cancelled', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
+  const bridge = makeBridge(root, sleepyCli(root));
+  try {
+    const started = await bridge.startJob({ prompt: 'sleep forever' });
+    assert.equal(started.status, 'running');
+    const pid = started.pid!;
+
+    await bridge.cancelJob(started.id);
+    const done = await bridge.waitForJob(started.id, 15_000);
+    assert.equal(done.status, 'cancelled');
+    assert.equal(pidAlive(pid), false, 'child process must actually be dead');
+    assert.equal(bridge.getReceipt(started.id)?.status, 'cancelled');
+  } finally {
+    bridge.dispose();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('legacy Grok launches are rejected before spawn while its parser remains readable', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
+  const bin = grokErrorCli(root);
+  const bridge = makeBridge(root, bin, { backends: { 'grok-build': { bin } } });
+  try {
+    await assert.rejects(
+      bridge.startJob({ prompt: 'do the thing', backend: 'grok-build' }),
+      /Unsupported coding backend "grok-build".*historical job receipts/,
+    );
+    assert.equal(bridge.listJobs().length, 0);
+  } finally {
+    bridge.dispose();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('recover finalizes dead jobs: completed with result, interrupted without', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
+  try {
+    const jobsDir = path.join(root, 'coding-jobs');
+    const seed = (id: string, lines: string[]) => {
+      const dir = path.join(jobsDir, id);
+      mkdirSync(dir, { recursive: true });
+      const record: CodingJobRecord = {
+        schema: 'home23.coding-job.v1',
+        id,
+      backend: 'codex',
+        status: 'running',
+        prompt: 'orphaned work',
+        cwd: root,
+        requestedCwd: root,
+        pid: 999_999, // beyond macOS pid range → definitely dead
+        pgid: 999_999,
+        startedAt: new Date(Date.now() - 60_000).toISOString(),
+        isolation: 'none',
+      };
+      writeFileSync(path.join(dir, 'job.json'), JSON.stringify(record, null, 2));
+      writeFileSync(path.join(dir, 'events.jsonl'), lines.join('\n') + '\n');
+    };
+    seed('cj_20260805T000000Z_dead', [...FIXTURE_LINES, FIXTURE_RESULT]);
+    seed('cj_20260805T000001Z_gone', FIXTURE_LINES);
+
+    const bridge = makeBridge(root, happyCli(root));
+    const { resumed, finalized } = await bridge.recover();
+    assert.deepEqual(resumed, []);
+    assert.deepEqual([...finalized].sort(), ['cj_20260805T000000Z_dead', 'cj_20260805T000001Z_gone']);
+
+    const completed = bridge.getJob('cj_20260805T000000Z_dead');
+    assert.equal(completed?.status, 'completed');
+    // Session id recovered from the replayed stream — resume handle survives.
+    assert.equal(completed?.sessionId, 'sess-fixture-1');
+    const receipt = bridge.getReceipt('cj_20260805T000000Z_dead');
+    assert.equal(receipt?.resultTail, 'Working on it');
+    assert.equal(receipt?.eventsCount, 4);
+    assert.equal(receipt?.toolUseCount, 1);
+
+    const interrupted = bridge.getJob('cj_20260805T000001Z_gone');
+    assert.equal(interrupted?.status, 'interrupted');
+    assert.equal(interrupted?.sessionId, 'sess-fixture-1', 'interrupted job keeps its resume handle');
+    assert.equal(bridge.getReceipt('cj_20260805T000001Z_gone')?.status, 'interrupted');
+    bridge.dispose();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('recover flushes a torn terminal line (child killed mid-write) → completed, not interrupted', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
+  try {
+    const jobsDir = path.join(root, 'coding-jobs');
+    const id = 'cj_20260805T000002Z_torn';
+    const dir = path.join(jobsDir, id);
+    mkdirSync(dir, { recursive: true });
+    const record: CodingJobRecord = {
+      schema: 'home23.coding-job.v1',
+      id,
+        backend: 'codex',
+      status: 'running',
+      prompt: 'torn write',
+      cwd: root,
+      requestedCwd: root,
+      pid: 999_999,
+      pgid: 999_999,
+      startedAt: new Date(Date.now() - 60_000).toISOString(),
+      isolation: 'none',
+    };
+    writeFileSync(path.join(dir, 'job.json'), JSON.stringify(record, null, 2));
+    // The final result line has NO trailing newline — the host died mid-write.
+    writeFileSync(path.join(dir, 'events.jsonl'), FIXTURE_LINES.join('\n') + '\n' + FIXTURE_RESULT);
+
+    const bridge = makeBridge(root, happyCli(root));
+    await bridge.recover();
+    const job = bridge.getJob(id);
+    assert.equal(job?.status, 'completed', 'torn terminal line is flushed and recognized');
+    assert.equal(bridge.getReceipt(id)?.resultTail, 'Working on it');
+    assert.equal(bridge.getReceipt(id)?.eventsCount, 4);
+    bridge.dispose();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('maxConcurrentJobs is enforced against non-terminal jobs', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
+  const bridge = makeBridge(root, sleepyCli(root), { maxConcurrentJobs: 1 });
+  try {
+    const first = await bridge.startJob({ prompt: 'occupy the slot' });
+    await assert.rejects(
+      bridge.startJob({ prompt: 'one too many' }),
+      /Concurrent coding-job limit reached \(1\/1\)/,
+    );
+    await bridge.cancelJob(first.id);
+    await bridge.waitForJob(first.id, 15_000);
+    // Slot freed after the first job reached a terminal status.
+    const second = await bridge.startJob({ prompt: 'now it fits' });
+    await bridge.cancelJob(second.id);
+    await bridge.waitForJob(second.id, 15_000);
+  } finally {
+    bridge.dispose();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('startJob refuses a resume from a running source job', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
+  const bridge = makeBridge(root, sleepyCli(root));
+  let resumedId: string | undefined;
+  try {
+    const source = await bridge.startJob({ prompt: 'keep working' });
+    let sessionId = source.sessionId;
+    for (let attempt = 0; !sessionId && attempt < 20; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 25));
+      sessionId = bridge.getJob(source.id)?.sessionId;
+    }
+    assert.equal(sessionId, 'sess-fixture-1');
+    try {
+      const resumed = await bridge.startJob({
+        prompt: 'follow up',
+        cwd: source.cwd,
+        isolation: 'none',
+        resumeSessionId: sessionId,
+        resumedFromJobId: source.id,
+      });
+      resumedId = resumed.id;
+      assert.fail('a running source job must not be resumed');
+    } catch (err) {
+      assert.match(err instanceof Error ? err.message : String(err), /source job.*running|still running/i);
+    }
+    await bridge.cancelJob(source.id);
+    await bridge.waitForJob(source.id, 15_000);
+  } finally {
+    if (resumedId) {
+      await bridge.cancelJob(resumedId);
+      await bridge.waitForJob(resumedId, 15_000);
+    }
+    bridge.dispose();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('startJob permits a resume from a terminal source job', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
+  const bridge = makeBridge(root, happyCli(root));
+  try {
+    const source = await bridge.startJob({ prompt: 'finish this', model: 'gpt-5.6-sol' });
+    const finished = await bridge.waitForJob(source.id, 15_000);
+    assert.equal(finished.status, 'completed');
+    const resumed = await bridge.startJob({
+      prompt: 'follow up',
+      cwd: source.cwd,
+      isolation: 'none',
+      resumeSessionId: finished.sessionId,
+      resumedFromJobId: source.id,
+    });
+    const done = await bridge.waitForJob(resumed.id, 15_000);
+    assert.equal(done.status, 'completed');
+    assert.equal(done.resumedFromJobId, source.id);
+    assert.deepEqual(done.executionOptions, finished.executionOptions);
+    assert.equal(done.model, 'gpt-5.6-sol');
+    assert.equal(done.effort, undefined);
+    assert.equal(done.argv?.includes('--max-budget-usd'), false);
+  } finally {
+    bridge.dispose();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('disabled config and validation failures reject with clear messages', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
+  try {
+    const disabled = makeBridge(root, happyCli(root), { enabled: false });
+    await assert.rejects(disabled.startJob({ prompt: 'nope' }), /disabled/);
+    disabled.dispose();
+
+    const bridge = makeBridge(root, happyCli(root), { allowedAgents: ['codex'] });
+    await assert.rejects(bridge.startJob({ prompt: 'x', backend: 'claude-code' }), /Unsupported coding backend "claude-code"/);
+    await assert.rejects(bridge.startJob({ prompt: 'x', backend: 'cursor' }), /not in allowedAgents/);
+    await assert.rejects(bridge.startJob({ prompt: 'x', backend: 'no-such-backend' }), /Unsupported coding backend "no-such-backend"/);
+    await assert.rejects(bridge.startJob({ prompt: '   ' }), /prompt is empty/);
+    bridge.dispose();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('codex startJob fails fast with install instructions when the CLI is absent', async (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
+  const bridge = makeBridge(root, happyCli(root));
+  try {
+    const codex = bridge.listBackends().find(b => b.id === 'codex')!;
+    if (codex.available) return t.skip('codex CLI is installed on this machine');
+    await assert.rejects(
+      bridge.startJob({ prompt: 'x', backend: 'codex' }),
+      /codex CLI not found; install with `npm i -g @openai\/codex` or set acp\.backends\.codex\.bin/,
+    );
+  } finally {
+    bridge.dispose();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('listBackends reports availability from resolved bins', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
+  const bin = happyCli(root);
+  const bridge = makeBridge(root, bin);
+  try {
+    const backends = bridge.listBackends();
+    const codex = backends.find(b => b.id === 'codex')!;
+    assert.equal(codex.available, true);
+    assert.equal(codex.bin, bin);
+    assert.equal(codex.selectable, true);
+    assert.equal(codex.enabled, true);
+    assert.ok(backends.some(b => b.id === 'cursor'));
+  } finally {
+    bridge.dispose();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a job inside the Home23 checkout auto-isolates into a worktree', async (t) => {
+  try {
+    execFileSync('git', ['--version'], { stdio: 'ignore' });
+  } catch {
+    return t.skip('git unavailable');
+  }
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-')));
+  const gitRun = (args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'ignore' });
+  gitRun(['init', '-q']);
+  gitRun(['config', 'user.email', 'test@home23.local']);
+  gitRun(['config', 'user.name', 'Home23 Test']);
+  writeFileSync(path.join(root, 'README.md'), 'repo\n');
+  gitRun(['add', '.']);
+  gitRun(['commit', '-q', '-m', 'init']);
+
+  // Fake CLI proves it ran in the worktree by writing an artifact into cwd.
+  const bin = writeFakeCli(root, 'fake-worktree.js', [
+    'require("node:fs").writeFileSync("job-artifact.txt", "made by job\\n");',
+    `process.stdout.write(${JSON.stringify(FIXTURE_LINES[0])} + "\\n");`,
+    `process.stdout.write(${JSON.stringify(FIXTURE_RESULT)} + "\\n");`,
+  ].join('\n'));
+  const bridge = makeBridge(root, bin);
+  try {
+    const started = await bridge.startJob({ prompt: 'change the checkout', label: 'wt demo' });
+    assert.equal(started.isolation, 'worktree');
+    assert.ok(started.worktree);
+    assert.equal(started.cwd, started.worktree!.path);
+    assert.equal(started.requestedCwd, root);
+    assert.match(started.worktree!.branch, /^home23-agent\/wt-demo/);
+
+    const done = await bridge.waitForJob(started.id, 15_000);
+    assert.equal(done.status, 'completed');
+    // The job's edits landed in the worktree, never in the live checkout.
+    assert.ok(existsSync(path.join(started.worktree!.path, 'job-artifact.txt')));
+    assert.equal(existsSync(path.join(root, 'job-artifact.txt')), false);
+    const receipt = bridge.getReceipt(started.id)!;
+    assert.deepEqual(receipt.worktree, started.worktree);
+    assert.match(receipt.diffStat ?? '', /job-artifact\.txt/);
+    const continued = await bridge.startJob({ prompt: 'finish the follow-up', cwd: done.cwd,
+      isolation: 'none', resumeSessionId: done.sessionId, resumedFromJobId: done.id });
+    const continuedDone = await bridge.waitForJob(continued.id, 15_000);
+    assert.equal(continuedDone.status, 'completed');
+    assert.equal(continuedDone.isolation, 'worktree');
+    assert.equal(continuedDone.requestedCwd, root);
+    assert.deepEqual(bridge.getReceipt(continued.id)?.worktree, started.worktree);
+
+  } finally {
+    bridge.dispose();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a cursor job gets no pre-generated session id and adopts the one the CLI reports', async () => {
+  // cursor-agent has no --session-id: pre-generating one would record a resume
+  // handle the CLI never heard of. The init line is the only source of truth.
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
+  const bin = writeFakeCli(root, 'fake-cursor.js', [
+    `process.stdout.write(${JSON.stringify(JSON.stringify({
+      type: 'system', subtype: 'init', session_id: 'c33647ce-8083-463d-b464-6581e2455ff5', model: 'Auto',
+    }))} + "\\n");`,
+    `process.stdout.write(${JSON.stringify(JSON.stringify({
+      type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'patched it' }] },
+    }))} + "\\n");`,
+    `process.stdout.write(${JSON.stringify(JSON.stringify({
+      type: 'result', subtype: 'success', is_error: false, result: 'patched it', duration_ms: 4630,
+    }))} + "\\n");`,
+    'setTimeout(() => process.exit(0), 20);',
+  ].join('\n'));
+  const bridge = makeBridge(root, bin, {
+    allowedAgents: ['claude-code', 'grok-build', 'codex', 'cursor'],
+    backends: { cursor: { bin } },
+  });
+  try {
+    const started = await bridge.startJob({ prompt: 'do the thing', backend: 'cursor' });
+    assert.equal(started.sessionId, undefined);
+    assert.equal(started.argv?.includes('--session-id'), false);
+    assert.equal(started.argv?.includes('--trust'), true);
+
+    const done = await bridge.waitForJob(started.id, 15_000);
+    assert.equal(done.status, 'completed');
+    assert.equal(done.sessionId, 'c33647ce-8083-463d-b464-6581e2455ff5');
+    const receipt = bridge.getReceipt(started.id);
+    assert.equal(receipt?.sessionId, 'c33647ce-8083-463d-b464-6581e2455ff5');
+    // Success result text is blank on purpose; the tail comes from lastText and
+    // is therefore not doubled.
+    assert.equal(receipt?.resultTail, 'patched it');
+  } finally {
+    bridge.dispose();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('normalizeBridgeConfig fails closed when absent, defaults when present, maps builder-era ask to allowlist', () => {
+  // Absent block (agent config predating Step 29) must NOT silently enable
+  // bypass-authority coding jobs on restart.
+  assert.equal(normalizeBridgeConfig(undefined).enabled, false);
+  assert.equal(normalizeBridgeConfig(null).enabled, false);
+
+  // Present-but-empty block opts in with full defaults.
+  const present = normalizeBridgeConfig({});
+  assert.equal(present.enabled, true);
+  assert.equal(present.defaultAgent, 'codex');
+  assert.deepEqual(present.allowedAgents, ['codex', 'cursor']);
+  assert.equal(present.permissionMode, 'bypassPermissions');
+  assert.equal(present.maxConcurrentJobs, 3);
+  assert.equal(present.jobTimeoutMs, 6 * 60 * 60 * 1000);
+
+  assert.equal(normalizeBridgeConfig({ enabled: false }).enabled, false);
+  assert.equal(normalizeBridgeConfig({ enabled: true }).enabled, true);
+  assert.deepEqual(normalizeBridgeConfig({ defaultAgent: 'grok-build', allowedAgents: ['grok-build', 'codex'] }).allowedAgents, ['codex']);
+  assert.equal(normalizeBridgeConfig({ defaultAgent: 'grok-build', allowedAgents: ['grok-build', 'codex'] }).defaultAgent, 'codex');
+  // 'ask' must gate (allowlist), never silently widen to bypassPermissions.
+  assert.equal(normalizeBridgeConfig({ permissionMode: 'ask' }).permissionMode, 'allowlist');
+  assert.equal(normalizeBridgeConfig({ permissionMode: 'plan' }).permissionMode, 'plan');
+});
+
+
+test('continuation cannot restore saved permissions over changed current configuration', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-policy-'));
+  const bin = happyCli(root);
+  const original = makeBridge(root, bin, { permissionMode: 'allowlist' });
+  let changed: ACPBridge | undefined;
+  try {
+    const source = await original.startJob({ prompt: 'inspect only' });
+    const done = await original.waitForJob(source.id, 15_000);
+    original.dispose();
+    changed = makeBridge(root, bin, { permissionMode: 'bypassPermissions' });
+    await assert.rejects(changed.startJob({ prompt: 'continue', cwd: done.cwd, isolation: 'none',
+      resumeSessionId: done.sessionId, resumedFromJobId: done.id }), /configuration changed/);
+    assert.equal(changed.listJobs().length, 1);
+  } finally {
+    original.dispose();
+    changed?.dispose();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('success events do not release the workspace until process exit; competing bridges are refused', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-lifetime-'));
+  const bin = writeFakeCli(root, 'slow-exit.js', `console.log(${JSON.stringify(FIXTURE_RESULT)}); setTimeout(() => process.exit(0), 1600);`);
+  const bridge = makeBridge(root, bin);
+  const other = makeBridge(root, bin);
+  try {
+    const job = await bridge.startJob({ prompt: 'first' });
+    await new Promise(resolve => setTimeout(resolve, 650));
+    assert.equal(bridge.getJob(job.id)?.status, 'running');
+    await assert.rejects(other.startJob({ prompt: 'competing' }), /reserved/);
+    assert.equal((await bridge.waitForJob(job.id, 5000)).status, 'completed');
+    const next = await other.startJob({ prompt: 'after exit' });
+    assert.equal((await other.waitForJob(next.id, 5000)).status, 'completed');
+  } finally { bridge.dispose(); other.dispose(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('nonzero exit overrides an earlier success event', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-exit-'));
+  const bridge = makeBridge(root, writeFakeCli(root, 'bad-exit.js', `console.log(${JSON.stringify(FIXTURE_RESULT)}); setTimeout(() => process.exit(1), 200);`));
+  try {
+    const job = await bridge.startJob({ prompt: 'check exit' });
+    assert.equal((await bridge.waitForJob(job.id, 5000)).status, 'failed');
+  } finally { bridge.dispose(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('recovery reattaches a live process even after its success event', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-reattach-'));
+  const bin = writeFakeCli(root, 'slow-exit.js', `console.log(${JSON.stringify(FIXTURE_RESULT)}); setTimeout(() => process.exit(0), 1600);`);
+  const first = makeBridge(root, bin);
+  const second = makeBridge(root, bin);
+  try {
+    const job = await first.startJob({ prompt: 'survive detach' });
+    await new Promise(resolve => setTimeout(resolve, 600));
+    first.dispose();
+    const recovery = await second.recover();
+    assert.ok(recovery.resumed.includes(job.id));
+    assert.equal(second.getJob(job.id)?.status, 'running');
+    assert.equal((await second.waitForJob(job.id, 5000)).status, 'completed');
+  } finally { first.dispose(); second.dispose(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('legacy resumes and unsupported controls refuse admission without creating a job', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-admission-'));
+  const bridge = makeBridge(root, happyCli(root));
+  try {
+    await assert.rejects(bridge.startJob({ prompt: 'x', allowedTools: ['Bash'] }), /codex does not support allowedTools/);
+    await assert.rejects(bridge.startJob({ prompt: 'x', resumeSessionId: 'unknown' }), /source job ID/);
+    const job = await bridge.startJob({ prompt: 'original' });
+    const done = await bridge.waitForJob(job.id, 5000);
+    const file = path.join(root, 'coding-jobs', job.id, 'job.json');
+    const stored = JSON.parse(readFileSync(file, 'utf8'));
+    delete stored.executionOptions;
+    writeFileSync(file, JSON.stringify(stored));
+    await assert.rejects(bridge.startJob({ prompt: 'follow up', resumeSessionId: done.sessionId, resumedFromJobId: job.id }), /saved execution options|execution policy|legacy/i);
+  } finally { bridge.dispose(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a surviving child process keeps the workspace reserved after its CLI leader exits', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-descendant-'));
+  const bin = writeFakeCli(root, 'descendant.js', `
+    require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 1600)'], { stdio: 'ignore' }).unref();
+    console.log(${JSON.stringify(FIXTURE_RESULT)});
+    setTimeout(() => process.exit(0), 100);
+  `);
+  const bridge = makeBridge(root, bin);
+  try {
+    const job = await bridge.startJob({ prompt: 'child process' });
+    await new Promise(resolve => setTimeout(resolve, 650));
+    assert.equal(bridge.getJob(job.id)?.status, 'running');
+    await assert.rejects(bridge.startJob({ prompt: 'competing' }), /reserved/);
+    assert.equal((await bridge.waitForJob(job.id, 5000)).status, 'completed');
+  } finally { bridge.dispose(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('cancellation intent survives detachment and recovery', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-cancel-recover-'));
+  const bin = writeFakeCli(root, 'cancel-delay.js', `process.on('SIGTERM', () => setTimeout(() => process.exit(0), 300)); console.log(${JSON.stringify(FIXTURE_RESULT)}); setTimeout(() => process.exit(0), 10000);`);
+  const first = makeBridge(root, bin);
+  const second = makeBridge(root, bin);
+  try {
+    const job = await first.startJob({ prompt: 'cancel me' });
+    await new Promise(resolve => setTimeout(resolve, 150));
+    await first.cancelJob(job.id);
+    assert.ok(first.getJob(job.id)?.cancelRequestedAt);
+    first.dispose();
+    await second.recover();
+    assert.equal((await second.waitForJob(job.id, 5000)).status, 'cancelled');
+  } finally { first.dispose(); second.dispose(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Codex rejects older explicit and configured models before creating jobs or workspaces', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-model-'));
+  try {
+    const bridge = makeBridge(root, happyCli(root));
+    await assert.rejects(bridge.startJob({ prompt: 'must not run', model: 'gpt-5.5' }), /Unsupported Codex model/);
+    assert.deepEqual(bridge.listJobs(), []);
+    bridge.dispose();
+    const configured = makeBridge(root, happyCli(root), { backends: { codex: { bin: happyCli(root), model: 'gpt-5' } } });
+    await assert.rejects(configured.startJob({ prompt: 'must not run' }), /Unsupported Codex model/);
+    assert.deepEqual(configured.listJobs(), []);
+    configured.dispose();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

@@ -1,0 +1,34 @@
+{
+  "id": "source-validation",
+  "version": "1.0.0",
+  "name": "Source Validation",
+  "description": "Audit a disputed claim or source for provenance and evidential limits.",
+  "layer": "skill",
+  "runtime": "docs",
+  "category": "research",
+  "author": "home23",
+  "keywords": [
+    "source",
+    "validate",
+    "credibility",
+    "bias",
+    "primary source",
+    "provenance",
+    "recency"
+  ],
+  "triggers": [
+    "is this source trustworthy",
+    "validate this claim",
+    "check the source quality",
+    "is this a primary source"
+  ],
+  "requiresTools": [
+    "web_search",
+    "web_browse"
+  ],
+  "dependsOn": [],
+  "composes": [],
+  "actions": [
+    "validate"
+  ]
+}

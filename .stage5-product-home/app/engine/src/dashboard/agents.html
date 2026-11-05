@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AGENTS • COSMO Nervous System</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap');
+        
+        :root {
+            --bg: #0a0a0a;
+            --card: #111111;
+            --accent: #00f5ff;
+        }
+        
+        body {
+            background: var(--bg);
+            color: #e0e0e0;
+            font-family: 'Inter', system-ui, sans-serif;
+        }
+        
+        .header {
+            background: linear-gradient(90deg, #111111, #1a1a1a);
+            border-bottom: 1px solid #222;
+        }
+        
+        .agent-card {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        .agent-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 0 0 1px var(--accent);
+        }
+        
+        .status-dot {
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        
+        .neural-bg {
+            background: radial-gradient(circle at 50% 30%, rgba(0, 245, 255, 0.08) 0%, transparent 70%);
+        }
+    </style>
+</head>
+<body class="neural-bg min-h-screen pb-12">
+    <div class="header py-6 sticky top-0 z-50">
+        <div class="max-w-screen-2xl mx-auto px-8 flex items-center justify-between">
+            <div class="flex items-center gap-4">
+                <div class="w-9 h-9 bg-cyan-400 rounded-full flex items-center justify-center text-black font-bold text-xl">C</div>
+                <div>
+                    <h1 class="text-3xl font-semibold tracking-tighter text-white">COSMO</h1>
+                    <p class="text-xs text-cyan-400 tracking-[2px] -mt-1">NERVOUS SYSTEM v0.3</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-8 text-sm">
+                <a href="home.html" class="hover:text-cyan-400 transition-colors">HOME</a>
+                <a href="intelligence.html" class="hover:text-cyan-400 transition-colors">INTELLIGENCE</a>
+                <a href="#" class="text-cyan-400 font-medium border-b border-cyan-400 pb-1">AGENTS</a>
+                <a href="insights.html" class="hover:text-cyan-400 transition-colors">INSIGHTS</a>
+            </div>
+            <div class="flex items-center gap-3">
+                <div class="px-4 py-1.5 bg-emerald-500/10 text-emerald-400 text-xs font-mono rounded-full flex items-center gap-2">
+                    <div class="w-2 h-2 bg-emerald-400 rounded-full status-dot"></div>
+                    ALL SYSTEMS ONLINE
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="max-w-screen-2xl mx-auto px-8 pt-10">
+        <div class="flex justify-between items-end mb-8">
+            <div>
+                <h2 class="text-5xl font-semibold tracking-tighter">Agent Collective</h2>
+                <p class="text-gray-400 mt-2 text-lg">Persistent cognitive organs • Live status • Real-time coordination</p>
+            </div>
+            <div class="text-right">
+                <div class="text-xs uppercase tracking-widest text-gray-500 mb-1">Last Updated</div>
+                <div class="font-mono text-cyan-400" id="last-updated">Just now</div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="agent-grid">
+            <!-- Populated by JS -->
+        </div>
+    </div>
+
+    <script>
+        const agents = [
+            {
+                name: "Althea",
+                role: "Executive Function & Primary Interface",
+                status: "active",
+                location: "cosmo23-home",
+                color: "cyan",
+                lastActive: "now",
+                load: "87%"
+            },
+            {
+                name: "Conductor",
+                role: "Central Coordinator & Task Router",
+                status: "active",
+                location: "workspace/agents/conductor",
+                color: "violet",
+                lastActive: "2m ago",
+                load: "43%"
+            },
+            {
+                name: "Archivist",
+                role: "Long-term Memory & Reflection",
+                status: "active",
+                location: "workspace/agents/archivist",
+                color: "amber",
+                lastActive: "11m ago",
+                load: "64%"
+            },
+            {
+                name: "Autostudy",
+                role: "Deep Sequential Learning",
+                status: "thinking",
+                location: "workspace/agents/autostudy",
+                color: "emerald",
+                lastActive: "now",
+                load: "91%"
+            },
+            {
+                name: "Critic",
+                role: "Quality Control & Rigor",
+                status: "idle",
+                location: "workspace/agents/critic",
+                color: "rose",
+                lastActive: "27m ago",
+                load: "12%"
+            },
+            {
+                name: "Synthesizer",
+                role: "Cross-domain Insight Engine",
+                status: "active",
+                location: "workspace/agents/synthesizer",
+                color: "fuchsia",
+                lastActive: "41m ago",
+                load: "55%"
+            },
+            {
+                name: "Sentinel",
+                role: "System Health & Stability",
+                status: "active",
+                location: "workspace/agents/sentinel",
+                color: "sky",
+                lastActive: "now",
+                load: "28%"
+            },
+            {
+                name: "Builder",
+                role: "Implementation & Execution",
+                status: "idle",
+                location: "workspace/agents/builder",
+                color: "orange",
+                lastActive: "3h ago",
+                load: "9%"
+            }
+        ];
+
+        function createAgentCard(agent) {
+            const card = document.createElement('div');
+            card.className = `agent-card bg-zinc-950 border border-zinc-800 rounded-3xl p-6 hover:border-${agent.color}-500 group`;
+            
+            card.innerHTML = `
+                <div class="flex items-start justify-between">
+                    <div>
+                        <div class="flex items-center gap-3">
+                            <div class="w-5 h-5 rounded-full bg-${agent.color}-500 flex items-center justify-center text-[10px] font-bold text-black">${agent.name[0]}</div>
+                            <h3 class="text-2xl font-semibold text-white">${agent.name}</h3>
+                        </div>
+                        <p class="text-zinc-400 text-sm mt-1.5 leading-tight">${agent.role}</p>
+                    </div>
+                    <div class="text-right">
+                        <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium
+                            ${agent.status === 'active' ? 'bg-emerald-500/10 text-emerald-400' : 
+                              agent.status === 'thinking' ? 'bg-amber-500/10 text-amber-400' : 'bg-zinc-800 text-zinc-400'}">
+                            <span class="w-2 h-2 rounded-full mr-1.5 ${agent.status === 'active' || agent.status === 'thinking' ? 'bg-current animate-pulse' : ''}"></span>
+                            ${agent.status.toUpperCase()}
+                        </span>
+                    </div>
+                </div>
+                
+                <div class="mt-8 grid grid-cols-2 gap-4 text-xs">
+                    <div>
+                        <div class="text-zinc-500">LOCATION</div>
+                        <div class="font-mono text-zinc-300 mt-0.5">${agent.location}</div>
+                    </div>
+                    <div>
+                        <div class="text-zinc-500">LAST ACTIVE</div>
+                        <div class="font-mono text-zinc-300 mt-0.5">${agent.lastActive}</div>
+                    </div>
+                </div>
+
+                <div class="mt-6 pt-6 border-t border-zinc-800 flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <div class="text-[10px] font-mono uppercase tracking-widest text-zinc-500">COGNITIVE LOAD</div>
+                        <div class="text-xl font-semibold text-${agent.color}-400">${agent.load}</div>
+                    </div>
+                    <button onclick="talkToAgent('${agent.name}')" 
+                            class="px-5 py-2 text-xs border border-zinc-700 hover:border-${agent.color}-500 rounded-2xl transition-colors">
+                        MESSAGE →
+                    </button>
+                </div>
+            `;
+            return card;
+        }
+
+        function renderAgents() {
+            const container = document.getElementById('agent-grid');
+            container.innerHTML = '';
+            agents.forEach(agent => {
+                container.appendChild(createAgentCard(agent));
+            });
+        }
+
+        function talkToAgent(name) {
+            alert(`Opening direct channel to ${name}...\\n\\n(Integration point for /query ${name.toLowerCase()})`);
+        }
+
+        // Initialize
+        renderAgents();
+        
+        // Auto refresh simulation
+        setInterval(() => {
+            document.getElementById('last-updated').textContent = 'Just now';
+        }, 45000);
+    </script>
+</body>
+</html>

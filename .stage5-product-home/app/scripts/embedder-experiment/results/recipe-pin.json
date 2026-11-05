@@ -1,0 +1,49 @@
+{
+  "pinnedAt": "2026-09-10T21:54:00Z",
+  "machine": { "node": "v22.19.0", "platform": "darwin", "arch": "arm64" },
+  "baseline": {
+    "id": "ollama-nomic-embed-text-unprefixed",
+    "provider": "ollama-local",
+    "modelAlias": "nomic-embed-text:latest",
+    "digest": "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f",
+    "note": "Ollama library digest from /api/tags. Template {{ .Prompt }}. GGUF F16 nomic-bert 137M. Not L2-normalized (measured L2 ~16–23)."
+  },
+  "candidate": {
+    "id": "nomic-ai/nomic-embed-text-v1.5/onnx-fp32-mean-noprefix",
+    "source": "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5",
+    "runtime": "@huggingface/transformers@3.7.6",
+    "dtype": "fp32",
+    "pooling": "mean",
+    "prefix": "none",
+    "artifacts": [
+      {
+        "path": "onnx/model.onnx",
+        "bytes": 547310275,
+        "sha256": "147d5aa88c2101237358e17796cf3a227cead1ec304ec34b465bb08e9d952965"
+      },
+      {
+        "path": "tokenizer.json",
+        "bytes": 711396,
+        "sha256": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66"
+      },
+      {
+        "path": "config.json",
+        "bytes": 2538,
+        "sha256": "9ab00bd92cee80a569f708140b7b6c1661a65891ff3765b1519e181ba2f2c92b"
+      },
+      {
+        "path": "tokenizer_config.json",
+        "bytes": 1191,
+        "sha256": "d7e0000bcc80134debd2222220427e6bf5fa20a669f40a0d0d1409cc18e0a9bc"
+      }
+    ]
+  },
+  "compatibility": {
+    "perVectorCosineMean": 0.900851,
+    "perVectorCosineMin": 0.517358,
+    "below099": 25,
+    "below095": 15,
+    "projectionEqual4dp": "0/25",
+    "dropInReplacement": false
+  }
+}

@@ -1,0 +1,715 @@
+architecture:
+  # Cognition mode selector. Scaffolded 2026-04-18 for the thinking-machine
+  # cycle rebuild (see docs/superpowers/specs/2026-04-18-thinking-machine-cycle.md).
+  # legacy_roles = current role rotation (curiosity/analyst/critic/curator/proposal).
+  # thinking_machine = new 4-phase pipeline (discover → deep-dive → connect → critique).
+  # Home23 v2 (2026-08-09, jtr: "i dont think we want legacy anything"):
+  # the four-phase thinking machine IS cognition — discover, deep-dive
+  # (grounded in the individual's lived chain), PGS connect, critique.
+  cognitionMode: thinking_machine
+  roleSystem:
+    type: dynamic
+    explorationMode: guided
+    guidedFocus:
+      domain: home23
+      executionMode: strict
+      taskPriority: 1
+      autonomousPriority: 0.3
+      silentPlanning: false
+      context: |
+        Home23 — an installable AI operating system with persistent agents and living brains.
+        This brain belongs to a Home23 agent instance. It thinks, learns, and grows through
+        conversation with its user and autonomous reflection. It ingests documents from its
+        workspace, builds knowledge over time, and surfaces insights through its cognitive loops.
+        The user is the agent's owner — help them, learn about their world, remember what matters.
+        Focus on: understanding the user's context, building useful knowledge, making connections
+        between topics, and being genuinely helpful when asked questions.
+      depth: normal
+      intrinsicBias: 0.8
+      curiosityAllowed: true
+      blockedGoalTypes:
+        - code_creation
+        - code_execution
+    initialRoles:
+      - id: curiosity
+        prompt: >-
+          Generate ONE novel question about jtr's world (his projects, his files,
+          his interests, his domain surfaces, external events affecting him) —
+          NOT about Home23's internals. 2-4 sentences. Then propose ONE concrete
+          action on its own line:
+            INVESTIGATE: <specific thing in jtr's world to look into>
+            NOTIFY: <concern about something possibly broken/stale — will be
+                     routed through verification before reaching jtr>
+            TRIGGER: <external condition to watch for>
+            OBSERVE: <positive pattern, win, or working system worth cataloguing —
+                      goes to signals, not concerns>
+          If nothing about jtr's world stands out this cycle, end with: NO_ACTION
+          Forbidden topics: the cognitive loop, the enforcer, evidence receipts,
+          loop closure, Home23's own architecture.
+        promptGuided: Generate ONE question about {domain}, {context}. End with an action tag.
+        temperature: 1
+        max_completion_tokens: 500
+        successThreshold: 0.6
+        enableMCPTools: true
+      - id: analyst
+        prompt: >-
+          Examine ONE topic from jtr's world (his projects, decisions, files,
+          context, or external information affecting him) — NOT Home23's
+          internals. 3-5 sentences. Then propose ONE concrete action on its
+          own line:
+            INVESTIGATE: <specific thing in jtr's world to verify or examine>
+            NOTIFY: <concern worth surfacing — will be routed through verification>
+            TRIGGER: <condition to watch for>
+            OBSERVE: <positive pattern or working system worth cataloguing>
+          If no action is warranted, end with: NO_ACTION
+          Forbidden topics: the cognitive loop, the enforcer, evidence receipts,
+          loop closure, Home23's own architecture.
+        promptGuided: Examine ONE aspect of {domain}. {context}. End with an action tag.
+        temperature: 1
+        max_completion_tokens: 500
+        successThreshold: 0.7
+        enableMCPTools: true
+      - id: critic
+        prompt: >-
+          Critically evaluate ONE claim: an assumption about jtr's world, an
+          active goal, a recent thought, OR a Home23 behavior pattern you have
+          direct evidence for. 3-5 sentences of reasoning. Then produce a verdict
+          on its own line (REQUIRED — output without a verdict will be discarded):
+            INVESTIGATE: <specific check to run>
+            NOTIFY: <message for jtr>
+            TRIGGER: <condition that would validate or falsify>
+            OBSERVE: <positive finding — an assumption that held up well>
+            VERDICT: keep|revise|discard  <short reason>
+          If no action is warranted, end with: NO_ACTION
+          Forbidden topics (infinite-regress guards only): the enforcer itself,
+          evidence receipts, loop closure. You MAY critique goals, thoughts,
+          approach, and Home23 architecture when you have concrete evidence.
+          Prose poetry without a verdict tag is NOT a critique and will be
+          dropped.
+        promptGuided: Evaluate ONE claim about {domain}. {context}. End with a verdict tag (INVESTIGATE/NOTIFY/TRIGGER/OBSERVE/VERDICT/NO_ACTION).
+        temperature: 1
+        max_completion_tokens: 500
+        successThreshold: 0.7
+        enableMCPTools: true
+      - id: curator
+        prompt: >-
+          You are the memory curator for a persistent AI agent. Review the latest brain insights and working memory
+          objects. For each, decide: Is this operationally important? Should it be promoted to a domain surface
+          (TOPOLOGY, PROJECTS, PERSONAL, DOCTRINE, RECENT)? Write a brief, load-bearing summary for any surface updates.
+          Skip anything that is just restating known information. Focus on: what changed, what's new, what the agent
+          needs to know to be ready.
+        promptGuided: >-
+          Curate memory for {domain}. Review recent brain insights about {context}. What is load-bearing? What should
+          the agent know?
+        temperature: 0.3
+        max_completion_tokens: 1000
+        successThreshold: 0.5
+        enableMCPTools: false
+      - id: proposal
+        prompt: >-
+          Given the recent cognitive output (curiosity, analyst, critic insights
+          in memory context), propose ONE concrete action the agent should take
+          right now that advances JTR'S WORK — his projects, his interests, his
+          real world. NOT a meta-action about Home23's internals.
+
+          You have REAL AGENCY. Prefer executing an action yourself over just
+          notifying jtr. Output ONE action tag on its own line at the end of
+          your response.
+
+          Preferred (autonomous execution — you DO the thing):
+            ACT: {"action":"<name>","target":"<optional>","reason":"<one sentence>","safety":"safe"}
+
+          The following ACT actions are available (others will be rejected):
+            run_shortcut             target ∈ [Health, Weather, Pressure, Sauna]
+            refresh_sensor           target ∈ [weather, sauna, pressure]
+            launch_research          target = research topic (also: cycles, context)
+            promote_to_memory        action.content = insight to promote (also: tag)
+            prune_stale_cluster      target = cluster id (optional)
+            compile_research_section action.brainId + action.section
+            update_surface           target ∈ [TOPOLOGY, PROJECTS, PERSONAL, DOCTRINE, RECENT]
+                                      action.body = markdown content (mode: append|replace)
+            write_note               target = filename; action.body = markdown
+            create_goal              target = goal description (also: rationale, priority)
+            break_goal               target = goal id; action.rationale = why
+            ack_notification         target = notification id
+
+          Fallback tags (use only when ACT doesn't fit):
+            INVESTIGATE: <specific thing in jtr's world to look into>
+            NOTIFY: <concern about something possibly broken/stale — will be
+                     verified before reaching jtr>
+            TRIGGER: <external condition to watch for going forward>
+            OBSERVE: <positive pattern or working system worth cataloguing —
+                      goes to the signals stream>
+          Do NOT output NO_ACTION. If nothing stands out, propose
+          NOTIFY: <brief observation about jtr's world worth surfacing>.
+          Forbidden topics: the cognitive loop, the enforcer, evidence receipts,
+          loop closure, Home23's own architecture.
+        promptGuided: >-
+          Given recent cognitive output about {context}, propose ONE concrete action for {domain}. Must end with an
+          action tag (INVESTIGATE/NOTIFY/TRIGGER).
+        temperature: 0.7
+        max_completion_tokens: 400
+        successThreshold: 0.5
+        enableMCPTools: true
+    evolutionEnabled: false
+    maxRoles: 5
+  codeCreation:
+    planMode: true
+    maxOutputTokensPerCall: 4000
+    perFileRetryLimit: 2
+    planRetryLimit: 1
+    planMaxOutputTokens: 2000
+    reasoningEffort: low
+  memory:
+    type: graph
+    topology: small-world
+    embedding:
+      model: nomic-embed-text
+      dimensions: 768
+    decay:
+      function: exponential
+      baseFactor: 0.995
+      minimumWeight: 0.1
+      decayInterval: 3600
+      # Bridges (Watts-Strogatz dream shortcuts) age on a shorter window so
+      # they drain faster than semantic associative edges. Measured in
+      # seconds — any bridge whose `accessed` timestamp is older than this
+      # gets its weight multiplied by hebbian.weakenFactor each decay pass.
+      # Set equal to decayInterval*2 to match old behavior.
+      bridgeDecayInterval: 1800
+      exemptTags:
+        - mission_plan
+        - cross_agent_pattern
+    spreading:
+      enabled: true
+      maxDepth: 3
+      activationThreshold: 0.1
+      decayFactor: 0.7
+      # Damping applied to Watts-Strogatz bridge edges during wake-state
+      # traversal and cluster voting. Bridges still carry full weight in
+      # dream rewiring; this only prevents them from dominating semantic
+      # retrieval and cluster assignment. 1.0 = no damping, 0 = ignore bridges.
+      bridgeTraversalFactor: 0.2
+    hebbian:
+      enabled: true
+      reinforcementStrength: 0.1
+      weakenFactor: 0.05
+    smallWorld:
+      clusteringCoefficient: 0.6
+      averagePathLength: 3
+      bridgeProbability: 0.05
+      rewireInterval: 600
+      # Fan-out cap: max Watts-Strogatz bridge edges allowed on any single
+      # node. When a new bridge would exceed this, the weakest existing
+      # bridge on the endpoint is evicted to make room. Prevents hub
+      # super-attractors that contaminate traversals. Historical observed
+      # ceiling before cap: 235 on one node. Set to 0 to disable.
+      maxBridgesPerNode: 40
+      # Bound each topology-maintenance pass so sleep/dream rewiring cannot
+      # block the engine health server on large brains.
+      maxRewireEdgesPerRun: 5000
+      rewireYieldEvery: 500
+    contextDiversity:
+      enabled: true
+      noContextProbability: 0.15
+      maxContextNodes: 3
+      peripheralSamplingRate: 0.2
+      minSimilarityThreshold: 0.3
+  reasoning:
+    mode: quantum
+    parallelBranches: 1
+    collapseStrategy: weighted
+    entanglementEnabled: true
+    tunnelingProbability: 0.02
+    features:
+      branchPolicy:
+        enabled: true
+      latentProjector:
+        enabled: true
+      consistencyReview:
+        enabled: false
+        divergenceThreshold: 0.85
+        maxBranchesAnalyzed: 3
+        minCyclesBetweenReviews: 3
+    latentProjector:
+      maxMemoryNodes: 5
+      maxGoalCount: 3
+      hintMaxLength: 140
+      vectorSize: 128
+      autoTrain: true
+      autoTrainThreshold: 100
+      autoTrainInterval: 50
+  creativity:
+    chaosEnabled: true
+    chaoticRNN:
+      size: 100
+      spectralRadius: 0.95
+      updateSteps: 10
+      perturbationInterval: 300
+    mutations:
+      enabled: true
+      mutationRate: 0.1
+      hybridizationRate: 0.05
+  goals:
+    intrinsicEnabled: true
+    discoveryMethod: reflection
+    maxGoals: 20
+    prioritization: uncertainty
+    rotation:
+      enabled: true
+      maxPursuitsPerGoal: 10
+      satisfactionThreshold: 0.6
+      staleArchiveAfterDays: 3
+      dominanceThreshold: 0.2
+      checkInterval: 5
+    curator:
+      enabled: true
+      curationInterval: 50
+      minGoalsForCampaign: 3
+      campaignDuration: 30
+      synthesisThreshold: 3
+    forceOutput:
+      # Back-pressure: when N cycles pass without a fresh file in outputs/,
+      # inject a concrete digest goal. Material comes from top-5 answer-
+      # tagged memory nodes + workspace surfaces (RECENT.md, PROJECTS.md).
+      # Set HOME23_FORCE_OUTPUT_DISABLE=1 to opt out.
+      enabled: true
+      everyNCycles: 100
+      surfaceFiles:
+        - RECENT.md
+        - PROJECTS.md
+    doneWhen:
+      # Closer primitive: every goal must declare a termination criterion.
+      # addGoal() gate validates presence + non-vagueness. When a caller
+      # omits doneWhen and autoSynthesizeLegacy=true, the gate synthesizes
+      # a minimal judged criterion from the description so legacy call
+      # sites continue to work. Flip to false once all call sites are
+      # updated to supply their own concrete criteria.
+      autoSynthesizeLegacy: true
+      minCriterionLength: 40
+      # judgeModel removed 2026-08-11: done-when.js reads crit.judgeModel and
+      # every producer supplies its own — this key was unreachable.
+      judgeTTLMs: 86400000
+      vaguenessAnchors:
+        - file
+        - output
+        - memory
+        - node
+        - count
+        - exists
+        - at least
+        - contains
+        - written
+        - published
+        - produced
+        - delivered
+        - ships
+        - emits
+  thermodynamic:
+    surpriseEnabled: true
+    freeEnergyTarget: 0.5
+  environment:
+    sensorsEnabled: true
+    sensors:
+      - name: system_time
+        type: internal
+        pollInterval: 60
+        enabled: true
+  temporal:
+    timezone: America/New_York
+    sleepEnabled: true
+    oscillations:
+      enabled: true
+      fastPhaseDuration: 300
+      slowPhaseDuration: 120
+  cognitiveState:
+    curiosityEnabled: true
+    moodEnabled: true
+    energyEnabled: true
+    adaptationRate: 1
+    initialCuriosity: 0.5
+    initialMood: 0.5
+    initialEnergy: 1
+    sleepThreshold: 0.15
+    wakeThreshold: 0.35
+    energyDrainRate: 0.01
+    energyRecoveryRate: 0.1
+    maxSleepCycleInterval: 45
+  reflection:
+    enabled: true
+# Dead keys removed 2026-08-11 (audit P2-14): nano + enableExtendedReasoning
+# (log-only), embeddings (real config is architecture.memory.embedding),
+# compiler (real config is feeder.compiler.model), defaultReasoningEffort
+# (no reader).
+models:
+  primary: MiniMax-M3
+  fast: MiniMax-M3
+  strategicModel: MiniMax-M3
+  coordinatorStrategic: MiniMax-M3
+  coordinatorStandard: MiniMax-M3
+  plannerModel: MiniMax-M3
+  curatorModel: MiniMax-M3
+  curatorStrategic: MiniMax-M3
+  defaultMaxTokens: 4000
+  enableWebSearch: true
+providers:
+  openai:
+    enabled: false
+  minimax:
+    enabled: true
+  xai:
+    enabled: true
+  # Local Ollama stays configured and ready — flip modelAssignments/chat to
+  # provider `local` (or set instance engine.thought: qwen2.5:7b) to run local.
+  local:
+    enabled: true
+    defaultModel: qwen2.5:7b
+    modelMapping:
+      gpt-5.5: qwen2.5:7b
+      gpt-5.5-pro: qwen2.5:7b
+      gpt-5.4: qwen2.5:7b
+      gpt-5.4-mini: qwen2.5:7b
+      gpt-5.4-nano: qwen2.5:7b
+      gpt-5: qwen2.5:7b
+    supportsTools: true
+    supportsStreaming: true
+  ollama-cloud:
+    enabled: true
+    defaultModel: nemotron-3-nano:30b
+    supportsTools: true
+    supportsStreaming: true
+modelAssignments:
+  default:
+    provider: minimax
+    model: MiniMax-M3
+  # Pulse voice — Jerry's remark layer on the dashboard tile.
+  # Default tracks chat default (MiniMax). Tune in Settings → Models.
+  pulseVoice:
+    provider: minimax
+    model: MiniMax-M3
+  # PGS sweep + synthesis (Phase 3 of thinking-machine-cycle rebuild).
+  # Used by the new autonomous pipeline; does not affect legacy_roles mode.
+  # Many small sweep calls in parallel → use the cheap fast tier.
+  pgsSweep:
+    provider: minimax
+    model: MiniMax-M3
+  pgsSynthesis:
+    provider: minimax
+    model: MiniMax-M3
+  # Deep-dive and critique — Phase 2 + 4 of thinking-machine-cycle. Both
+  # need reasoning headroom; critique needs tight JSON output discipline.
+  deepDive:
+    provider: minimax
+    model: MiniMax-M3
+  critique:
+    provider: minimax
+    model: MiniMax-M3
+  quantumReasoner.branches:
+    provider: minimax
+    model: MiniMax-M3
+  quantumReasoner.singleReasoning:
+    provider: minimax
+    model: MiniMax-M3
+  agents.research:
+    provider: minimax
+    model: MiniMax-M3
+    fallback:
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
+  agents.research-synthesis:
+    provider: minimax
+    model: MiniMax-M3
+    fallback:
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
+  agents.research-fallback:
+    provider: minimax
+    model: MiniMax-M3
+    fallback:
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
+  agents.analytical:
+    provider: minimax
+    model: MiniMax-M3
+    fallback:
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
+  agents.discovery:
+    provider: minimax
+    model: MiniMax-M3
+    fallback:
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
+  agents.clustering:
+    provider: minimax
+    model: MiniMax-M3
+  agents.synthesis:
+    provider: minimax
+    model: MiniMax-M3
+    fallback:
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
+  agents.quality_assurance:
+    provider: minimax
+    model: MiniMax-M3
+    fallback:
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
+  agents:
+    provider: minimax
+    model: MiniMax-M3
+    fallback:
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
+  coordinator:
+    provider: minimax
+    model: MiniMax-M3
+    fallback:
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
+  goalCurator:
+    provider: minimax
+    model: MiniMax-M3
+    fallback:
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
+  intrinsicGoals:
+    provider: minimax
+    model: MiniMax-M3
+    fallback:
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
+coordinator:
+  enabled: true
+  reviewCyclePeriod: 50
+  emergencyReviewMinCycles: 10
+  model: gpt-5.5
+  reasoningEffort: low
+  maxTokens: 3000
+  maxConcurrent: 2
+  enableCodingAgents: false
+  useTemplateReports: true
+  useMemorySummaries: true
+  extractiveSummarization: true
+  qualityAssurance:
+    enabled: true
+    mode: balanced
+    minConfidence: 0.7
+    autoRejectThreshold: 0.3
+    checkNovelty: false
+    checkConsistency: true
+    checkFactuality: false
+  agentTypeWeights:
+    research: 40
+    analysis: 35
+    synthesis: 35
+    exploration: 20
+    document_analysis: 15
+    consistency: 10
+    planning: 10
+    integration: 10
+    code_creation: 0
+    code_execution: 0
+    document_creation: 15
+    quality_assurance: 5
+    completion: 5
+    specialized_binary: 0
+  codeExecution:
+    enabled: false
+    containerTimeout: 600000
+    maxContainersPerReview: 1
+    autoCleanup: true
+  insightCuration:
+    maxRawInsights: 120
+    maxAgentReviewFiles: 5
+    maxThoughtInsights: 80
+    scoringBatchSize: 20
+    scoringParallelBatches: 1
+    scoringRequestTimeoutMs: 30000
+execution:
+  baseInterval: 90
+  backend: local
+  local:
+    pythonPath: python3
+    useVirtualEnv: false
+    virtualEnvPath: null
+    timeout: 30000
+    maxMemory: 512MB
+    allowedPackages:
+      - numpy
+      - pandas
+      - matplotlib
+      - scipy
+    autoInstallPackages: true
+    workingDir: runtime/outputs/execution
+  container:
+    timeout: 600000
+    maxFiles: 50
+  maxCycles: 0
+  adaptiveTimingEnabled: true
+timeouts:
+  cycleTimeoutMs: 300000
+  sleepConsolidationTimeoutMs: 900000
+  operationTimeoutMs: 180000
+  quantumRequestTimeoutMs: 60000
+  cyclePauseMs: 45000
+resources:
+  memoryLimitMB: 4096
+  memoryWarningThreshold: 0.8
+  cpuWarningThreshold: 0.9
+cluster:
+  enabled: false
+  backend: redis
+  instanceCount: 3
+  mode: active-active
+  stateStore:
+    compression: true
+    compressionRatio: 0.25
+  coordinator:
+    enabled: false
+    quorumRatio: 0.67
+    minQuorum: 2
+    timeoutMs: 60000
+    skipOnTimeout: true
+    pollIntervalMs: 500
+    barrierTtlMs: 600000
+    gating:
+      enabled: false
+  redis:
+    url: redis://localhost:6379
+    tls: false
+    acl: false
+    keyPrefix: 'cosmo:cluster:'
+  filesystem:
+    root: runtime/cluster
+    leaseMs: 5000
+    graceMs: 2000
+introspection:
+  enabled: true
+  routingEnabled: true
+  maxFilesPerCycle: 10
+  maxPreviewLength: 400
+  maxRoutedItems: 5
+agentRouting:
+  enabled: true
+  autoSpawn: false
+  maxMissionsPerCycle: 2
+  spawnCooldownCycles: 20
+  criticOnContradiction: true
+  synthesisOnAnalysis: true
+  reuseOnCode: true
+  researchOnQuestions: true
+memoryGovernance:
+  enabled: true
+  applyPruning: false
+  decayHalfLifeCycles: 200
+  pruneThreshold: 0.1
+  maxNodesConsidered: 200
+recursiveMode:
+  enabled: true
+  haltOnGoalExhaustion: true
+  minCyclesBeforeGoalExhaustion: 20
+  maxMetaIterations: 8
+  minCyclesPerReview: 30
+  stagnationTolerance: 3
+substrate:
+  enabled: true
+  pythonBin: python3
+frontier:
+  enabled: true
+  mode: observe
+  outputDir: ./runtime/outputs/governance
+  policies:
+    bashExecute: observe
+    codeExecute: observe
+    fileWrite: observe
+    configLoad: observe
+  specialization:
+    enabled: false
+acceptance:
+  enabled: true
+  defaultThreshold: 0.7
+  qaEnabled: true
+  toolValidation: true
+  literalValidation: true
+  minConfidence: 0.7
+  autoRejectThreshold: 0.3
+executiveRing:
+  enabled: true
+  useLLM: true
+  coherenceThreshold: 0.5
+  alignmentCheckInterval: 5
+  stuckLoopThreshold: 5
+  toolBuildingThreshold: 6
+  maxActiveGoals: 3
+  maxConcurrentAgents: 2
+  commitmentCycles: 10
+capabilities:
+  enabled: true
+  executiveGating: true
+  useFrontierGate: true
+  defaultMode: observe
+feeder:
+  enabled: true
+  maxFileBytes: 5242880
+  chunking:
+    maxChunkSize: 3000
+    overlap: 300
+  flush:
+    batchSize: 20
+    intervalSeconds: 30
+  converter:
+    enabled: true
+    visionModel: gpt-4o-mini
+    pythonPath: python3
+  compiler:
+    enabled: true
+    model: MiniMax-M3
+  additionalWatchPaths: []
+  excludePatterns:
+    - "**/node_modules/**"
+    - "**/dist/**"
+    - "**/build/**"
+    - "**/out/**"
+    - "**/target/**"
+    - "**/coverage/**"
+    - "**/__pycache__/**"
+    - "**/venv/**"
+    - "**/*.min.js"
+    - "**/*.min.css"
+    - "**/*.map"
+    - "**/*.lock"
+    - "**/*.log"
+    - "**/package-lock.json"
+    - "**/yarn.lock"
+    - "**/pnpm-lock.yaml"
+    - "**/*.pyc"
+    - "**/research-runs/*/brain/**"
+    - "**/research-runs/*/*.jsonl"
+logging:
+  level: info
+  thoughtJournal: true
+  cycleMetrics: true
+dashboard:
+  enabled: true
+  port: 3344
+mcp:
+  server:
+    enabled: true
+    port: 3347
+  client:
+    enabled: true
+    servers:
+      - label: filesystem
+        type: http
+        url: http://localhost:3347/mcp
+        auth: null
+        allowedTools:
+          - read_file
+          - read_binary_file
+          - list_directory
+        requireApproval: never
+        enabled: false
+        allowedPaths:
+          - runtime/outputs/
+          - runtime/exports/

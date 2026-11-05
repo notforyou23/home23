@@ -1,0 +1,22 @@
+:root {
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-5: 24px;
+  --ui-radius-sm: 6px;
+  --ui-radius-md: 10px;
+  --ui-radius-pill: 999px;
+  --ui-icon-size: 16px;
+  --ui-header-height: 52px;
+  --ui-control-height: 34px;
+  --ui-focus-ring: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 55%, transparent);
+}
+
+body.ui-refresh-enabled {
+  --bg-hover: color-mix(in srgb, var(--bg-tertiary) 72%, var(--accent-primary) 28%);
+}
+
+body.ui-refresh-enabled * {
+  scrollbar-color: color-mix(in srgb, var(--border-color) 80%, #0000 20%) transparent;
+}

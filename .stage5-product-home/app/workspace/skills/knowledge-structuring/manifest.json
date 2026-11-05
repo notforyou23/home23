@@ -1,0 +1,34 @@
+{
+  "id": "knowledge-structuring",
+  "version": "1.0.0",
+  "name": "Knowledge Structuring",
+  "description": "Turn messy notes, findings, or context into a framework, matrix, outline, or clean handoff structure.",
+  "layer": "skill",
+  "runtime": "docs",
+  "category": "research",
+  "author": "home23",
+  "keywords": [
+    "structure",
+    "organize",
+    "notes",
+    "outline",
+    "framework",
+    "matrix",
+    "handoff"
+  ],
+  "triggers": [
+    "organize these notes",
+    "turn this into a framework",
+    "structure this research",
+    "make this a clean handoff"
+  ],
+  "requiresTools": [],
+  "dependsOn": [],
+  "composes": [
+    "source-validation"
+  ],
+  "actions": [
+    "structure"
+  ],
+  "routing": "manual"
+}

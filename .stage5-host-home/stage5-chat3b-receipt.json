@@ -1,0 +1,69 @@
+{
+  "schema": "home23.embedder-stage5-chat3b-receipt.v1",
+  "closedAt": "2026-09-11T13:44:00.741Z",
+  "model": "openai/gpt-5.5",
+  "ready": {
+    "warm": true,
+    "recipeId": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+    "pid": 47712,
+    "dimension": 768
+  },
+  "productSearch": {
+    "retrievalMode": null,
+    "sourceHealth": null,
+    "hits": [
+      {
+        "id": "2",
+        "similarity": 0.7111,
+        "retrievalScore": 0.9666,
+        "conceptPrefix": "The hydrologic cycle is the continuous movement of H2O on, above, and below Earth crust. Solar energy drives vapor from ",
+        "source": ".stage5-host-import"
+      },
+      {
+        "id": "1",
+        "similarity": 0.5555,
+        "retrievalScore": 0.7551,
+        "conceptPrefix": "Granite crystallizes slowly from magma deep underground. Coarse quartz and feldspar grains lock together as the melt coo",
+        "source": ".stage5-host-import"
+      },
+      {
+        "id": "134",
+        "retrievalScore": 0.0821,
+        "conceptPrefix": "[AGENT: agent_1789133250413_s4laudm] Document Created: Generated report\n\nBased on the provided conversation, I will crea",
+        "source": "document_report"
+      },
+      {
+        "id": "136",
+        "similarity": 0.6459,
+        "retrievalScore": 0.0743,
+        "conceptPrefix": "Artifact art_429dd4d1c5703c49: deliverable\npath=logs:outputs/document-creation/agent_1789133250413_s4laudm/agent_1789133",
+        "source": "artifact_deliverable"
+      },
+      {
+        "id": "32",
+        "retrievalScore": 0.0243,
+        "conceptPrefix": "[SUMMARY] **Memory Entry** * **Time**: Cycle 6 * **Error**: Non-fatal cycle error due to missing OpenAI API key (key not",
+        "source": "summary"
+      }
+    ],
+    "hydrologicBeatsGranite": true
+  },
+  "chat": {
+    "messageId": "msg_01a090b5-ec15-7a83-8206-2fbe696b2b3f",
+    "answerId": "msg_01a090b5-ec26-77bc-99a1-50491c96ebb1",
+    "answerExcerpt": "Sunshine drives the hydrologic cycle by adding solar energy to seawater, turning liquid water into vapor that rises into the sky. That vapor cools and condenses into droplets, forming clouds. Gravity later brings it back as storms. Some of the rain runs downhill, and some soaks underground, refilling hidden reservoirs in porous rock.",
+    "marks": {
+      "hydrologic": true,
+      "granite": false,
+      "solar": true,
+      "vapor": true,
+      "seas": true,
+      "storms": true,
+      "porous": true,
+      "inventedCloserQuote": false
+    },
+    "usedImportedNote": true,
+    "noteMustContain": "Solar energy drives vapor from seas"
+  },
+  "importedNoteChars": 317
+}

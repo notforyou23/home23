@@ -1,0 +1,93 @@
+actions:
+  run_shortcut:
+    enabled: true
+    dry_run: false
+    max_per_hour: 60
+    handler: run-shortcut
+    notes: >-
+      Invoke an iOS Shortcut via the shortcut-bridge HTTP endpoint. Targets are the shortcut name. Requires bridge URL
+      configured in engine yaml under integrations.shortcut_bridge. Idempotent refreshes.
+    allowed_targets:
+      - Health
+      - Weather
+      - Pressure
+      - Sauna
+  refresh_sensor:
+    enabled: true
+    dry_run: false
+    max_per_hour: 120
+    handler: refresh-sensor
+    notes: 'Force-poll a Home23-owned sensor source: weather, sauna, pressure (pi-sensor). No external side effects.'
+    allowed_targets:
+      - weather
+      - sauna
+      - pressure
+  launch_research:
+    enabled: true
+    dry_run: false
+    max_per_hour: 4
+    handler: launch-research
+    notes: Start a COSMO 2.3 research run. Target is the topic. Costs real time + tokens, kept rate-limited.
+  promote_to_memory:
+    enabled: true
+    dry_run: false
+    max_per_hour: 120
+    handler: promote-to-memory
+    notes: Create a durable MemoryObject from a cycle insight. Writes to the brain. Reversible via memory audit.
+  prune_stale_cluster:
+    enabled: true
+    dry_run: false
+    max_per_hour: 20
+    handler: prune-stale-cluster
+    notes: Mark a cluster's low-activation nodes as stale (flag only — does NOT delete). User can review and purge later.
+  compile_research_section:
+    enabled: true
+    dry_run: false
+    max_per_hour: 12
+    handler: compile-research-section
+    notes: Save one specific COSMO research goal/insight as a focused memory node. Requires brainId + section.
+  update_surface:
+    enabled: true
+    dry_run: false
+    max_per_hour: 20
+    handler: update-surface
+    notes: >-
+      Rewrite a domain surface file. Target must be one of the allowed surfaces. Already what curator role does manually
+      — exposing as an explicit agent action.
+    allowed_targets:
+      - TOPOLOGY
+      - PROJECTS
+      - PERSONAL
+      - DOCTRINE
+      - RECENT
+  write_note:
+    enabled: true
+    dry_run: false
+    max_per_hour: 40
+    handler: write-note
+    notes: Write a markdown note to instances/<agent>/workspace/notes/<name>.md. Path-confined; cannot escape notes/.
+  create_goal:
+    enabled: true
+    dry_run: false
+    max_per_hour: 12
+    handler: create-goal
+    notes: Add an intrinsic goal the agent will pursue on its own. Target is the goal description.
+  break_goal:
+    enabled: true
+    dry_run: false
+    max_per_hour: 20
+    handler: break-goal
+    notes: Retire an active goal (marks as broken with reason). Target is the goal id.
+  ack_notification:
+    enabled: true
+    dry_run: false
+    max_per_hour: 60
+    handler: ack-notification
+    notes: Self-clear a queued notification the agent no longer considers actionable. Target is the notification id.
+global:
+  max_per_hour: 500
+  enabled: true
+integrations:
+  shortcut_bridge:
+    url: ''
+    enabled: false

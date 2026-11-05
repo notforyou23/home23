@@ -1,0 +1,194 @@
+@media (max-width: 1200px) {
+  body.ui-refresh-enabled .ide-header {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "title context actions"
+      "nav nav nav";
+    min-height: auto;
+    padding: 6px 10px 0;
+    row-gap: 4px;
+    column-gap: 8px;
+  }
+
+  body.ui-refresh-enabled .ide-title {
+    grid-area: title;
+  }
+
+  body.ui-refresh-enabled .ide-header > #brainPickerBtn {
+    grid-area: context;
+    min-width: 44px;
+  }
+
+  body.ui-refresh-enabled .header-actions {
+    grid-area: actions;
+    justify-self: end;
+    max-width: min(48vw, 520px);
+  }
+
+  body.ui-refresh-enabled .ide-header > nav {
+    grid-area: nav;
+    width: 100%;
+    margin-top: 0;
+  }
+}
+
+@media (max-width: 900px) {
+  body.ui-refresh-enabled .runtime-context-shell {
+    padding: 8px 12px;
+  }
+
+  body.ui-refresh-enabled .runtime-context-pills {
+    gap: 6px;
+  }
+
+  body.ui-refresh-enabled .runtime-context-pill__value {
+    max-width: 140px;
+  }
+
+  body.ui-refresh-enabled .ide-title {
+    gap: 8px;
+  }
+
+  body.ui-refresh-enabled #modeDescription {
+    display: none;
+  }
+
+  body.ui-refresh-enabled #brainStudioTitle {
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  body.ui-refresh-enabled .header-actions {
+    max-width: min(46vw, 360px);
+  }
+
+  body.ui-refresh-enabled #ai-btn {
+    padding: 0 10px !important;
+  }
+
+  body.ui-refresh-enabled .header-ai-label {
+    display: none;
+  }
+
+  body.ui-refresh-enabled .sidebar-header .sidebar-actions {
+    max-width: 100%;
+  }
+
+  body.ui-refresh-enabled .tablet-panel-bar {
+    z-index: 980 !important;
+    position: fixed !important;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  body.ui-refresh-enabled .tablet-sidebar-backdrop,
+  body.ui-refresh-enabled .tablet-ai-backdrop {
+    z-index: 920 !important;
+    position: fixed !important;
+    left: 0;
+    right: 0;
+    top: var(--ui-shell-header-height, 104px);
+    bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+  }
+
+  body.ui-refresh-enabled .sidebar,
+  body.ui-refresh-enabled .ai-panel {
+    z-index: 950 !important;
+  }
+
+  body.ui-refresh-enabled .ide-body {
+    padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  body.ui-refresh-enabled .onboarding-card {
+    padding: var(--ui-space-4);
+  }
+}
+
+@media (max-width: 768px) {
+  body.ui-refresh-enabled .runtime-context-summary {
+    display: flex;
+  }
+
+  body.ui-refresh-enabled .runtime-context-pills {
+    display: none;
+  }
+
+  body.ui-refresh-enabled #brainPickerLabel,
+  body.ui-refresh-enabled #modeDescription {
+    display: none;
+  }
+
+  body.ui-refresh-enabled .ide-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "title actions"
+      "nav nav";
+    column-gap: 6px;
+  }
+
+  body.ui-refresh-enabled .ide-header > #brainPickerBtn {
+    display: none !important;
+  }
+
+  body.ui-refresh-enabled #brainPickerBtn {
+    min-width: 40px;
+    padding: 0 10px !important;
+  }
+
+  body.ui-refresh-enabled .header-actions {
+    max-width: min(58vw, 280px);
+  }
+
+  body.ui-refresh-enabled .tab-btn {
+    padding: 0 12px;
+    min-width: 84px;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 480px) {
+  body.ui-refresh-enabled .runtime-context-shell {
+    padding: 8px 10px;
+  }
+
+  body.ui-refresh-enabled .runtime-context-summary {
+    padding: 10px;
+  }
+
+  body.ui-refresh-enabled .runtime-context-sheet__panel {
+    padding: 14px;
+    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+
+  body.ui-refresh-enabled .ide-header {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "title"
+      "actions"
+      "nav";
+    row-gap: 4px;
+  }
+
+  body.ui-refresh-enabled .ide-title {
+    min-width: 0;
+    width: 100%;
+  }
+
+  body.ui-refresh-enabled #brainStudioTitle {
+    font-size: 13px;
+  }
+
+  body.ui-refresh-enabled .header-actions {
+    justify-self: stretch;
+    justify-content: flex-start;
+    max-width: 100%;
+    width: 100%;
+    padding-bottom: 0;
+  }
+}

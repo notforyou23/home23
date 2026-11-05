@@ -1,0 +1,40 @@
+{
+  "id": "xai-search",
+  "version": "1.0.0",
+  "name": "xAI Search",
+  "description": "Search X/Twitter and the web using Grok's built-in x_search and web_search tools via the xAI API. No X developer API credits required — uses the xAI API key only.",
+  "layer": "skill",
+  "runtime": "nodejs",
+  "category": "research",
+  "author": "home23",
+  "entry": "index.js",
+  "keywords": [
+    "x search",
+    "twitter search",
+    "grok search",
+    "xai search",
+    "search x",
+    "search twitter",
+    "what are people saying on x",
+    "live x discourse",
+    "web search grok"
+  ],
+  "triggers": [
+    "search x for",
+    "search twitter for",
+    "what are people saying on x",
+    "grok search x",
+    "search x with grok",
+    "check x discourse"
+  ],
+  "requiresTools": [],
+  "dependsOn": [],
+  "composes": [
+    "source-validation"
+  ],
+  "sideEffects": false,
+  "actions": [
+    "search",
+    "web_search"
+  ]
+}

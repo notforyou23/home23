@@ -1,0 +1,95 @@
+{
+  "schema": "home23.embedder-encoder-stage5-receipt.v1",
+  "claimedStage5Complete": false,
+  "kind": "packaged-host-payload-and-owned-artifact-resume",
+  "sourceWorktree": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-verify",
+  "sourceBranch": "home23-agent/owned-embedder-stage5-verify",
+  "payloadSourceCommit": "d8f45ba3c4173a02d4a722a66732ac78ceaacc31",
+  "encoderFixCommit": "54b0b9932a2d9a02407668bde2550198c8adc03d",
+  "sourceCommit": "d8f45ba3c4173a02d4a722a66732ac78ceaacc31",
+  "payloadPath": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-host-payload",
+  "receiptPath": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-verify/.stage5-payload/encoder-receipt.json",
+  "packageNote": "scripts/product/package.mjs refuses output inside sourceRoot. The Host package was built from this worktree to a sibling directory. This .stage5-payload directory holds Encoder evidence only; it is not the 48226-file payload.",
+  "packaging": {
+    "status": "packaged",
+    "packageId": "b2bbac7377d83d1688466227fd7185aadb0b0e5a572a4bfd17d0d5057238a501",
+    "fileCount": 48226,
+    "platform": "darwin",
+    "arch": "arm64",
+    "nodeVersion": "v22.19.0",
+    "binNodeBytes": 110712624,
+    "binNodeSha256": "0d005c18e095027ca8f9fe1cc1126f767ee4ad7b004f4d6fb781ec4228a7c5d1",
+    "binNodeStub": false,
+    "selfContainedOtool": [
+      "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+      "/System/Library/Frameworks/Security.framework/Versions/A/Security",
+      "/usr/lib/libc++.1.dylib",
+      "/usr/lib/libSystem.B.dylib"
+    ]
+  },
+  "execPath": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-host-payload/bin/node",
+  "nodeVersion": "v22.19.0",
+  "loadCheck": {
+    "ok": true,
+    "cwd": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-host-payload/app/scripts/embedder",
+    "packagerStyleFromAppCwd": true,
+    "onnxruntime": {
+      "loaded": true,
+      "version": "1.21.0",
+      "resolved": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-host-payload/app/scripts/embedder/node_modules/onnxruntime-node/dist/index.js",
+      "binding": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-host-payload/app/scripts/embedder/node_modules/onnxruntime-node/bin/napi-v3/darwin/arm64/onnxruntime_binding.node",
+      "InferenceSession": "function"
+    },
+    "transformers": {
+      "loaded": true,
+      "version": "3.7.6",
+      "resolved": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-host-payload/app/scripts/embedder/node_modules/@huggingface/transformers/dist/transformers.node.cjs",
+      "pipeline": "function"
+    },
+    "encode": {
+      "ok": true,
+      "text": "The library opens at nine.",
+      "dimension": 768,
+      "finite": true,
+      "sample": [
+        -0.7592843174934387,
+        1.3417128324508667,
+        -3.690413475036621
+      ],
+      "ms": 15927,
+      "cacheDir": "/Volumes/Casey Jones/Home23-local-disk-relief/owned-embedder-stage5-verify-resume-cache"
+    }
+  },
+  "downloadResume": {
+    "claimedStage5": false,
+    "ok": true,
+    "method": "SIGTERM interrupt of real downloadFile, then ensureArtifacts Range resume",
+    "notACompleteCacheCopy": true,
+    "cacheDir": "/Volumes/Casey Jones/Home23-local-disk-relief/owned-embedder-stage5-verify-resume-cache",
+    "url": "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5/resolve/main/onnx/model.onnx",
+    "interrupt": {
+      "method": "SIGTERM-downloadFile-child",
+      "partBytes": 15747522,
+      "destExistsAfterInterrupt": false,
+      "childPid": 62612,
+      "childSignal": "SIGTERM",
+      "survivingWorkerPid": 62611
+    },
+    "resume": {
+      "range": "bytes=15747522-",
+      "httpStatus": 206,
+      "contentLength": "531562753",
+      "acceptRanges": "bytes",
+      "oneSurvivingWorker": true
+    },
+    "artifactDigests": {
+      "config.json": "9ab00bd92cee80a569f708140b7b6c1661a65891ff3765b1519e181ba2f2c92b",
+      "onnx/model.onnx": "147d5aa88c2101237358e17796cf3a227cead1ec304ec34b465bb08e9d952965",
+      "tokenizer.json": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+      "tokenizer_config.json": "d7e0000bcc80134debd2222220427e6bf5fa20a669f40a0d0d1409cc18e0a9bc"
+    },
+    "finalBytes": 547310275,
+    "digestMatches": true
+  },
+  "blocker": null
+}

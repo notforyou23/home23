@@ -1,0 +1,933 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cosmo Provenance Explorer - Work Trail Tracker</title>
+    <style>
+        :root {
+            --bg-dark: #0a0e1a;
+            --bg-card: #131929;
+            --bg-elevated: #1a2137;
+            --text-primary: #e5e9f2;
+            --text-secondary: #b4c0d9;
+            --text-dim: #6b7a99;
+            --accent-cyan: #00ffff;
+            --accent-purple: #9d4edd;
+            --accent-pink: #ff006e;
+            --accent-green: #06ffa5;
+            --accent-yellow: #ffbe0b;
+            --border-subtle: rgba(255, 255, 255, 0.1);
+            --success: #06ffa5;
+            --warning: #ffbe0b;
+            --error: #ff006e;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--bg-card), var(--bg-elevated));
+            border-bottom: 1px solid var(--border-subtle);
+            padding: 24px 32px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(10px);
+        }
+
+        .header-content {
+            max-width: 1600px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header-title h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        /* Main Layout */
+        .main-container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 32px;
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            gap: 32px;
+            min-height: calc(100vh - 100px);
+        }
+
+        /* Trail Visualization */
+        .trail-section {
+            background: var(--bg-card);
+            border-radius: 12px;
+            border: 1px solid var(--border-subtle);
+            overflow: hidden;
+        }
+
+        .trail-header {
+            padding: 24px;
+            border-bottom: 1px solid var(--border-subtle);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .trail-controls {
+            display: flex;
+            gap: 8px;
+        }
+
+        .control-btn {
+            padding: 8px 16px;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            border-radius: 6px;
+            color: var(--text-primary);
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }
+
+        .control-btn:hover {
+            background: rgba(0, 255, 255, 0.1);
+            border-color: var(--accent-cyan);
+        }
+
+        .control-btn.active {
+            background: var(--accent-cyan);
+            color: var(--bg-dark);
+        }
+
+        /* Trail Path */
+        .trail-path {
+            padding: 24px;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        .trail-node {
+            display: flex;
+            align-items: flex-start;
+            margin-bottom: 24px;
+            position: relative;
+            padding-left: 40px;
+        }
+
+        .trail-node::before {
+            content: '';
+            position: absolute;
+            left: 15px;
+            top: 20px;
+            bottom: -24px;
+            width: 2px;
+            background: var(--border-subtle);
+            z-index: 1;
+        }
+
+        .trail-node:last-child::before {
+            display: none;
+        }
+
+        .trail-node.current::before {
+            background: var(--accent-cyan);
+        }
+
+        .trail-connector {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background: var(--accent-cyan);
+            border: 3px solid var(--bg-card);
+            margin-right: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--bg-dark);
+            position: relative;
+            z-index: 2;
+            flex-shrink: 0;
+        }
+
+        .trail-connector.goal {
+            background: var(--accent-green);
+        }
+
+        .trail-connector.mission {
+            background: var(--accent-purple);
+        }
+
+        .trail-connector.agent {
+            background: var(--accent-cyan);
+        }
+
+        .trail-connector.result {
+            background: var(--accent-yellow);
+        }
+
+        .trail-connector.current {
+            border-color: var(--accent-pink);
+            box-shadow: 0 0 20px rgba(255, 0, 110, 0.3);
+        }
+
+        .trail-content {
+            flex: 1;
+            background: var(--bg-elevated);
+            border-radius: 8px;
+            padding: 16px;
+            border-left: 4px solid var(--accent-cyan);
+        }
+
+        .trail-content.goal {
+            border-left-color: var(--accent-green);
+        }
+
+        .trail-content.mission {
+            border-left-color: var(--accent-purple);
+        }
+
+        .trail-content.agent {
+            border-left-color: var(--accent-cyan);
+        }
+
+        .trail-content.result {
+            border-left-color: var(--accent-yellow);
+        }
+
+        .trail-header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .trail-type {
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
+
+        .trail-id {
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.9rem;
+            color: var(--accent-cyan);
+        }
+
+        .trail-description {
+            font-size: 0.9rem;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }
+
+        .trail-meta {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .trail-status {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+        }
+
+        .status-active {
+            background: rgba(6, 255, 165, 0.2);
+            color: var(--success);
+        }
+
+        .status-completed {
+            background: rgba(157, 78, 221, 0.2);
+            color: var(--accent-purple);
+        }
+
+        /* Sidebar */
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        .sidebar-section {
+            background: var(--bg-card);
+            border-radius: 12px;
+            border: 1px solid var(--border-subtle);
+            overflow: hidden;
+        }
+
+        .sidebar-header {
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border-subtle);
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+
+        .sidebar-content {
+            padding: 24px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        /* Trail Selection */
+        .trail-selector {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .trail-option {
+            padding: 12px;
+            background: var(--bg-elevated);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-left: 3px solid transparent;
+        }
+
+        .trail-option:hover {
+            background: rgba(0, 255, 255, 0.1);
+            border-left-color: var(--accent-cyan);
+        }
+
+        .trail-option.selected {
+            background: rgba(157, 78, 221, 0.1);
+            border-left-color: var(--accent-purple);
+        }
+
+        .trail-option-title {
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .trail-option-desc {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
+        /* Work Path Details */
+        .work-path-details {
+            background: var(--bg-elevated);
+            border-radius: 8px;
+            padding: 16px;
+            margin-top: 16px;
+        }
+
+        .work-path-title {
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+        }
+
+        .work-path-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: var(--accent-cyan);
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: var(--text-dim);
+        }
+
+        /* Legend */
+        .legend {
+            display: flex;
+            gap: 16px;
+            padding: 16px 24px;
+            border-top: 1px solid var(--border-subtle);
+            background: var(--bg-elevated);
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .legend-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .legend-dot.goal {
+            background: var(--accent-green);
+        }
+
+        .legend-dot.mission {
+            background: var(--accent-purple);
+        }
+
+        .legend-dot.agent {
+            background: var(--accent-cyan);
+        }
+
+        .legend-dot.result {
+            background: var(--accent-yellow);
+        }
+
+        /* Loading state */
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 200px;
+            color: var(--text-dim);
+        }
+
+        /* Responsive */
+        @media (max-width: 1400px) {
+            .main-container {
+                grid-template-columns: 1fr;
+                gap: 24px;
+            }
+
+            .sidebar {
+                order: -1;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-content">
+            <div class="header-title">
+                <h1>🔍 Provenance Explorer</h1>
+                <div class="header-subtitle">Follow the complete path of any piece of work</div>
+            </div>
+            <div class="header-actions">
+                <button class="btn btn-primary" onclick="refreshData()">🔄 Refresh</button>
+                <button class="btn" onclick="window.location.href='index.html'">← Back to Dashboard</button>
+                <button class="btn" onclick="window.location.href='agent-network.html'">🔗 Agent Network</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <!-- Trail Visualization -->
+        <div class="trail-section">
+            <div class="trail-header">
+                <h2>Work Trail Explorer</h2>
+                <div class="trail-controls">
+                    <button class="control-btn active" onclick="setTrailMode('recent')" id="recent-btn" title="Show most recently created trails">
+                        🕐 Recent
+                    </button>
+                    <button class="control-btn" onclick="setTrailMode('active')" id="active-btn" title="Show currently active/incomplete work">
+                        ⚡ Active
+                    </button>
+                    <button class="control-btn" onclick="setTrailMode('impact')" id="impact-btn" title="Show trails with highest impact results">
+                        🌟 High Impact
+                    </button>
+                    <button class="control-btn" onclick="exportTrail()" title="Export current trail as JSON">
+                        📊 Export
+                    </button>
+                </div>
+            </div>
+
+            <div id="trail-container" class="trail-path">
+                <div class="loading">Loading work trails...</div>
+            </div>
+
+            <div class="legend">
+                <div class="legend-item">
+                    <div class="legend-dot goal"></div>
+                    <span>🎯 Goal (what we want to achieve)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-dot mission"></div>
+                    <span>📋 Mission (specific task)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-dot agent"></div>
+                    <span>🤖 Agent (who does the work)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-dot result"></div>
+                    <span>📊 Result (output produced)</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <!-- Trail Selection -->
+            <div class="sidebar-section">
+                <div class="sidebar-header">📋 Available Work Trails</div>
+                <div class="sidebar-content">
+                    <div id="trail-selector" class="trail-selector">
+                        <div class="loading">Loading trails...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Current Trail Stats -->
+            <div class="sidebar-section">
+                <div class="sidebar-header">📊 Current Trail Statistics</div>
+                <div class="sidebar-content">
+                    <div id="trail-stats">
+                        <p style="color: var(--text-dim); font-style: italic;">Select a trail to see statistics</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recent Activity -->
+            <div class="sidebar-section">
+                <div class="sidebar-header">⚡ Recent Activity</div>
+                <div class="sidebar-content">
+                    <div id="recent-activity">
+                        <div class="loading">Loading activity...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- D3.js and Visualization Script -->
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script>
+        // Global state
+        let state = {
+            trails: [],
+            currentTrail: null,
+            trailMode: 'recent',
+            provenanceData: null
+        };
+
+        // Initialize on load
+        document.addEventListener('DOMContentLoaded', () => {
+            loadProvenanceData();
+            setInterval(refreshData, 30000); // Auto-refresh every 30s
+        });
+
+        // Load provenance data from Phase 2B backend
+        async function loadProvenanceData() {
+            try {
+                // Fetch real provenance data from Phase 2B API
+                const response = await fetch('/api/provenance');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                state.provenanceData = await response.json();
+                renderTrailSelector();
+                renderCurrentTrail();
+                renderTrailStats();
+                renderRecentActivity();
+            } catch (error) {
+                console.error('Failed to load provenance data:', error);
+                // NO DEMO DATA - show error
+                document.getElementById('trail-container').innerHTML =
+                    `<div class="loading" style="color: var(--error);">
+                        <h3>Failed to load provenance trails</h3>
+                        <p style="margin-top: 12px;">${error.message}</p>
+                        <p style="margin-top: 12px; font-size: 0.9rem; color: var(--text-secondary);">
+                            Make sure the Phase 2B system is running and has generated work trails.
+                        </p>
+                        <button class="control-btn" onclick="loadProvenanceData()" style="margin-top: 16px;">
+                            🔄 Retry
+                        </button>
+                    </div>`;
+            }
+        }
+
+        // THIS SHOULD NEVER BE CALLED - API must work or page shows error
+        async function fetchDemoProvenanceData() {
+            throw new Error('No demo data permitted. Real API must be available.');
+            return {
+                trails: [
+                    {
+                        id: 'trail_001',
+                        name: 'System Architecture Analysis',
+                        description: 'Trail showing how system analysis led to synthesis',
+                        startTime: '2025-01-04T10:00:00Z',
+                        endTime: '2025-01-04T10:45:00Z',
+                        status: 'completed',
+                        nodes: [
+                            {
+                                id: 'goal_001',
+                                type: 'goal',
+                                description: 'Understand current system capabilities',
+                                timestamp: '2025-01-04T09:50:00Z',
+                                status: 'active',
+                                priority: 1
+                            },
+                            {
+                                id: 'mission_001',
+                                type: 'mission',
+                                description: 'Analyze current system state',
+                                timestamp: '2025-01-04T09:55:00Z',
+                                status: 'completed',
+                                goalId: 'goal_001',
+                                agentType: 'analysis',
+                                priority: 1
+                            },
+                            {
+                                id: 'agent_001',
+                                type: 'agent',
+                                description: 'Analyze system architecture patterns',
+                                timestamp: '2025-01-04T10:00:00Z',
+                                status: 'completed',
+                                missionId: 'mission_001',
+                                goalId: 'goal_001',
+                                executionTime: 45000,
+                                results: ['result_001', 'result_002']
+                            },
+                            {
+                                id: 'result_001',
+                                type: 'result',
+                                description: 'Architecture analysis findings',
+                                timestamp: '2025-01-04T10:30:00Z',
+                                agentId: 'agent_001',
+                                content: 'Identified key architectural patterns and potential improvements...',
+                                impact: 'high'
+                            },
+                            {
+                                id: 'mission_002',
+                                type: 'mission',
+                                description: 'Synthesize analysis results',
+                                timestamp: '2025-01-04T10:35:00Z',
+                                status: 'completed',
+                                goalId: 'goal_001',
+                                agentType: 'synthesis',
+                                priority: 2,
+                                parentMissionId: 'mission_001',
+                                spawningReason: 'follow_up_analysis'
+                            },
+                            {
+                                id: 'agent_002',
+                                type: 'agent',
+                                description: 'Synthesize findings from analysis',
+                                timestamp: '2025-01-04T10:40:00Z',
+                                status: 'completed',
+                                missionId: 'mission_002',
+                                goalId: 'goal_001',
+                                parentAgentId: 'agent_001',
+                                executionTime: 23000,
+                                results: ['result_003']
+                            },
+                            {
+                                id: 'result_003',
+                                type: 'result',
+                                description: 'Synthesized system insights',
+                                timestamp: '2025-01-04T10:45:00Z',
+                                agentId: 'agent_002',
+                                content: 'Comprehensive synthesis of architectural analysis...',
+                                impact: 'high'
+                            }
+                        ]
+                    },
+                    {
+                        id: 'trail_002',
+                        name: 'Novel Research Exploration',
+                        description: 'Trail showing exploratory research path',
+                        startTime: '2025-01-04T10:20:00Z',
+                        endTime: null,
+                        status: 'active',
+                        nodes: [
+                            {
+                                id: 'goal_002',
+                                type: 'goal',
+                                description: 'Identify novel research opportunities',
+                                timestamp: '2025-01-04T10:20:00Z',
+                                status: 'active',
+                                priority: 2
+                            },
+                            {
+                                id: 'mission_003',
+                                type: 'mission',
+                                description: 'Explore new research avenues',
+                                timestamp: '2025-01-04T10:25:00Z',
+                                status: 'active',
+                                goalId: 'goal_002',
+                                agentType: 'exploration',
+                                priority: 3
+                            },
+                            {
+                                id: 'agent_003',
+                                type: 'agent',
+                                description: 'Explore novel research directions',
+                                timestamp: '2025-01-04T10:30:00Z',
+                                status: 'active',
+                                missionId: 'mission_003',
+                                goalId: 'goal_002',
+                                executionTime: 15000,
+                                results: []
+                            }
+                        ]
+                    }
+                ]
+            };
+        }
+
+        // Render trail selector
+        function renderTrailSelector() {
+            const container = document.getElementById('trail-selector');
+
+            if (!state.provenanceData || !state.provenanceData.trails) {
+                container.innerHTML = '<div class="loading">No trails available</div>';
+                return;
+            }
+
+            container.innerHTML = state.provenanceData.trails.map(trail => `
+                <div class="trail-option ${state.currentTrail && state.currentTrail.id === trail.id ? 'selected' : ''}"
+                     onclick="selectTrail('${trail.id}')">
+                    <div class="trail-option-title">${trail.name}</div>
+                    <div class="trail-option-desc">${trail.description}</div>
+                </div>
+            `).join('');
+        }
+
+        // Render current trail
+        function renderCurrentTrail() {
+            const container = document.getElementById('trail-container');
+
+            if (!state.currentTrail) {
+                container.innerHTML = '<div class="loading">Select a trail to explore</div>';
+                return;
+            }
+
+            const nodes = state.currentTrail.nodes;
+            container.innerHTML = nodes.map((node, index) => `
+                <div class="trail-node ${index === 0 ? 'current' : ''}">
+                    <div class="trail-connector ${node.type}">${getConnectorLabel(node)}</div>
+                    <div class="trail-content ${node.type}">
+                        <div class="trail-header-row">
+                            <span class="trail-type">${node.type}</span>
+                            <span class="trail-id">${node.id}</span>
+                        </div>
+                        <div class="trail-description">${node.description}</div>
+                        <div class="trail-meta">
+                            <span>${new Date(node.timestamp).toLocaleString()}</span>
+                            ${node.status ? `<span class="trail-status status-${node.status}">${node.status}</span>` : ''}
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // Render trail statistics
+        function renderTrailStats() {
+            const container = document.getElementById('trail-stats');
+
+            if (!state.currentTrail) {
+                container.innerHTML = '<p style="color: var(--text-dim); font-style: italic;">Select a trail to see statistics</p>';
+                return;
+            }
+
+            const trail = state.currentTrail;
+            const nodes = trail.nodes;
+            const goals = nodes.filter(n => n.type === 'goal').length;
+            const missions = nodes.filter(n => n.type === 'mission').length;
+            const agents = nodes.filter(n => n.type === 'agent').length;
+            const results = nodes.filter(n => n.type === 'result').length;
+
+            container.innerHTML = `
+                <div class="work-path-stats">
+                    <div class="stat-item">
+                        <div class="stat-value">${goals}</div>
+                        <div class="stat-label">Goals</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${missions}</div>
+                        <div class="stat-label">Missions</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">${agents}</div>
+                        <div class="stat-label">Agents</div>
+                    </div>
+                </div>
+                <div class="work-path-details">
+                    <div class="work-path-title">Trail Information</div>
+                    <p><strong>Duration:</strong> ${calculateDuration(trail.startTime, trail.endTime)}</p>
+                    <p><strong>Status:</strong> ${trail.status}</p>
+                    <p><strong>Impact:</strong> ${calculateTrailImpact(nodes)}</p>
+                </div>
+            `;
+        }
+
+        // Render recent activity
+        function renderRecentActivity() {
+            const container = document.getElementById('recent-activity');
+
+            if (!state.provenanceData || !state.provenanceData.trails) {
+                container.innerHTML = '<div class="loading">No recent activity</div>';
+                return;
+            }
+
+            const recentNodes = state.provenanceData.trails
+                .flatMap(trail => trail.nodes)
+                .filter(node => {
+                    const nodeTime = new Date(node.timestamp).getTime();
+                    const oneHourAgo = Date.now() - (60 * 60 * 1000);
+                    return nodeTime > oneHourAgo;
+                })
+                .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+                .slice(0, 5);
+
+            container.innerHTML = recentNodes.map(node => `
+                <div class="trail-option">
+                    <div class="trail-option-title">${node.type}: ${node.id}</div>
+                    <div class="trail-option-desc">${node.description}</div>
+                </div>
+            `).join('') || '<p style="color: var(--text-dim); font-style: italic;">No recent activity</p>';
+        }
+
+        // Helper functions
+        function getConnectorLabel(node) {
+            switch (node.type) {
+                case 'goal': return 'G';
+                case 'mission': return 'M';
+                case 'agent': return 'A';
+                case 'result': return 'R';
+                default: return '?';
+            }
+        }
+
+        function calculateDuration(startTime, endTime) {
+            if (!startTime) return 'Unknown';
+            if (!endTime) return 'In progress';
+
+            const start = new Date(startTime).getTime();
+            const end = new Date(endTime).getTime();
+            const duration = end - start;
+
+            const minutes = Math.floor(duration / (1000 * 60));
+            const hours = Math.floor(minutes / 60);
+
+            if (hours > 0) {
+                return `${hours}h ${minutes % 60}m`;
+            }
+            return `${minutes}m`;
+        }
+
+        function calculateTrailImpact(nodes) {
+            const highImpactResults = nodes.filter(n => n.type === 'result' && n.impact === 'high').length;
+            const totalResults = nodes.filter(n => n.type === 'result').length;
+
+            if (totalResults === 0) return 'Pending';
+
+            const impactRatio = highImpactResults / totalResults;
+            if (impactRatio >= 0.7) return 'High';
+            if (impactRatio >= 0.4) return 'Medium';
+            return 'Low';
+        }
+
+        // Event handlers
+        function selectTrail(trailId) {
+            state.currentTrail = state.provenanceData.trails.find(t => t.id === trailId);
+
+            // Update UI
+            document.querySelectorAll('.trail-option').forEach(opt => opt.classList.remove('selected'));
+            event.target.closest('.trail-option').classList.add('selected');
+
+            renderCurrentTrail();
+            renderTrailStats();
+        }
+
+        function setTrailMode(mode) {
+            state.trailMode = mode;
+
+            // Update button states
+            document.querySelectorAll('.control-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+
+            // Filter and re-render trails based on mode
+            if (mode === 'recent') {
+                // Show most recent trails first
+                state.provenanceData.trails.sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
+            } else if (mode === 'active') {
+                // Show active/incomplete trails first
+                state.provenanceData.trails.sort((a, b) => {
+                    if (a.status === 'active' && b.status !== 'active') return -1;
+                    if (a.status !== 'active' && b.status === 'active') return 1;
+                    return new Date(b.startTime) - new Date(a.startTime);
+                });
+            } else if (mode === 'impact') {
+                // Show trails with highest impact first
+                state.provenanceData.trails.sort((a, b) => {
+                    const impactA = calculateTrailImpact(a.nodes);
+                    const impactB = calculateTrailImpact(b.nodes);
+                    const impactOrder = { 'High': 3, 'Medium': 2, 'Low': 1, 'Pending': 0 };
+                    return impactOrder[impactB] - impactOrder[impactA];
+                });
+            }
+
+            renderTrailSelector();
+        }
+
+        function exportTrail() {
+            if (!state.currentTrail) {
+                alert('Please select a trail to export');
+                return;
+            }
+
+            // Create export data
+            const exportData = {
+                trail: state.currentTrail,
+                exportedAt: new Date().toISOString(),
+                mode: state.trailMode
+            };
+
+            // Create and download JSON file
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `provenance-trail-${state.currentTrail.id}-${Date.now()}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        function refreshData() {
+            loadProvenanceData();
+        }
+    </script>
+</body>
+</html>

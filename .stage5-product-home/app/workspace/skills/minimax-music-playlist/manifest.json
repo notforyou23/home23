@@ -1,0 +1,40 @@
+{
+  "id": "minimax-music-playlist",
+  "version": "1.0.0",
+  "name": "MiniMax Music Playlist",
+  "description": "Turn a taste brief into a custom multi-track playlist plan, then generate the tracks and optional cover art.",
+  "layer": "skill",
+  "runtime": "nodejs",
+  "category": "media",
+  "author": "home23",
+  "entry": "index.js",
+  "keywords": [
+    "playlist",
+    "mixtape",
+    "taste profile",
+    "album",
+    "cover art",
+    "tracks",
+    "music"
+  ],
+  "triggers": [
+    "make me a playlist",
+    "build a custom mixtape",
+    "generate a themed soundtrack",
+    "turn my taste into tracks"
+  ],
+  "requiresTools": [],
+  "dependsOn": [],
+  "composes": [
+    "minimax-music-gen"
+  ],
+  "sideEffects": true,
+  "hooks": {
+    "beforeRun": "hooks/before-run.js"
+  },
+  "actions": [
+    "profile",
+    "plan",
+    "create"
+  ]
+}

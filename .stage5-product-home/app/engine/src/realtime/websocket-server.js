@@ -1,0 +1,1085 @@
+/**
+ * COSMO Real-time WebSocket Server
+ *
+ * Streams COSMO's cognitive activity to connected clients in real-time.
+ * Subscribes to the singleton event emitter and broadcasts events.
+ *
+ * Usage:
+ *   const { RealtimeServer } = require('./realtime/websocket-server');
+ *   const server = new RealtimeServer(3400, logger);
+ *   await server.start();
+ */
+
+const WebSocket = require('ws');
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const { cosmoEvents } = require('./event-emitter');
+const { collectBrainCleanupCandidates } = require('../memory/brain-cleanup');
+const {
+  applyConsolidationBacklogCompost,
+  planConsolidationBacklogCompost,
+} = require('../memory/consolidation-backlog');
+const { applyMemoryRecluster, planMemoryRecluster } = require('../memory/recluster');
+const { applyMemoryCommunities, planMemoryCommunities } = require('../memory/community-detection');
+
+class RealtimeServer {
+  constructor(port = 3400, logger = null) {
+    this.port = port;
+    this.logger = logger || console;
+    this.wss = null;
+    this.httpServer = null;
+    this.clients = new Set();
+    this.eventListener = null;
+    this.orchestrator = null; // set via setOrchestrator for /admin/* routes
+    this.stats = {
+      eventsBroadcast: 0,
+      clientsConnected: 0,
+      clientsDisconnected: 0,
+      startTime: null
+    };
+  }
+
+  /**
+   * Wire a running orchestrator so admin HTTP routes can reach subsystems
+   * like the document feeder. Called from engine/src/index.js after the
+   * orchestrator starts.
+   */
+  setOrchestrator(orchestrator) {
+    this.orchestrator = orchestrator;
+  }
+
+  /**
+   * Start the WebSocket server
+   */
+  async start() {
+    return new Promise((resolve, reject) => {
+      try {
+        // Create HTTP server for WebSocket upgrade + small admin surface
+        this.httpServer = http.createServer(async (req, res) => {
+          // CORS for dashboard-side proxy calls
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+          if (req.method === 'OPTIONS') {
+            res.writeHead(204);
+            res.end();
+            return;
+          }
+
+          // Compatibility status endpoint. Some live-problem verifiers hit the
+          // realtime HTTP root and expect an engine.cycle JSON path; keep this
+          // tiny and read-only so the WS/admin surface remains unchanged.
+          if (req.url === '/') {
+            const cycle = this.orchestrator?.cycleCount ?? null;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              ok: true,
+              engine: {
+                cycle,
+                status: cycle == null ? 'unknown' : 'running'
+              },
+              realtime: {
+                uptime: Date.now() - this.stats.startTime,
+                clients: this.clients.size,
+                eventsBroadcast: this.stats.eventsBroadcast
+              }
+            }));
+            return;
+          }
+
+          // Health check endpoint
+          if (req.url === '/health') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              status: 'healthy',
+              uptime: Date.now() - this.stats.startTime,
+              clients: this.clients.size,
+              eventsBroadcast: this.stats.eventsBroadcast
+            }));
+            return;
+          }
+
+          // Stats endpoint
+          if (req.url === '/stats') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(this.getStats()));
+            return;
+          }
+
+          // ── Admin routes (feeder control) ──
+          if (req.url && req.url.startsWith('/admin/feeder/')) {
+            try {
+              await this._handleFeederAdmin(req, res);
+            } catch (err) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, error: err.message }));
+            }
+            return;
+          }
+
+          // ── Discovery engine observability (Phase 2 of thinking-machine-cycle) ──
+          if (req.url && req.url.startsWith('/admin/discovery/')) {
+            try {
+              await this._handleDiscoveryAdmin(req, res);
+            } catch (err) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, error: err.message }));
+            }
+            return;
+          }
+
+          // ── Agenda store (Phase 6 of thinking-machine-cycle — fruit layer) ──
+          if (req.url && req.url.startsWith('/admin/agenda')) {
+            try {
+              await this._handleAgendaAdmin(req, res);
+            } catch (err) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, error: err.message }));
+            }
+            return;
+          }
+
+          // ── Goal operator controls ──
+          if (req.url && req.url.startsWith('/admin/goals')) {
+            try {
+              await this._handleGoalAdmin(req, res);
+            } catch (err) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, error: err.message }));
+            }
+            return;
+          }
+
+          // ── Live-problems operator controls ──
+          if (req.url && req.url.startsWith('/admin/live-problems')) {
+            try {
+              await this._handleLiveProblemsAdmin(req, res);
+            } catch (err) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, error: err.message }));
+            }
+            return;
+          }
+
+          // ── Memory cleanup maintenance controls ──
+          if (req.url && req.url.startsWith('/admin/memory/cleanup')) {
+            try {
+              await this._handleMemoryCleanupAdmin(req, res);
+            } catch (err) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, error: err.message }));
+            }
+            return;
+          }
+
+          // ── Thinking machine observability (Phase 8) ──
+          if (req.url && req.url.startsWith('/admin/thinking')) {
+            try {
+              await this._handleThinkingAdmin(req, res);
+            } catch (err) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, error: err.message }));
+            }
+            return;
+          }
+
+          // Default: not found
+          res.writeHead(404);
+          res.end('Not found');
+        });
+
+        // Create WebSocket server
+        this.wss = new WebSocket.Server({ server: this.httpServer });
+
+        // Handle new connections
+        this.wss.on('connection', (ws, req) => {
+          this.handleConnection(ws, req);
+        });
+
+        // Subscribe to COSMO events
+        this.eventListener = (event) => {
+          this.broadcast(event);
+        };
+        cosmoEvents.on('*', this.eventListener);
+
+        // Start listening
+        this.httpServer.listen({ port: this.port, host: process.env.HOME23_PRODUCT_HOST === 'true' ? '127.0.0.1' : undefined }, () => {
+          this.stats.startTime = Date.now();
+          this.logger.info?.('🌐 COSMO Realtime WebSocket server started', {
+            port: this.port,
+            wsUrl: `ws://localhost:${this.port}`,
+            healthUrl: `http://localhost:${this.port}/health`
+          }) || console.log(`WebSocket server started on port ${this.port}`);
+          resolve();
+        });
+
+        this.httpServer.on('error', (err) => {
+          this.logger.error?.('WebSocket server error', { error: err.message }) ||
+            console.error('WebSocket server error:', err);
+          reject(err);
+        });
+
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  /**
+   * Read a JSON body from an incoming HTTP request.
+   */
+  async _readJsonBody(req) {
+    return new Promise((resolve, reject) => {
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        if (chunks.length === 0) return resolve({});
+        try {
+          resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        } catch (err) {
+          reject(new Error('Invalid JSON body'));
+        }
+      });
+      req.on('error', reject);
+    });
+  }
+
+  /**
+   * Handle /admin/feeder/* routes. Requires orchestrator + feeder to be wired.
+   */
+  async _handleFeederAdmin(req, res) {
+    const url = req.url;
+    const feeder = this.orchestrator?.feeder;
+    const json = (code, body) => {
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+
+    if (!feeder) {
+      return json(503, { ok: false, error: 'Feeder not available' });
+    }
+
+    // GET /admin/feeder/status
+    if (req.method === 'GET' && url === '/admin/feeder/status') {
+      const status = await feeder.getStatus();
+      return json(200, { ok: true, status });
+    }
+
+    // POST /admin/feeder/flush
+    if (req.method === 'POST' && url === '/admin/feeder/flush') {
+      const result = await feeder.forceFlush();
+      return json(200, { ok: true, result });
+    }
+
+    // POST /admin/feeder/addWatchPath  { path, label }
+    if (req.method === 'POST' && url === '/admin/feeder/addWatchPath') {
+      const body = await this._readJsonBody(req);
+      if (!body.path || typeof body.path !== 'string') {
+        return json(400, { ok: false, error: 'path is required' });
+      }
+      await feeder.addWatchPath(body.path, body.label || null);
+      return json(200, { ok: true, added: body.path, label: body.label || null });
+    }
+
+    // POST /admin/feeder/removeWatchPath  { path }
+    if (req.method === 'POST' && url === '/admin/feeder/removeWatchPath') {
+      const body = await this._readJsonBody(req);
+      if (!body.path || typeof body.path !== 'string') {
+        return json(400, { ok: false, error: 'path is required' });
+      }
+      const removed = await feeder.removeWatchPath(body.path);
+      return json(200, { ok: true, removed, path: body.path });
+    }
+
+    // POST /admin/feeder/reingest  { path, label? }
+    // A failed conversion is pinned by its unchanged content hash — isStale
+    // reports the file fresh forever, so a fixed converter never gets a
+    // second look on its own. Drop the manifest entry (and any nodes) and
+    // run the file through the pipeline again.
+    if (req.method === 'POST' && url === '/admin/feeder/reingest') {
+      const body = await this._readJsonBody(req);
+      if (!body.path || typeof body.path !== 'string') {
+        return json(400, { ok: false, error: 'path is required' });
+      }
+      const label = typeof body.label === 'string' && body.label.trim()
+        ? body.label.trim()
+        : feeder.labelForPath(body.path);
+      await feeder.removeFile(body.path);
+      await feeder.ingestFile(body.path, label);
+      const entry = feeder.manifest?.getEntry ? feeder.manifest.getEntry(body.path) : null;
+      return json(200, {
+        ok: true,
+        path: body.path,
+        label,
+        parseStatus: entry?.parseStatus ?? null,
+        nodeCount: entry?.nodeIds?.length ?? 0,
+      });
+    }
+
+    // POST /admin/feeder/updateCompiler  { enabled?, model? }
+    if (req.method === 'POST' && url === '/admin/feeder/updateCompiler') {
+      const body = await this._readJsonBody(req);
+      if (!feeder.compiler) {
+        return json(503, { ok: false, error: 'Compiler not initialized' });
+      }
+      if (typeof body.enabled === 'boolean') {
+        feeder.compilerConfig.enabled = body.enabled;
+        if (feeder.compiler.config) feeder.compiler.config.enabled = body.enabled;
+      }
+      if (typeof body.model === 'string' && body.model.trim()) {
+        const newModel = body.model.trim();
+        feeder.compilerConfig.model = newModel;
+        if (feeder.compiler.config) feeder.compiler.config.model = newModel;
+        // Hot-update the running compiler instance (re-resolves provider + rebuilds client)
+        if (feeder.compiler.updateModel) {
+          feeder.compiler.updateModel(newModel);
+        }
+      }
+      return json(200, { ok: true, compiler: feeder.compilerConfig });
+    }
+
+    return json(404, { ok: false, error: `Unknown admin route: ${req.method} ${url}` });
+  }
+
+  /**
+   * Handle /admin/discovery/* routes. Exposes the DiscoveryEngine's ranked
+   * candidate queue and per-signal stats for dashboard observability.
+   * Requires orchestrator.discoveryEngine to be wired (non-fatal if missing).
+   */
+  async _handleDiscoveryAdmin(req, res) {
+    const url = req.url;
+    const de = this.orchestrator?.discoveryEngine;
+    const json = (code, body) => {
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+
+    if (!de) {
+      return json(503, { ok: false, error: 'Discovery engine not available' });
+    }
+
+    // GET /admin/discovery/stats — counters + queue depth + salience status
+    if (req.method === 'GET' && url === '/admin/discovery/stats') {
+      const stats = de.getStats();
+      const salience = this.orchestrator?.conversationSalience;
+      return json(200, {
+        ok: true,
+        stats,
+        salience: salience ? salience.stats() : null,
+      });
+    }
+
+    // GET /admin/discovery/peek?n=10 — top N candidates without draining
+    if (req.method === 'GET' && url.startsWith('/admin/discovery/peek')) {
+      const match = url.match(/[?&]n=(\d+)/);
+      const n = match ? Math.min(parseInt(match[1], 10), 100) : 10;
+      return json(200, { ok: true, candidates: de.peek(n) });
+    }
+
+    return json(404, { ok: false, error: `Unknown discovery route: ${req.method} ${url}` });
+  }
+
+  /**
+   * Handle /admin/agenda* routes. Exposes the agenda store for the dashboard
+   * fruit layer. Requires orchestrator.agendaStore to be wired (returns 503
+   * if missing — normal under cognitionMode: legacy_roles).
+   */
+  async _handleAgendaAdmin(req, res) {
+    const url = req.url;
+    const store = this.orchestrator?.agendaStore;
+    const json = (code, body) => {
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+
+    if (!store) {
+      return json(503, { ok: false, error: 'Agenda store not available (is cognitionMode: thinking_machine?)' });
+    }
+
+    // GET /admin/agenda/list?status=candidate,surfaced&limit=50
+    if (req.method === 'GET' && url.startsWith('/admin/agenda/list')) {
+      const statusMatch = url.match(/[?&]status=([^&]+)/);
+      const limitMatch = url.match(/[?&]limit=(\d+)/);
+      const filter = {};
+      if (statusMatch) filter.status = decodeURIComponent(statusMatch[1]).split(',');
+      if (limitMatch) filter.limit = parseInt(limitMatch[1], 10);
+      return json(200, { ok: true, items: store.list(filter), counts: store.counts() });
+    }
+
+    // GET /admin/agenda/grouped — grouped by topic for dashboard surface
+    if (req.method === 'GET' && url.startsWith('/admin/agenda/grouped')) {
+      const statusMatch = url.match(/[?&]status=([^&]+)/);
+      const filter = {};
+      if (statusMatch) filter.status = decodeURIComponent(statusMatch[1]).split(',');
+      return json(200, { ok: true, groups: store.groupedByTopic(filter), counts: store.counts() });
+    }
+
+    // GET /admin/agenda/stats
+    if (req.method === 'GET' && url === '/admin/agenda/stats') {
+      return json(200, { ok: true, counts: store.counts() });
+    }
+
+    // GET /admin/agenda/:id
+    const getById = url.match(/^\/admin\/agenda\/([^/?]+)$/);
+    if (req.method === 'GET' && getById && getById[1] !== 'list' && getById[1] !== 'grouped' && getById[1] !== 'stats') {
+      const rec = store.get(getById[1]);
+      if (!rec) return json(404, { ok: false, error: 'not found' });
+      return json(200, { ok: true, item: rec });
+    }
+
+    // POST /admin/agenda/:id/status { status, note, actor }
+    const statusPost = url.match(/^\/admin\/agenda\/([^/]+)\/status$/);
+    if (req.method === 'POST' && statusPost) {
+      const body = await this._readJsonBody(req);
+      if (!body.status) return json(400, { ok: false, error: 'status is required' });
+      const agendaId = statusPost[1];
+      const existing = store.get(agendaId);
+      if (!existing) return json(404, { ok: false, error: 'not found or invalid status' });
+
+      let execution = null;
+      let note = body.note || null;
+      if (body.status === 'acted_on') {
+        try {
+          execution = await this.orchestrator?.executeAgendaItem?.(existing, { actor: body.actor || 'api' });
+          const detail = [
+            execution?.action ? `action ${execution.action}` : null,
+            execution?.target ? `target ${execution.target}` : null,
+          ].filter(Boolean).join(', ');
+          note = detail ? `executed directly via ${detail}` : (note || 'executed directly');
+        } catch (error) {
+          return json(409, { ok: false, error: `agenda execution failed: ${error.message}` });
+        }
+      }
+
+      const rec = store.updateStatus(agendaId, body.status, { note, actor: body.actor || 'api' });
+      if (!rec) return json(404, { ok: false, error: 'not found or invalid status' });
+      return json(200, { ok: true, item: rec, execution });
+    }
+
+    return json(404, { ok: false, error: `Unknown agenda route: ${req.method} ${url}` });
+  }
+
+  /**
+   * Handle /admin/goals* routes — narrow operator controls for Good Life
+   * surfaces. These mutate the live engine goal system, then persist state.
+   */
+  async _handleGoalAdmin(req, res) {
+    const url = req.url;
+    const json = (code, body) => {
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+
+    const archivePost = url.match(/^\/admin\/goals\/([^/]+)\/archive$/);
+    if (req.method === 'POST' && archivePost) {
+      if (!this.orchestrator?.goals?.archiveGoal) {
+        return json(503, { ok: false, error: 'Goal system is not available' });
+      }
+
+      const goalId = decodeURIComponent(archivePost[1]);
+      const goal = this.orchestrator.goals.getGoal?.(goalId) || null;
+      if (!goal || (goal.status && goal.status !== 'active')) {
+        return json(404, { ok: false, error: 'active goal not found' });
+      }
+
+      const body = await this._readJsonBody(req);
+      const reason = String(body.reason || body.note || 'archived from Good Life operator').slice(0, 500);
+      const ok = this.orchestrator.goals.archiveGoal(goalId, reason);
+      if (!ok) return json(409, { ok: false, error: 'goal was not archived' });
+
+      if (typeof this.orchestrator.saveState === 'function') {
+        await this.orchestrator.saveState();
+      }
+
+      return json(200, {
+        ok: true,
+        goalId,
+        status: 'archived',
+        reason,
+      });
+    }
+
+    return json(404, { ok: false, error: `Unknown goal route: ${req.method} ${url}` });
+  }
+
+  /**
+   * Handle /admin/live-problems* routes — immediate operator verification
+   * controls for the Good Life surface. These run inside the engine process
+   * so they can use live verifier/remediator context instead of waiting for
+   * the next scheduled loop.
+   */
+  async _handleLiveProblemsAdmin(req, res) {
+    const url = req.url;
+    const liveProblems = this.orchestrator?.liveProblems;
+    const json = (code, body) => {
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+
+    if (!liveProblems) {
+      return json(503, { ok: false, error: 'Live-problems system is not available' });
+    }
+
+    if (req.method === 'POST' && url === '/admin/live-problems/tick') {
+      if (typeof liveProblems.processAllNow !== 'function') {
+        return json(503, { ok: false, error: 'Immediate live-problems processing is not available' });
+      }
+      const result = await liveProblems.processAllNow({ force: true });
+      return json(200, {
+        ok: true,
+        mode: 'immediate',
+        note: `processed ${result.processed || 0} live problem${result.processed === 1 ? '' : 's'} now`,
+        ...result,
+      });
+    }
+
+    const processPost = url.match(/^\/admin\/live-problems\/([^/]+)\/process$/);
+    if (req.method === 'POST' && processPost) {
+      if (typeof liveProblems.processNow !== 'function') {
+        return json(503, { ok: false, error: 'Immediate live-problems processing is not available' });
+      }
+      const problemId = decodeURIComponent(processPost[1]);
+      const problem = await liveProblems.processNow(problemId);
+      if (!problem) return json(404, { ok: false, error: 'live problem not found' });
+      return json(200, {
+        ok: true,
+        mode: 'immediate',
+        note: `processed ${problemId} now`,
+        problem,
+        snapshot: liveProblems.briefSnapshot?.() || null,
+      });
+    }
+
+    return json(404, { ok: false, error: `Unknown live-problems route: ${req.method} ${url}` });
+  }
+
+  /**
+   * Handle /admin/memory/cleanup/* routes.
+   * Narrow maintenance surface for removing confirmed autonomous-loop junk from
+   * the live in-memory graph. Never edits sidecars directly.
+   */
+  async _handleMemoryCleanupAdmin(req, res) {
+    const requestUrl = new URL(req.url, `http://localhost:${this.port}`);
+    const url = requestUrl.pathname;
+    const json = (code, body) => {
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+
+    const knownRoutes = new Set([
+      '/admin/memory/cleanup/compost-backlog',
+      '/admin/memory/cleanup/preamble',
+      '/admin/memory/cleanup/recluster',
+      '/admin/memory/cleanup/communities',
+    ]);
+    if (!knownRoutes.has(url)) {
+      return json(404, { ok: false, error: `Unknown memory cleanup route: ${req.method} ${url}` });
+    }
+
+    const memory = this.orchestrator?.memory;
+    if (!memory?.nodes || typeof memory.removeNode !== 'function') {
+      return json(503, { ok: false, error: 'memory graph not available' });
+    }
+
+    const body = req.method === 'POST' ? await this._readJsonBody(req) : {};
+    const mode = String(body.mode || requestUrl.searchParams.get('mode') || 'dry-run').toLowerCase();
+
+    if (url === '/admin/memory/cleanup/compost-backlog') {
+      const groupLimitValue = body.groupLimit ?? requestUrl.searchParams.get('groupLimit');
+      const sourcePreviewLimitValue = body.sourcePreviewLimit ?? requestUrl.searchParams.get('sourcePreviewLimit');
+      const includeBlockedSourceIds = String(body.includeBlockedSourceIds ?? requestUrl.searchParams.get('includeBlockedSourceIds') ?? 'false') === 'true';
+      const groupLimit = groupLimitValue == null || String(groupLimitValue).toLowerCase() === 'all'
+        ? Infinity
+        : Number(groupLimitValue);
+      const sourcePreviewLimit = sourcePreviewLimitValue == null ? 5 : Number(sourcePreviewLimitValue);
+      const plan = planConsolidationBacklogCompost(memory, {
+        includeBlockedSourceIds,
+        groupLimit: Number.isFinite(groupLimit) ? groupLimit : Infinity,
+        sourcePreviewLimit: Number.isFinite(sourcePreviewLimit) ? sourcePreviewLimit : 5,
+      });
+
+      if (req.method === 'GET' || mode === 'dry-run') {
+        return json(200, plan);
+      }
+      if (req.method !== 'POST') {
+        return json(405, { ok: false, error: 'method not allowed' });
+      }
+      if (mode !== 'apply') {
+        return json(400, { ok: false, error: 'mode must be dry-run or apply' });
+      }
+
+      const expectedRemovableSourceNodes = body.expectedRemovableSourceNodes ?? requestUrl.searchParams.get('expectedRemovableSourceNodes');
+      if (
+        expectedRemovableSourceNodes != null &&
+        Number(expectedRemovableSourceNodes) !== plan.removableSourceNodes
+      ) {
+        return json(409, {
+          ok: false,
+          mode,
+          error: 'expectedRemovableSourceNodes does not match current dry-run plan',
+          expectedRemovableSourceNodes: Number(expectedRemovableSourceNodes),
+          actualRemovableSourceNodes: plan.removableSourceNodes,
+        });
+      }
+
+      const backup = this._backupBrainSidecars('brain-cleanup-compost-backlog');
+      const applied = applyConsolidationBacklogCompost(memory, plan);
+      if (typeof this.orchestrator.saveState === 'function') {
+        await this.orchestrator.saveState();
+      }
+      return json(200, {
+        ok: true,
+        mode: 'apply',
+        backup,
+        planned: {
+          removableGroups: plan.removableGroups,
+          removableSourceNodes: plan.removableSourceNodes,
+          ambiguousGroups: plan.ambiguousGroups,
+          ambiguousSourceNodes: plan.ambiguousSourceNodes,
+          orphanSourceGroups: plan.orphanSourceGroups,
+          orphanSourceNodes: plan.orphanSourceNodes,
+        },
+        ...applied,
+      });
+    }
+
+    if (url === '/admin/memory/cleanup/recluster') {
+      const plan = planMemoryRecluster(memory, {
+        minComponentSize: body.minComponentSize ?? requestUrl.searchParams.get('minComponentSize'),
+        minComponentEdgeWeight: body.minComponentEdgeWeight ?? requestUrl.searchParams.get('minComponentEdgeWeight'),
+      });
+
+      if (req.method === 'GET' || mode === 'dry-run') {
+        return json(200, {
+          ok: true,
+          mode: 'dry-run',
+          unclusteredBefore: plan.unclusteredBefore,
+          wouldAssignToExistingClusters: plan.wouldAssignToExistingClusters,
+          wouldCreateClusters: plan.wouldCreateClusters,
+          wouldAssignToNewClusters: plan.wouldAssignToNewClusters,
+          unclusteredAfter: plan.unclusteredAfter,
+          sampleExisting: plan.sampleExisting,
+          sampleNewClusters: plan.sampleNewClusters,
+        });
+      }
+
+      if (req.method !== 'POST') {
+        return json(405, { ok: false, error: 'method not allowed' });
+      }
+      if (mode !== 'apply') {
+        return json(400, { ok: false, error: 'mode must be dry-run or apply' });
+      }
+
+      const backup = this._backupBrainSidecars('brain-cleanup-recluster');
+      const applied = applyMemoryRecluster(memory, plan);
+      if (typeof this.orchestrator.saveState === 'function') {
+        await this.orchestrator.saveState();
+      }
+      return json(200, {
+        ok: true,
+        mode: 'apply',
+        backup,
+        ...applied,
+        unclusteredBefore: plan.unclusteredBefore,
+        unclusteredAfter: Math.max(0, plan.unclusteredBefore - applied.assignedToExisting - applied.assignedToNewClusters),
+      });
+    }
+
+    if (url === '/admin/memory/cleanup/communities') {
+      const maxIterationsValue = body.maxIterations ?? requestUrl.searchParams.get('maxIterations');
+      const minCommunitySizeValue = body.minCommunitySize ?? requestUrl.searchParams.get('minCommunitySize');
+      const plan = planMemoryCommunities(memory, {
+        ...(maxIterationsValue != null ? { maxIterations: Number(maxIterationsValue) } : {}),
+        ...(minCommunitySizeValue != null ? { minCommunitySize: Number(minCommunitySizeValue) } : {}),
+      });
+      const summary = {
+        communityCount: plan.communityCount,
+        movedNodes: plan.movedNodes,
+        unchanged: plan.unchanged,
+        converged: plan.converged,
+        iterations: plan.iterations,
+        degenerate: plan.degenerate,
+        sizes: plan.sizes.slice(0, 50),
+        sample: plan.sample,
+      };
+
+      if (req.method === 'GET' || mode === 'dry-run') {
+        return json(200, { ok: true, mode: 'dry-run', ...summary });
+      }
+      if (req.method !== 'POST') {
+        return json(405, { ok: false, error: 'method not allowed' });
+      }
+      if (mode !== 'apply') {
+        return json(400, { ok: false, error: 'mode must be dry-run or apply' });
+      }
+      // Event rule: nothing moved — no backup, no mutation, no save.
+      if (plan.unchanged) {
+        return json(200, { ok: true, mode: 'apply', unchanged: true, movedNodes: 0 });
+      }
+
+      const backup = this._backupBrainSidecars('brain-communities');
+      const applied = applyMemoryCommunities(memory, plan);
+      if (typeof this.orchestrator.saveState === 'function') {
+        await this.orchestrator.saveState();
+      }
+      return json(200, { ok: true, mode: 'apply', backup, ...summary, ...applied });
+    }
+
+    const limitValue = body.limit ?? requestUrl.searchParams.get('limit');
+    const limit = limitValue == null ? Infinity : Number(limitValue);
+    const report = collectBrainCleanupCandidates(memory, {
+      limit: Number.isFinite(limit) ? limit : Infinity,
+    });
+    const sample = report.candidates.slice(0, 20);
+
+    if (req.method === 'GET' || mode === 'dry-run') {
+      return json(200, {
+        ok: true,
+        mode: 'dry-run',
+        totalCandidates: report.totalCandidates,
+        byReason: report.byReason,
+        sample
+      });
+    }
+
+    if (req.method !== 'POST') {
+      return json(405, { ok: false, error: 'method not allowed' });
+    }
+
+    if (mode !== 'apply') {
+      return json(400, { ok: false, error: 'mode must be dry-run or apply' });
+    }
+
+    const backup = this._backupBrainSidecars('brain-cleanup-preamble');
+    let removed = 0;
+    const failed = [];
+    for (const candidate of report.candidates) {
+      try {
+        const removalIds = [candidate.id];
+        if (/^\d+$/.test(String(candidate.id))) removalIds.push(Number(candidate.id));
+        const didRemove = removalIds.some(id => memory.removeNode(id));
+        if (didRemove) {
+          removed++;
+        } else {
+          failed.push({ id: candidate.id, reason: 'removeNode returned false' });
+        }
+      } catch (err) {
+        failed.push({ id: candidate.id, reason: err.message });
+      }
+    }
+
+    if (typeof this.orchestrator.saveState === 'function') {
+      await this.orchestrator.saveState();
+    }
+
+    return json(200, {
+      ok: true,
+      mode: 'apply',
+      removed,
+      failed,
+      backup,
+      byReason: report.byReason,
+      sample
+    });
+  }
+
+  _backupBrainSidecars(reason) {
+    const brainDir = this.orchestrator?.logsDir;
+    if (!brainDir) return { ok: false, error: 'brain dir unavailable' };
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupDir = path.join(brainDir, 'backups', `${stamp}-${reason}`);
+    fs.mkdirSync(backupDir, { recursive: true });
+    const copied = [];
+    for (const name of ['memory-nodes.jsonl.gz', 'memory-edges.jsonl.gz', 'brain-snapshot.json', 'state.json.gz', 'memory-delta.jsonl']) {
+      const source = path.join(brainDir, name);
+      if (!fs.existsSync(source)) continue;
+      const target = path.join(backupDir, name);
+      fs.copyFileSync(source, target);
+      copied.push(name);
+    }
+    return { ok: true, path: backupDir, files: copied };
+  }
+
+  /**
+   * Handle /admin/thinking* routes — observability for the thinking-machine
+   * pipeline (kept/discarded ratio, convergence distribution, pgs stats,
+   * token budget, topic recurrence). Also exposes mode-flip endpoint.
+   */
+  async _handleThinkingAdmin(req, res) {
+    const url = req.url;
+    const tm = this.orchestrator?.thinkingMachine;
+    const json = (code, body) => {
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+
+    // GET /admin/thinking/stats — always available (returns mode + any stats)
+    if (req.method === 'GET' && url === '/admin/thinking/stats') {
+      const mode = this.orchestrator?.config?.architecture?.cognitionMode || 'legacy_roles';
+      const stats = tm ? tm.getStats() : null;
+      const agendaStats = this.orchestrator?.agendaStore?.counts?.() || null;
+      const discoveryStats = this.orchestrator?.discoveryEngine?.getStats?.() || null;
+      const salienceStats = this.orchestrator?.conversationSalience?.stats?.() || null;
+      return json(200, {
+        ok: true,
+        cognitionMode: mode,
+        thinkingMachineRunning: Boolean(tm?.running),
+        thinkingMachine: stats,
+        agenda: agendaStats,
+        discovery: discoveryStats,
+        salience: salienceStats,
+      });
+    }
+
+    // GET /admin/thinking/recent?n=5 — last N kept thoughts with full provenance
+    if (req.method === 'GET' && url.startsWith('/admin/thinking/recent')) {
+      if (!tm) return json(503, { ok: false, error: 'Thinking machine not running' });
+      const match = url.match(/[?&]n=(\d+)/);
+      const n = match ? Math.min(parseInt(match[1], 10), 50) : 10;
+      return json(200, { ok: true, thoughts: tm.getRecentThoughts(n) });
+    }
+
+    return json(404, { ok: false, error: `Unknown thinking route: ${req.method} ${url}` });
+  }
+
+  /**
+   * Handle new WebSocket connection
+   */
+  handleConnection(ws, req) {
+    const clientId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    // Track client
+    const clientInfo = {
+      id: clientId,
+      ws,
+      connectedAt: Date.now(),
+      ip: req.socket.remoteAddress,
+      subscriptions: new Set(['*']), // Default: receive all events
+      messageCount: 0
+    };
+    this.clients.add(clientInfo);
+    this.stats.clientsConnected++;
+
+    this.logger.info?.('📱 Client connected to realtime stream', {
+      clientId,
+      totalClients: this.clients.size
+    });
+
+    // Send welcome message
+    this.sendToClient(clientInfo, {
+      type: 'connected',
+      clientId,
+      timestamp: Date.now(),
+      message: 'Connected to COSMO realtime stream',
+      availableEventTypes: [
+        'cycle_start', 'cycle_complete',
+        'thought_generated',
+        'agent_spawned', 'agent_completed', 'agent_failed',
+        'node_created', 'edge_created', 'memory_consolidated',
+        'sleep_triggered', 'wake_triggered', 'dream_rewiring', 'dream_started', 'dream_phase', 'sleep_consolidation_complete',
+        'cognitive_state_changed', 'cognitive_state_update', 'oscillator_mode_changed',
+        'coordinator_review', 'coordinator_phase', 'executive_decision',
+        'insight_detected', 'goal_created', 'goal_completed',
+        'web_search', 'code_generation', 'insights_extracted'
+      ]
+    });
+
+    // Handle client messages
+    ws.on('message', (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        this.handleClientMessage(clientInfo, message);
+      } catch (error) {
+        this.sendToClient(clientInfo, {
+          type: 'error',
+          message: 'Invalid JSON message',
+          timestamp: Date.now()
+        });
+      }
+    });
+
+    // Handle disconnection
+    ws.on('close', () => {
+      this.clients.delete(clientInfo);
+      this.stats.clientsDisconnected++;
+      this.logger.info?.('📴 Client disconnected from realtime stream', {
+        clientId,
+        duration: Date.now() - clientInfo.connectedAt,
+        messagesReceived: clientInfo.messageCount,
+        remainingClients: this.clients.size
+      });
+    });
+
+    // Handle errors
+    ws.on('error', (error) => {
+      this.logger.warn?.('WebSocket client error', {
+        clientId,
+        error: error.message
+      });
+    });
+  }
+
+  /**
+   * Handle messages from clients
+   */
+  handleClientMessage(clientInfo, message) {
+    clientInfo.messageCount++;
+
+    switch (message.type) {
+      case 'subscribe':
+        // Subscribe to specific event types
+        if (Array.isArray(message.events)) {
+          clientInfo.subscriptions = new Set(message.events);
+          this.sendToClient(clientInfo, {
+            type: 'subscribed',
+            events: Array.from(clientInfo.subscriptions),
+            timestamp: Date.now()
+          });
+        }
+        break;
+
+      case 'unsubscribe':
+        // Unsubscribe from specific event types
+        if (Array.isArray(message.events)) {
+          message.events.forEach(e => clientInfo.subscriptions.delete(e));
+          this.sendToClient(clientInfo, {
+            type: 'unsubscribed',
+            events: message.events,
+            remaining: Array.from(clientInfo.subscriptions),
+            timestamp: Date.now()
+          });
+        }
+        break;
+
+      case 'ping':
+        // Respond to ping
+        this.sendToClient(clientInfo, {
+          type: 'pong',
+          timestamp: Date.now(),
+          serverUptime: Date.now() - this.stats.startTime
+        });
+        break;
+
+      case 'get_stats':
+        // Send server stats
+        this.sendToClient(clientInfo, {
+          type: 'stats',
+          ...this.getStats()
+        });
+        break;
+
+      default:
+        this.sendToClient(clientInfo, {
+          type: 'error',
+          message: `Unknown message type: ${message.type}`,
+          timestamp: Date.now()
+        });
+    }
+  }
+
+  /**
+   * Send message to a specific client
+   */
+  sendToClient(clientInfo, message) {
+    if (clientInfo.ws.readyState === WebSocket.OPEN) {
+      try {
+        clientInfo.ws.send(JSON.stringify(message));
+      } catch (error) {
+        this.logger.warn?.('Failed to send to client', {
+          clientId: clientInfo.id,
+          error: error.message
+        });
+      }
+    }
+  }
+
+  /**
+   * Broadcast event to all subscribed clients
+   */
+  broadcast(event) {
+    if (this.clients.size === 0) return;
+
+    this.stats.eventsBroadcast++;
+    const message = JSON.stringify(event);
+
+    for (const clientInfo of this.clients) {
+      // Check if client is subscribed to this event type
+      if (clientInfo.subscriptions.has('*') || clientInfo.subscriptions.has(event.type)) {
+        if (clientInfo.ws.readyState === WebSocket.OPEN) {
+          try {
+            clientInfo.ws.send(message);
+          } catch (error) {
+            this.logger.warn?.('Failed to broadcast to client', {
+              clientId: clientInfo.id,
+              eventType: event.type,
+              error: error.message
+            });
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Get server statistics
+   */
+  getStats() {
+    const emitterStats = cosmoEvents.getStats();
+    return {
+      server: {
+        port: this.port,
+        uptime: this.stats.startTime ? Date.now() - this.stats.startTime : 0,
+        connectedClients: this.clients.size,
+        totalConnections: this.stats.clientsConnected,
+        totalDisconnections: this.stats.clientsDisconnected,
+        eventsBroadcast: this.stats.eventsBroadcast
+      },
+      emitter: emitterStats,
+      clients: Array.from(this.clients).map(c => ({
+        id: c.id,
+        connectedAt: c.connectedAt,
+        duration: Date.now() - c.connectedAt,
+        subscriptions: Array.from(c.subscriptions),
+        messagesReceived: c.messageCount
+      }))
+    };
+  }
+
+  /**
+   * Stop the WebSocket server
+   */
+  async stop() {
+    return new Promise((resolve) => {
+      // Remove event listener
+      if (this.eventListener) {
+        cosmoEvents.off('*', this.eventListener);
+      }
+
+      // Close all client connections
+      for (const clientInfo of this.clients) {
+        clientInfo.ws.close(1001, 'Server shutting down');
+      }
+      this.clients.clear();
+
+      // Close WebSocket server
+      if (this.wss) {
+        this.wss.close(() => {
+          // Close HTTP server
+          if (this.httpServer) {
+            this.httpServer.close(() => {
+              this.logger.info?.('🌐 COSMO Realtime WebSocket server stopped');
+              resolve();
+            });
+          } else {
+            resolve();
+          }
+        });
+      } else {
+        resolve();
+      }
+    });
+  }
+}
+
+module.exports = { RealtimeServer };

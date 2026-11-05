@@ -1,0 +1,775 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { createBootstrapService, type BootstrapResponse } from "../../../src/coordination/bootstrap/index.js";
+import { loadCanonicalFixture } from "../../../src/coordination/contracts/contract-pack.js";
+import {
+  createCoordinationApplication,
+  createCoordinationLifecycle,
+  disabledCoordinationFeatureFlags,
+} from "../../../src/coordination/app/index.js";
+import type { AuthorityEpoch } from "../../../src/coordination/epochs/index.js";
+import { createCoordinationHttpServer } from "../../../src/coordination/http/index.js";
+
+const fixture = loadCanonicalFixture("bootstrap") as BootstrapResponse;
+const exactMessageFixture = loadCanonicalFixture("message-exact") as any;
+const authPrincipal = Object.freeze({
+  principalId: "user_owner" as const,
+  deviceId: fixture.client.deviceId,
+  sessionId: fixture.client.sessionId,
+  scopes: fixture.client.scopes,
+});
+const enabledShellFlags = Object.freeze({
+  ...disabledCoordinationFeatureFlags(),
+  "coordination.process.enabled": true,
+  "coordination.public_api.enabled": true,
+});
+const canonicalMessagesAuthority: AuthorityEpoch = Object.freeze({
+  capability: "messages",
+  epoch: 3,
+  mode: "canonical",
+  writer: "home23-coordination",
+  effectiveAtEventSequence: 41,
+  rollbackEpoch: 1,
+});
+
+function submissionRequest(overrides: Record<string, unknown> = {}) {
+  return {
+    messageId: "msg_0198d95f-6c00-7000-8000-0000000000c1",
+    clientMessageId: "client-message-0001",
+    text: "hello",
+    attachmentIds: [],
+    mentions: [],
+    replyToMessageId: null,
+    ...overrides,
+  };
+}
+
+function fixtureBootstrapService() {
+  return createBootstrapService({
+    repository: {
+      readProjection: () => ({
+        snapshot: fixture.snapshot,
+        throughEventSequence: fixture.throughEventSequence,
+      }),
+    },
+    participantDirectory: {
+      listVisibleBots: async () => [],
+      resolveAlias: async () => null,
+      getBotByResidentBinding: async () => null,
+    },
+    now: () => new Date(fixture.serverTime),
+    minimumClientBuild: fixture.minimumClientBuild,
+    home: fixture.home,
+    connection: fixture.connection,
+    capabilities: fixture.capabilities,
+    limits: fixture.limits,
+    availabilityPolicy: {
+      degradedAfterMs: 60_000,
+      offlineAfterMs: 120_000,
+    },
+  });
+}
+
+function authHeaders(): Record<string, string> {
+  return {
+    authorization: "Bearer fixture-access-token",
+    "x-request-id": fixture.requestId,
+    "x-correlation-id": fixture.correlationId,
+  };
+}
+
+test("capabilities are public while unauthenticated protected access fails closed", async (t) => {
+  let authCalls = 0;
+  const application = createCoordinationApplication({
+    flags: enabledShellFlags,
+    services: {
+      auth: {
+        validateAccessToken: async ({ accessToken, network, requiredScopes }) => {
+          authCalls += 1;
+          assert.equal(accessToken, "fixture-access-token");
+          assert.equal(network, "loopback");
+          assert.deepEqual(requiredScopes, ["product:read"]);
+          return authPrincipal;
+        },
+      },
+      bootstrap: fixtureBootstrapService(),
+    },
+  });
+  const server = createCoordinationHttpServer({ application, port: 0 });
+  t.after(() => server.drain());
+  const address = await server.start();
+
+  const capabilities = await fetch(`${address.origin}/api/v1/capabilities`);
+  assert.equal(capabilities.status, 200);
+  assert.equal((await capabilities.json() as any).capabilities.bootstrap, true);
+  assert.equal(authCalls, 0);
+
+  const denied = await fetch(`${address.origin}/api/v1/bootstrap`);
+  assert.equal(denied.status, 401);
+  const deniedBody = await denied.json() as any;
+  assert.match(deniedBody.error.requestId, /^req_/);
+  assert.deepEqual({ ...deniedBody, error: { ...deniedBody.error, requestId: "<request>" } }, {
+    error: {
+      code: "access_invalid",
+      message: "Authentication is required.",
+      retryable: false,
+      requestId: "<request>",
+      details: {},
+    },
+  });
+  assert.equal(authCalls, 0);
+});
+
+test("the server owns request IDs while preserving caller correlation through bootstrap", async (t) => {
+  const application = createCoordinationApplication({
+    flags: enabledShellFlags,
+    services: {
+      auth: { validateAccessToken: async () => authPrincipal },
+      bootstrap: fixtureBootstrapService(),
+    },
+  });
+  const server = createCoordinationHttpServer({ application, port: 0 });
+  t.after(() => server.drain());
+  const address = await server.start();
+
+  const response = await fetch(`${address.origin}/api/v1/bootstrap`, {
+    headers: authHeaders(),
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.json() as BootstrapResponse;
+  assert.match(body.requestId, /^req_/);
+  assert.notEqual(body.requestId, fixture.requestId);
+  assert.equal(response.headers.get("x-request-id"), body.requestId);
+  assert.equal(body.correlationId, fixture.correlationId);
+  assert.equal(response.headers.get("x-correlation-id"), fixture.correlationId);
+  assert.deepEqual({ ...body, requestId: fixture.requestId }, fixture);
+});
+
+test("bootstrap accepts a valid durable cursor while returning a full snapshot", async (t) => {
+  let bootstrapCalls = 0;
+  const application = createCoordinationApplication({
+    flags: enabledShellFlags,
+    services: {
+      auth: { validateAccessToken: async () => authPrincipal },
+      bootstrap: {
+        getBootstrap: async () => {
+          bootstrapCalls += 1;
+          return fixture;
+        },
+      },
+    },
+  });
+  const server = createCoordinationHttpServer({ application, port: 0 });
+  t.after(() => server.drain());
+  const address = await server.start();
+
+  const response = await fetch(`${address.origin}/api/v1/bootstrap?after=127`, {
+    headers: authHeaders(),
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal((await response.json() as BootstrapResponse).throughEventSequence, fixture.throughEventSequence);
+  assert.equal(bootstrapCalls, 1);
+});
+
+test("bootstrap capability fields are clamped to what this shell advertises", async (t) => {
+  const application = createCoordinationApplication({
+    flags: enabledShellFlags,
+    services: {
+      auth: { validateAccessToken: async () => authPrincipal },
+      bootstrap: {
+        getBootstrap: async () => ({
+          ...fixture,
+          capabilities: {
+            channels: true,
+            attachments: true,
+            search: true,
+            push: true,
+            eventReplay: true,
+            botLifecycle: true,
+          },
+          limits: {
+            ...fixture.limits,
+            jsonBodyBytes: 1,
+            idempotencyKeyMinimum: 1,
+            idempotencyKeyMaximum: 2,
+          },
+        }),
+      },
+    },
+  });
+  const server = createCoordinationHttpServer({ application, port: 0 });
+  t.after(() => server.drain());
+  const address = await server.start();
+
+  const response = await fetch(`${address.origin}/api/v1/bootstrap`, {
+    headers: authHeaders(),
+  });
+  const body = await response.json() as BootstrapResponse;
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.capabilities, fixture.capabilities);
+  assert.deepEqual(body.limits, fixture.limits);
+});
+
+test("known but incomplete read and stream routes fail closed after authentication", async (t) => {
+  const application = createCoordinationApplication({
+    flags: enabledShellFlags,
+    services: {
+      auth: { validateAccessToken: async () => authPrincipal },
+    },
+  });
+  const server = createCoordinationHttpServer({ application, port: 0 });
+  t.after(() => server.drain());
+  const address = await server.start();
+  const channelId = fixture.snapshot.channels[0]!.id;
+
+  for (const path of [
+    "/api/v1/channels",
+    `/api/v1/channels/${channelId}`,
+    "/api/v1/conversations",
+    `/api/v1/channels/${channelId}/messages`,
+    `/api/v1/messages/${exactMessageFixture.message.id}`,
+    "/api/v1/unread",
+    "/api/v1/activity",
+    "/api/v1/events",
+    "/api/v1/communications/events",
+    `/api/v1/channels/${channelId}/execution-options`,
+  ]) {
+    const response = await fetch(`${address.origin}${path}`, { headers: authHeaders() });
+    assert.equal(response.status, 503, path);
+    assert.equal((await response.json() as any).error.code, "capability_unavailable", path);
+  }
+});
+
+test("exact Message read authenticates, returns the canonical envelope, and types absence", async (t) => {
+  const calls: any[] = [];
+  const application = createCoordinationApplication({
+    flags: enabledShellFlags,
+    services: {
+      auth: { validateAccessToken: async ({ requiredScopes }) => {
+        assert.deepEqual(requiredScopes, ["product:read"]);
+        return authPrincipal;
+      } },
+      messages: {
+        listMessages: async () => ({ messages: [], nextBeforeSequence: null }),
+        getMessage: async (input) => {
+          calls.push(input);
+          return input.messageId === exactMessageFixture.message.id
+            ? exactMessageFixture.message
+            : null;
+        },
+      },
+    },
+  });
+  const server = createCoordinationHttpServer({ application, port: 0 });
+  t.after(() => server.drain());
+  const address = await server.start();
+
+  const found = await fetch(
+    `${address.origin}/api/v1/messages/${exactMessageFixture.message.id}`,
+    { headers: authHeaders() },
+  );
+  assert.equal(found.status, 200);
+  assert.deepEqual(await found.json(), { message: exactMessageFixture.message });
+  assert.equal(calls[0]?.context.principalId, "user_owner");
+  assert.equal(calls[0]?.messageId, exactMessageFixture.message.id);
+
+  const missingId = "msg_0198d95f-6c00-7000-8000-0000000000ff";
+  const missing = await fetch(`${address.origin}/api/v1/messages/${missingId}`, {
+    headers: authHeaders(),
+  });
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json() as any).error.code, "unknown_message");
+});
+
+test("message submission keeps legacy null selection and forwards explicit selection exactly", async (t) => {
+  const submissions: any[] = [];
+  const application = createCoordinationApplication({
+    flags: {
+      ...enabledShellFlags,
+      "coordination.resident.jerry.enabled": true,
+    },
+    services: {
+      auth: { validateAccessToken: async () => authPrincipal },
+      authorityEpochs: {
+        current: () => canonicalMessagesAuthority,
+        listCurrent: async () => ({
+          epochs: [canonicalMessagesAuthority],
+          throughEventSequence: canonicalMessagesAuthority.effectiveAtEventSequence!,
+        }),
+      },
+      work: {} as any,
+      leases: {} as any,
+      messageSubmission: {
+        submitMessage: async (input) => {
+          submissions.push(input);
+          return { accepted: true };
+        },
+        selectionOptions: async ({ channelId }) => ({
+          channelId,
+          defaultModelAlias: "openai-default",
+          models: [{ alias: "openai-default", provider: "openai", model: "gpt-5.6-sol" }],
+          reasoningEfforts: ["low", "high"],
+        }),
+      },
+    },
+  });
+  const server = createCoordinationHttpServer({ application, port: 0 });
+  t.after(() => server.drain());
+  const address = await server.start();
+  const channelId = fixture.snapshot.channels[0]!.id;
+
+  const options = await fetch(`${address.origin}/api/v1/channels/${channelId}/execution-options`, {
+    headers: authHeaders(),
+  });
+  assert.equal(options.status, 200);
+  assert.deepEqual(
+    ((await options.json()) as any).models,
+    [{ alias: "openai-default", provider: "openai", model: "gpt-5.6-sol" }],
+  );
+
+  const legacy = await fetch(`${address.origin}/api/v1/channels/${channelId}/messages`, {
+    method: "POST",
+    headers: {
+      ...authHeaders(),
+      "content-type": "application/json",
+      "idempotency-key": "fixture-message-key-legacy",
+    },
+    body: JSON.stringify(submissionRequest()),
+  });
+  assert.equal(legacy.status, 202);
+  assert.equal(submissions[0].body.modelAlias, null);
+  assert.equal(submissions[0].body.reasoningEffort, null);
+
+  const selected = await fetch(`${address.origin}/api/v1/channels/${channelId}/messages`, {
+    method: "POST",
+    headers: {
+      ...authHeaders(),
+      "content-type": "application/json",
+      "idempotency-key": "fixture-message-key-selected",
+    },
+    body: JSON.stringify(submissionRequest({
+      messageId: "msg_0198d95f-6c00-7000-8000-0000000000c2",
+      clientMessageId: "client-message-0002",
+      modelAlias: "openai-default",
+      reasoningEffort: "high",
+    })),
+  });
+  assert.equal(selected.status, 202);
+  assert.equal(submissions[1].body.modelAlias, "openai-default");
+  assert.equal(submissions[1].body.reasoningEffort, "high");
+});
+
+test("malformed execution selections fail before message submission", async (t) => {
+  let submissions = 0;
+  const application = createCoordinationApplication({
+    flags: {
+      ...enabledShellFlags,
+      "coordination.resident.jerry.enabled": true,
+    },
+    services: {
+      auth: { validateAccessToken: async () => authPrincipal },
+      authorityEpochs: {
+        current: () => canonicalMessagesAuthority,
+        listCurrent: async () => ({
+          epochs: [canonicalMessagesAuthority],
+          throughEventSequence: canonicalMessagesAuthority.effectiveAtEventSequence!,
+        }),
+      },
+      work: {} as any,
+      leases: {} as any,
+      messageSubmission: {
+        submitMessage: async () => {
+          submissions += 1;
+          return { accepted: true };
+        },
+      },
+    },
+  });
+  const server = createCoordinationHttpServer({ application, port: 0 });
+  t.after(() => server.drain());
+  const address = await server.start();
+  const channelId = fixture.snapshot.channels[0]!.id;
+
+  for (const [index, selection] of [
+    { modelAlias: "" },
+    { modelAlias: "bad\nmodel" },
+    { reasoningEffort: "extreme" },
+  ].entries()) {
+    const response = await fetch(`${address.origin}/api/v1/channels/${channelId}/messages`, {
+      method: "POST",
+      headers: {
+        ...authHeaders(),
+        "content-type": "application/json",
+        "idempotency-key": `fixture-invalid-selection-${index}`,
+      },
+      body: JSON.stringify(submissionRequest(selection)),
+    });
+    assert.equal(response.status, 400);
+    assert.equal(((await response.json()) as any).error.code, "request_invalid");
+  }
+  assert.equal(submissions, 0);
+});
+
+test("M11-backed message submission fails closed until its port is injected", async (t) => {
+  const application = createCoordinationApplication({
+    flags: enabledShellFlags,
+    services: {
+      auth: { validateAccessToken: async () => authPrincipal },
+    },
+  });
+  const server = createCoordinationHttpServer({ application, port: 0 });
+  t.after(() => server.drain());
+  const address = await server.start();
+  const channelId = fixture.snapshot.channels[0]!.id;
+
+  const response = await fetch(`${address.origin}/api/v1/channels/${channelId}/messages`, {
+    method: "POST",
+    headers: {
+      ...authHeaders(),
+      "content-type": "application/json",
+      "idempotency-key": "fixture-message-key-0001",
+    },
+    body: JSON.stringify({ text: "hello" }),
+  });
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json() as any).error.code, "capability_unavailable");
+  assert.equal(application.capabilities().capabilities.messageSubmission, false);
+});
+
+test("message mutation requires the HTTP idempotency seam before invoking M11", async (t) => {
+  let submissions = 0;
+  const application = createCoordinationApplication({
+    flags: enabledShellFlags,
+    services: {
+      auth: { validateAccessToken: async () => authPrincipal },
+      messageSubmission: {
+        submitMessage: async () => {
+          submissions += 1;
+          return { accepted: true };
+        },
+      },
+    },
+  });
+  const server = createCoordinationHttpServer({ application, port: 0 });
+  t.after(() => server.drain());
+  const address = await server.start();
+  const channelId = fixture.snapshot.channels[0]!.id;
+
+  const response = await fetch(`${address.origin}/api/v1/channels/${channelId}/messages`, {
+    method: "POST",
+    headers: {
+      ...authHeaders(),
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ text: "hello" }),
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json() as any).error.code, "idempotency_key_required");
+  assert.equal(submissions, 0);
+});
+
+test("an injected M11 placeholder cannot activate message submission", async (t) => {
+  let submissions = 0;
+  const application = createCoordinationApplication({
+    flags: enabledShellFlags,
+    services: {
+      auth: { validateAccessToken: async () => authPrincipal },
+      messageSubmission: {
+        submitMessage: async () => {
+          submissions += 1;
+          return { accepted: true };
+        },
+      },
+    },
+  });
+  const server = createCoordinationHttpServer({ application, port: 0 });
+  t.after(() => server.drain());
+  const address = await server.start();
+  const channelId = fixture.snapshot.channels[0]!.id;
+
+  const response = await fetch(`${address.origin}/api/v1/channels/${channelId}/messages`, {
+    method: "POST",
+    headers: {
+      ...authHeaders(),
+      "content-type": "application/json",
+      "idempotency-key": "fixture-message-key-0001",
+    },
+    body: JSON.stringify({
+      messageId: "msg_0198d95f-6c00-7000-8000-0000000000c1",
+      clientMessageId: "client-message-0001",
+      text: "hello",
+      attachmentIds: [],
+      mentions: [],
+      replyToMessageId: null,
+    }),
+  });
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json() as any).error.code, "capability_unavailable");
+  assert.equal(submissions, 0);
+});
+
+test("oversized JSON is reported as payload too large", async (t) => {
+  let markReadCalls = 0;
+  const application = createCoordinationApplication({
+    flags: enabledShellFlags,
+    limits: {
+      jsonBodyBytes: 32,
+      idempotencyKeyMinimum: 16,
+      idempotencyKeyMaximum: 128,
+    },
+    services: {
+      auth: { validateAccessToken: async () => authPrincipal },
+      unread: {
+        markRead: async () => {
+          markReadCalls += 1;
+          throw new Error("should not run");
+        },
+      },
+    },
+  });
+  const server = createCoordinationHttpServer({ application, port: 0 });
+  t.after(() => server.drain());
+  const address = await server.start();
+  const channelId = fixture.snapshot.channels[0]!.id;
+
+  const response = await fetch(`${address.origin}/api/v1/channels/${channelId}/read`, {
+    method: "POST",
+    headers: {
+      ...authHeaders(),
+      "content-type": "application/json",
+      "idempotency-key": "fixture-read-key-000001",
+    },
+    body: JSON.stringify({ throughSequence: 2, padding: "x".repeat(64) }),
+  });
+
+  assert.equal(response.status, 413);
+  assert.equal((await response.json() as any).error.code, "payload_too_large");
+  assert.equal(markReadCalls, 0);
+});
+
+test("read cursor input is validated and the mutation receipt becomes its event boundary", async (t) => {
+  let markReadCalls = 0;
+  let markReadRequestId: string | undefined;
+  let markReadCorrelationId: string | undefined;
+  const application = createCoordinationApplication({
+    flags: enabledShellFlags,
+    services: {
+      auth: { validateAccessToken: async () => authPrincipal },
+      unread: {
+        markRead: async ({ context }) => {
+          markReadCalls += 1;
+          markReadRequestId = context.requestId;
+          markReadCorrelationId = context.correlationId;
+          return {
+            outcome: "committed" as const,
+            unread: {
+              principalId: "user_owner",
+              channelId: fixture.snapshot.channels[0]!.id,
+              conversationId: fixture.snapshot.channels[0]!.conversationId,
+              readThroughSequence: 2,
+              unreadCount: 0,
+              latestSequence: 2,
+              version: 4,
+              updatedAt: fixture.serverTime,
+            },
+            receipt: {
+              eventId: "evt_0198d95f-6c00-7000-8000-0000000000b1",
+              eventSequence: 128,
+              aggregateVersion: 4,
+            },
+          };
+        },
+      },
+    },
+  });
+  const server = createCoordinationHttpServer({ application, port: 0 });
+  t.after(() => server.drain());
+  const address = await server.start();
+  const channelId = fixture.snapshot.channels[0]!.id;
+  const headers = {
+    ...authHeaders(),
+    "content-type": "application/json",
+    "idempotency-key": "fixture-read-key-000001",
+  };
+
+  const invalid = await fetch(`${address.origin}/api/v1/channels/${channelId}/read`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ throughSequence: "2" }),
+  });
+  assert.equal(invalid.status, 400);
+  assert.equal(markReadCalls, 0);
+
+  const valid = await fetch(`${address.origin}/api/v1/channels/${channelId}/read`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ throughSequence: 2 }),
+  });
+  assert.equal(valid.status, 200);
+  const validBody = await valid.json() as Record<string, unknown>;
+  assert.match(validBody.requestId as string, /^req_/);
+  assert.notEqual(validBody.requestId, fixture.requestId);
+  assert.equal(valid.headers.get("x-request-id"), validBody.requestId);
+  assert.deepEqual({ ...validBody, requestId: fixture.requestId }, {
+    requestId: fixture.requestId,
+    correlationId: fixture.correlationId,
+    principalId: "user_owner",
+    channelId,
+    conversationId: fixture.snapshot.channels[0]!.conversationId,
+    readThroughSequence: 2,
+    unreadCount: 0,
+    latestSequence: 2,
+    version: 4,
+    updatedAt: fixture.serverTime,
+    throughEventSequence: 128,
+  });
+  assert.equal(markReadCalls, 1);
+  assert.equal(markReadRequestId, validBody.requestId);
+  assert.equal(markReadCorrelationId, fixture.correlationId);
+});
+
+test("search requires a nonempty query before invoking its domain service", async (t) => {
+  let searchCalls = 0;
+  const application = createCoordinationApplication({
+    flags: {
+      ...enabledShellFlags,
+      "coordination.search.canonical": true,
+    },
+    services: {
+      auth: { validateAccessToken: async () => authPrincipal },
+      search: {
+        search: async () => {
+          searchCalls += 1;
+          throw new Error("should not run");
+        },
+      },
+    },
+  });
+  const server = createCoordinationHttpServer({ application, port: 0 });
+  t.after(() => server.drain());
+  const address = await server.start();
+
+  for (const suffix of ["", "?q="]) {
+    const response = await fetch(`${address.origin}/api/v1/search${suffix}`, {
+      headers: authHeaders(),
+    });
+    assert.equal(response.status, 400);
+  }
+  assert.equal(searchCalls, 0);
+});
+
+test("an injected M11 placeholder cannot activate Work mutation", async (t) => {
+  let cancelCalls = 0;
+  const work = {
+    getWork: async () => ({}),
+    cancelWork() {
+      cancelCalls += 1;
+      return Promise.resolve({ status: "cancelling" });
+    },
+    retryWork: async () => ({}),
+  };
+  const application = createCoordinationApplication({
+    flags: enabledShellFlags,
+    services: {
+      auth: { validateAccessToken: async () => authPrincipal },
+      work,
+    },
+  });
+  const server = createCoordinationHttpServer({ application, port: 0 });
+  t.after(() => server.drain());
+  const address = await server.start();
+
+  const response = await fetch(
+    `${address.origin}/api/v1/work/wrk_0198d95f-6c00-7000-8000-000000000082/cancel`,
+    {
+      method: "POST",
+      headers: {
+        ...authHeaders(),
+        "idempotency-key": "fixture-work-cancel-0001",
+      },
+    },
+  );
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json() as any).error.code, "capability_unavailable");
+  assert.equal(cancelCalls, 0);
+});
+
+test("Work product routes expose compact DTOs and invoke authenticated idempotent controls", async (t) => {
+  const calls: string[] = [];
+  const compact = { id: "wrk_0198d95f-6c00-7000-8000-000000000082", channelId: "chn_0198d95f-6c00-7000-8000-000000000001", conversationId: "cnv_0198d95f-6c00-7000-8000-000000000001", originMessageId: "msg_0198d95f-6c00-7000-8000-000000000001", accountableResident: { principalId: "bot_0198d95f-6c00-7000-8000-000000000001", residentBinding: "jerry", displayName: "Jerry" }, kind: "resident_work_thread", title: "Check the archive", summary: "Check the archive", state: "running" as const, cancelAvailable: true, retryAvailable: false, createdAt: fixture.serverTime, updatedAt: fixture.serverTime, terminalAt: null, retryOfWorkId: null, retriedByWorkIds: [], finalResultMessageId: null };
+  const application = createCoordinationApplication({ flags: enabledShellFlags, services: {
+    auth: { validateAccessToken: async () => authPrincipal },
+    workControl: {
+      list: ({ context, conversationId, limit }) => { calls.push(`list:${context.principalId}:${conversationId}:${limit}`); return { works: [compact], nextCursor: null }; },
+      get: ({ context }) => { calls.push(`get:${context.principalId}`); return compact; },
+      cancel: ({ idempotencyKey }) => { calls.push(`cancel:${idempotencyKey}`); return { outcome: "cancellation_requested", replayed: false, work: { ...compact, state: "stopping", cancelAvailable: false } }; },
+      retry: ({ idempotencyKey }) => { calls.push(`retry:${idempotencyKey}`); return { outcome: "retried", replayed: false, work: { ...compact, id: "wrk_0198d95f-6c00-7000-8000-000000000083", state: "queued", retryOfWorkId: compact.id } }; },
+    },
+  } });
+  const server = createCoordinationHttpServer({ application, port: 0 }); t.after(() => server.drain());
+  const address = await server.start();
+  const list = await fetch(`${address.origin}/api/v1/work?conversationId=${compact.conversationId}&limit=12`, { headers: authHeaders() });
+  assert.equal(list.status, 200); assert.deepEqual((await list.json() as any).works, [compact]);
+  const detail = await fetch(`${address.origin}/api/v1/work/${compact.id}`, { headers: authHeaders() });
+  assert.equal(detail.status, 200); assert.deepEqual((await detail.json() as any).work, compact);
+  const cancel = await fetch(`${address.origin}/api/v1/work/${compact.id}/cancel`, { method: "POST", headers: { ...authHeaders(), "idempotency-key": "product-cancel-route-0001" } });
+  assert.equal(cancel.status, 202); assert.equal((await cancel.json() as any).work.state, "stopping");
+  const retry = await fetch(`${address.origin}/api/v1/work/${compact.id}/retry`, { method: "POST", headers: { ...authHeaders(), "idempotency-key": "product-retry-route-0001" } });
+  assert.equal(retry.status, 201); assert.equal((await retry.json() as any).work.retryOfWorkId, compact.id);
+  assert.deepEqual(calls, [`list:user_owner:${compact.conversationId}:12`, "get:user_owner", "cancel:product-cancel-route-0001", "retry:product-retry-route-0001"]);
+});
+
+test("HTTP drain is single-flight and waits for an in-flight protected route", async () => {
+  let releaseBootstrap!: () => void;
+  let enteredBootstrap!: () => void;
+  const entered = new Promise<void>((resolve) => { enteredBootstrap = resolve; });
+  const blocked = new Promise<void>((resolve) => { releaseBootstrap = resolve; });
+  const application = createCoordinationApplication({
+    flags: enabledShellFlags,
+    services: {
+      auth: { validateAccessToken: async () => authPrincipal },
+      bootstrap: {
+        getBootstrap: async () => {
+          enteredBootstrap();
+          await blocked;
+          return fixture;
+        },
+      },
+    },
+  });
+  const lifecycle = createCoordinationLifecycle();
+  const server = createCoordinationHttpServer({
+    application,
+    lifecycle,
+    port: 0,
+  });
+  const address = await server.start();
+  const responsePromise = fetch(`${address.origin}/api/v1/bootstrap`, {
+    headers: authHeaders(),
+  });
+  await entered;
+
+  const firstDrain = server.drain();
+  const repeatedDrain = server.drain();
+  assert.equal(firstDrain, repeatedDrain);
+  assert.equal(server.state(), "draining");
+  assert.equal(lifecycle.activeRequests(), 1);
+
+  releaseBootstrap();
+  const response = await responsePromise;
+  assert.equal(response.status, 200);
+  await response.json();
+  await firstDrain;
+
+  assert.equal(server.state(), "stopped");
+  assert.equal(lifecycle.state(), "stopped");
+  assert.equal(lifecycle.activeRequests(), 0);
+});

@@ -1,0 +1,1627 @@
+/**
+ * AI Handler - Function Calling with Streaming Events
+ * Production-ready, no shortcuts
+ */
+
+const { toolDefinitions, openaiToolDefinitions, anthropicTools, ToolExecutor } = require('./tools');
+const { getAnthropicApiKey, prepareSystemPrompt } = require('./services/anthropic-oauth');
+
+// ============================================================================
+// SMART TRUNCATION - Keep beginning + end for better context preservation
+// ============================================================================
+
+function smartTruncate(text, maxLength = 75000) {
+  if (!text || text.length <= maxLength) return text;
+
+  // Reserve space for the middle indicator
+  const indicator = '\n\n[... middle section truncated for token limit ...]\n\n';
+  const availableLength = maxLength - indicator.length;
+
+  // Split: 60% beginning (usually has imports, declarations, key context)
+  // 40% end (usually has recent/relevant code, conclusions)
+  const beginLength = Math.floor(availableLength * 0.6);
+  const endLength = availableLength - beginLength;
+
+  const beginning = text.substring(0, beginLength);
+  const end = text.substring(text.length - endLength);
+
+  return beginning + indicator + end;
+}
+
+// ============================================================================
+// MESSAGE TRIMMING - Prevent token explosion
+// ============================================================================
+
+function trimMessages(messages, maxTokenEstimate = 200000) {
+  // Rough token estimation: ~4 chars per token
+  const estimateTokens = (text) => Math.ceil((text?.length || 0) / 4);
+  
+  // Calculate current size
+  let currentTokens = messages.reduce((sum, msg) => {
+    const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+    return sum + estimateTokens(content);
+  }, 0);
+  
+  if (currentTokens <= maxTokenEstimate) {
+    return messages;
+  }
+  
+  console.log(`[TOKEN TRIM] Before: ${currentTokens} tokens, Target: ${maxTokenEstimate}`);
+  
+  // Strategy: Keep system messages, recent user/assistant, truncate tool results
+  const trimmed = [];
+  const keepRecent = 6; // Keep last 6 conversation turns
+  
+  // 1. Keep system messages (but truncate if huge)
+  for (const msg of messages) {
+    if (msg.role === 'system') {
+      const content = msg.content;
+      if (estimateTokens(content) > 20000) {
+        // Truncate large system prompts
+        trimmed.push({ ...msg, content: content.substring(0, 80000) + '\n\n[...truncated for token limit...]' });
+      } else {
+        trimmed.push(msg);
+      }
+    }
+  }
+  
+  // 2. Get recent conversation (last N user/assistant/tool groups)
+  const conversationMsgs = messages.filter(m => m.role !== 'system');
+  const recentMsgs = conversationMsgs.slice(-keepRecent * 3); // Keep last few turns
+  
+  // 3. Truncate large tool results
+  for (let i = 0; i < recentMsgs.length; i++) {
+    const msg = recentMsgs[i];
+    // CRITICAL: Never truncate the very latest tool result, as the AI needs it for the next turn
+    const isLatest = i >= recentMsgs.length - 2;
+
+    if (msg.role === 'tool' && !isLatest) {
+      const content = msg.content;
+      if (estimateTokens(content) > 5000) {
+        // Truncate large tool results (e.g., file contents)
+        try {
+          const parsed = JSON.parse(content);
+          // Drop embedded image base64 if present
+          if (parsed && typeof parsed === 'object' && typeof parsed.data === 'string' && parsed.data.length > 0) {
+            parsed.data = `[...omitted base64 (${parsed.data.length} chars)...]`;
+          }
+          if (parsed.content && parsed.content.length > 75000) {
+            parsed.content = smartTruncate(parsed.content, 75000);
+          }
+          trimmed.push({ ...msg, content: JSON.stringify(parsed) });
+        } catch (e) {
+          // If not JSON, use smart truncation (keep beginning + end)
+          trimmed.push({ ...msg, content: smartTruncate(content, 75000) });
+        }
+      } else {
+        trimmed.push(msg);
+      }
+    } else {
+      trimmed.push(msg);
+    }
+  }
+  
+  const finalTokens = trimmed.reduce((sum, msg) => {
+    const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+    return sum + estimateTokens(content);
+  }, 0);
+  
+  console.log(`[TOKEN TRIM] After: ${finalTokens} tokens (removed ${currentTokens - finalTokens} tokens)`);
+  
+  return trimmed;
+}
+
+// ============================================================================
+// TOOL RESULT SANITIZATION - avoid storing huge payloads in message history
+// ============================================================================
+
+function sanitizeToolResult(result) {
+  if (!result || typeof result !== 'object') {
+    // Handle primitive values safely
+    if (result === undefined) return null;
+    return result;
+  }
+
+  // Deep clean to ensure JSON serializability
+  const deepClean = (obj, seen = new WeakSet()) => {
+    // Handle primitives
+    if (obj === null || typeof obj !== 'object') {
+      if (obj === undefined) return null;
+      if (typeof obj === 'function') return '[Function]';
+      if (typeof obj === 'symbol') return obj.toString();
+      return obj;
+    }
+
+    // Detect circular references
+    if (seen.has(obj)) {
+      return '[Circular Reference]';
+    }
+    seen.add(obj);
+
+    // Handle arrays
+    if (Array.isArray(obj)) {
+      const cleanArr = obj.slice(0, 500).map(item => deepClean(item, seen));
+      if (obj.length > 500) {
+        return {
+          _truncated_array: true,
+          items: cleanArr,
+          original_length: obj.length
+        };
+      }
+      return cleanArr;
+    }
+
+    // Handle special object types
+    if (obj instanceof Error) {
+      return {
+        _error: true,
+        message: obj.message,
+        name: obj.name,
+        stack: obj.stack?.substring(0, 500)
+      };
+    }
+
+    if (obj instanceof Date) {
+      return obj.toISOString();
+    }
+
+    if (obj instanceof RegExp) {
+      return obj.toString();
+    }
+
+    // Handle plain objects
+    const clean = {};
+
+    // Special-case images: never store base64 in conversation history
+    if (obj.type === 'image' && typeof obj.data === 'string') {
+      clean.type = 'image';
+      clean.mime_type = obj.mime_type;
+      clean.data_omitted = true;
+      clean.data_length_chars = obj.data.length;
+      return clean;
+    }
+
+    // Clean all properties
+    for (const key of Object.keys(obj)) {
+      const val = obj[key];
+
+      // Skip functions and symbols
+      if (typeof val === 'function' || typeof val === 'symbol') {
+        continue;
+      }
+
+      // Handle large strings
+      if (typeof val === 'string' && val.length > 75000) {
+        clean[key] = smartTruncate(val, 75000);
+        clean[`${key}_truncated`] = true;
+      } else {
+        // Recursively clean nested objects
+        clean[key] = deepClean(val, seen);
+      }
+    }
+
+    return clean;
+  };
+
+  return deepClean(result);
+}
+
+function pruneEphemeralMessages(messages, currentIteration) {
+  // Keep only the most recent iteration's image context message
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m._cosmo_ephemeral === 'image_context') {
+      if (typeof m._iteration === 'number' && m._iteration < currentIteration - 1) {
+        messages.splice(i, 1);
+      }
+    }
+  }
+}
+
+// ============================================================================
+// OPENAI RESPONSES API - helpers
+// ============================================================================
+
+function buildOpenAIResponsesToolsFromChatTools(chatToolDefinitions) {
+  // Our existing tool definitions are Chat Completions format:
+  // { type:'function', function:{ name, description, parameters } }
+  // Responses API expects:
+  // { type:'function', name, description, parameters, strict }
+  return (chatToolDefinitions || [])
+    .filter(t => t && t.type === 'function' && t.function && t.function.name)
+    .map(t => ({
+      type: 'function',
+      name: t.function.name,
+      description: t.function.description || null,
+      parameters: t.function.parameters || null,
+      strict: true
+    }));
+}
+
+function buildOpenAIResponsesInstructionsFromMessages(messageList) {
+  const systemMsgs = (messageList || []).filter(m => m?.role === 'system' && typeof m.content === 'string');
+  if (!systemMsgs.length) return null;
+  return systemMsgs.map(m => m.content).join('\n\n');
+}
+
+function buildOpenAIResponsesInputFromMessages(messageList) {
+  const input = [];
+  for (const msg of messageList || []) {
+    if (!msg || msg.role === 'system') continue;
+
+    if (msg.role === 'user') {
+      // If this is our legacy image message shape (chat.completions style), convert it.
+      if (Array.isArray(msg.content)) {
+        const contentList = [];
+        for (const part of msg.content) {
+          if (part?.type === 'text' && typeof part.text === 'string') {
+            contentList.push({ type: 'input_text', text: part.text });
+          } else if (part?.type === 'image_url' && part.image_url?.url) {
+            contentList.push({ type: 'input_image', detail: 'auto', image_url: part.image_url.url });
+          }
+        }
+        input.push({ role: 'user', content: contentList });
+      } else {
+        input.push({ role: 'user', content: msg.content || '' });
+      }
+      continue;
+    }
+
+    if (msg.role === 'assistant') {
+      // If we stored tool calls in chat.completions format, translate them to Responses items
+      if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
+        if (msg.content) {
+          input.push({ role: 'assistant', content: msg.content });
+        }
+        for (const tc of msg.tool_calls) {
+          if (!tc?.id || !tc?.function?.name) continue;
+          input.push({
+            type: 'function_call',
+            call_id: tc.id,
+            name: tc.function.name,
+            arguments: tc.function.arguments || '{}'
+          });
+        }
+      } else {
+        input.push({ role: 'assistant', content: msg.content || '' });
+      }
+      continue;
+    }
+
+    if (msg.role === 'tool') {
+      // Tool outputs become function_call_output items
+      if (msg.tool_call_id) {
+        input.push({
+          type: 'function_call_output',
+          call_id: msg.tool_call_id,
+          output: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+        });
+      }
+      continue;
+    }
+  }
+  return input;
+}
+
+// ============================================================================
+// SYSTEM PROMPT (Complete, from COSMO)
+// ============================================================================
+
+function buildSystemPrompt(context) {
+  const { fileName, language, currentFolder, selectedText, documentContent, fileTreeContext, message, runContext } = context;
+  
+  const isEditRequest = message?.toLowerCase().match(/improve|fix|rewrite|change|update|edit|modify|enhance/);
+  const hasSelection = !!selectedText;
+
+  // Domain context block with actual content awareness
+  let domainBlock = '';
+  if (runContext?.domain) {
+    domainBlock = `
+═══════════════════════════════════════════════════════════════════════════════
+## 🧠 RESEARCH CONTEXT
+
+**Run**: ${runContext.runId || 'runtime'}
+**Domain**: ${runContext.domain}
+${runContext.context ? `**Focus**: ${runContext.context}` : ''}
+${runContext.originalQuestion ? `**Research Question**: ${runContext.originalQuestion}` : ''}
+
+You are helping a human work with COSMO's research outputs on this domain.
+`;
+    
+    // Add what actually exists
+    if (runContext.structure) {
+      domainBlock += `
+### COSMO Has Produced:
+`;
+      if (runContext.structure.outputsCount) {
+        domainBlock += `- **${runContext.structure.outputsCount} output folders** in outputs/`;
+        if (runContext.structure.outputs?.length) {
+          domainBlock += ` (${runContext.structure.outputs.slice(0, 5).join(', ')}${runContext.structure.outputsCount > 5 ? '...' : ''})`;
+        }
+        domainBlock += '\n';
+      }
+      if (runContext.structure.agentsCount) {
+        domainBlock += `- **${runContext.structure.agentsCount} agent folders** in agents/`;
+        if (runContext.structure.agents?.length) {
+          domainBlock += ` (${runContext.structure.agents.slice(0, 5).join(', ')}${runContext.structure.agentsCount > 5 ? '...' : ''})`;
+        }
+        domainBlock += '\n';
+      }
+    }
+    
+    if (runContext.recentProgress) {
+      domainBlock += `
+### Recent Progress:
+${runContext.recentProgress}
+`;
+    }
+    
+    domainBlock += `═══════════════════════════════════════════════════════════════════════════════
+`;
+  }
+
+  return `You are an AI assistant embedded in COSMO's Documentation IDE.
+
+## ⚠️ IMPORTANT: You help the HUMAN user - do NOT act autonomously
+
+- **WAIT** for the human to ask before taking action
+- **DO NOT** modify files unless explicitly requested
+- **ANSWER** questions and provide information
+- **EXPLORE** when asked to help understand something
+- **SUGGEST** approaches - let the human decide
+
+You are here to HELP, not to take over.
+${domainBlock}
+## Current Context
+
+**File**: ${fileName || 'untitled'}
+**Language**: ${language || 'text'}
+**Folder**: ${currentFolder || process.cwd()}
+${selectedText ? `**Selection**: ${selectedText.length} chars selected` : ''}
+${documentContent ? `**Document**: ${documentContent.length} chars loaded` : ''}
+
+## Project Structure
+${fileTreeContext || 'Use list_directory to explore'}
+
+## Your Tools
+
+### read_file
+Read any file. Use before editing or analyzing.
+- **Office files (.docx, .xlsx, .msg)**: Extracts text, formulas, comments
+- Shows formula syntax: \`Value [=A1+B1]\` means cell shows Value but formula is =A1+B1
+- Comments and annotations noted when present
+
+### read_image
+Read and view image files (png, jpg, gif, webp). Use to analyze screenshots, diagrams, mockups, or any visual assets.
+
+### create_image
+Generate high-quality images using GPT-Image-1.5. ALWAYS write detailed, specific prompts for best results.
+- Saves as PNG file
+- Default: 1536x1024 (landscape HD) at high quality
+- Sizes: 1536x1024 (landscape), 1024x1536 (portrait), 1024x1024 (square)
+- Quality: 'high' (default) or 'standard' (faster)
+
+PROMPT FORMULA - Always include:
+1. Subject & main focus
+2. Style (photorealistic, digital art, illustration, etc.)
+3. Composition/angle/perspective
+4. Lighting & atmosphere
+5. Colors & mood
+6. Quality terms (high detail, professional, 4K, cinematic)
+
+Example: "A cinematic photograph of a modern glass office building at sunset, low angle perspective, golden hour lighting reflecting off windows, dramatic clouds, urban skyline background, professional architectural photography, high detail, vibrant colors"
+
+### edit_image
+Edit existing images using GPT-Image-1.5. Perfect for iterative refinements, style changes, combining images, or targeted edits.
+- Takes one or more input images as reference
+- High input fidelity preserves faces, logos, details
+- Optional mask for precise editing (inpainting)
+- Can combine multiple images into one
+- Examples: "Add sunset sky", "Change car color to red", "Remove background", "Combine these products into a gift basket"
+
+### create_docx
+Create or edit Word documents (.docx). Build professional documents with:
+- Headings (heading1, heading2, heading3)
+- Paragraphs
+- Tables with headers and data rows
+- Formatted content
+
+Example: Read existing .docx, make changes, save as new file.
+
+### create_xlsx
+Create or edit Excel spreadsheets (.xlsx). Build spreadsheets with:
+- Multiple sheets
+- Data tables
+- Formulas (use format: "=A1+B1")
+- Headers and structured data
+
+Example: Read data from .xlsx, process it, create new .xlsx with results.
+
+### list_directory
+List directory contents. Understand project structure.
+
+### codebase_search
+**Semantic search by MEANING** (not exact text). Superpower!
+- "Where is authentication handled?"
+- "How does error handling work?"
+- "Find payment processing logic"
+
+Use when unfamiliar with code. Don't use for exact symbols (use grep_search).
+
+### grep_search
+Exact text/pattern search.
+- "where is X defined?"
+- "how is Y used?"
+- Find all occurrences
+
+## File Editing Tools
+
+**PREFER SURGICAL EDITS for targeted changes. Only use edit_file for complete file rewrites.**
+
+### edit_file_range ⭐ PREFERRED
+Edit specific line ranges without rewriting entire files.
+
+Usage:
+- Read file first to see line numbers
+- Specify exact start_line and end_line (1-based, inclusive)
+- Provide new_content for just that range
+- Brief instructions explaining the change
+
+Example: Change error handling in lines 45-52
+
+### search_replace ⭐ PREFERRED
+Find exact text and replace it precisely.
+
+Usage:
+- Include ENOUGH surrounding context to be unique
+- Old string must match EXACTLY (including whitespace)
+- If multiple matches, add more context
+- Brief instructions
+
+Example: Replace console.log with logger.info in handleRequest function
+
+### insert_lines
+Insert new lines at a specific position.
+
+Usage:
+- line_number: Where to insert (1 = start, file_length+1 = end)
+- content: What to insert
+- Brief instructions
+
+### delete_lines
+Delete specific line range.
+
+Usage:
+- start_line, end_line: Range to delete (inclusive)
+- Brief instructions
+
+### edit_file (Legacy - Use only for complete rewrites)
+**Only use when restructuring entire files.**
+
+For edit_file, provide:
+- instructions: Brief description of changes
+- code_edit: FULL file content with changes applied
+
+The user will review in a diff viewer before accepting.
+
+### create_file
+Create new files. Use RELATIVE paths from current folder.
+
+### run_terminal
+Execute commands (npm, git, build, test, etc.)
+
+### delete_file
+Delete files/directories. Use carefully.
+
+## Parallel Tool Execution
+
+**Use multiple tools at once when they don't depend on each other.**
+
+✅ GOOD: Call read_file for 3 files simultaneously
+❌ BAD: Call them one at a time
+
+## Behavioral Rules
+
+### Rule 1: Explore Before Responding
+
+When asked about structure/dependencies/"how does X work":
+- DON'T: Guess based on training data
+- DO: Use tools to explore first
+
+Example:
+\`\`\`
+User: "How is this project structured?"
+
+Good:
+1. read_file(README.md)
+2. read_file(package.json)
+3. list_directory(.)
+4. list_directory(src/)
+
+Then explain what you FOUND.
+\`\`\`
+
+### Rule 2: Discover Project Type
+
+Check for:
+- package.json → Node.js/TypeScript
+- requirements.txt → Python
+- go.mod → Go
+- Cargo.toml → Rust
+
+### Rule 3: Search Before Creating
+
+Before creating utilities:
+1. list_directory(src/)
+2. list_directory(src/utils/)
+3. read_file(existing files to match patterns)
+
+Then create following conventions.
+
+### Rule 4: Use Surgical Edits
+
+For small, targeted changes:
+1. Use edit_file_range for line-specific changes
+2. Use search_replace for find/replace operations
+3. Read file first to understand context
+4. ONLY use edit_file for complete file rewrites
+
+Example (GOOD):
+\`\`\`
+User: "Add error handling to the fetch call"
+1. read_file(api.js) // See the fetch call
+2. search_replace(
+   old_string: "const response = await fetch(url);\\nreturn response.json();",
+   new_string: "const response = await fetch(url);\\nif (!response.ok) throw new Error('Fetch failed');\\nreturn response.json();"
+)
+\`\`\`
+
+Example (BAD):
+\`\`\`
+User: "Add error handling to the fetch call"
+1. read_file(api.js) // 300 lines
+2. edit_file(api.js, <entire 300 lines with small change>)
+\`\`\`
+
+### Rule 5: Show Your Work
+
+Always mention what you explored:
+"I explored the project:
+- README.md describes it as...
+- package.json shows: React 18.2.0
+- src/ contains: components/, hooks/, utils/"
+
+## Operating Mode
+
+${isEditRequest && hasSelection ? `
+### EDIT MODE
+User selected text for improvement.
+
+Before editing:
+- Read surrounding context if needed
+- Understand what code does
+- Plan minimal, surgical changes
+
+**PREFERRED: Use surgical edit tools (search_replace or edit_file_range)**
+Only use edit_file if rewriting significant portions.
+` : message?.toLowerCase().includes('create') && message?.toLowerCase().includes('file') ? `
+### FILE CREATION MODE
+
+Before creating:
+1. Explore existing structure (list_directory)
+2. Check existing patterns (read_file similar files)
+3. Match project style
+
+Current folder: ${currentFolder || process.cwd()}
+Use RELATIVE paths (NOT /Users/...)
+` : `
+### GENERAL MODE
+
+Explore first using tools, then respond with evidence.
+
+For implementation:
+1. Explore existing structure
+2. Match conventions
+3. Generate complete, runnable code
+4. Use surgical edits for targeted changes
+`}
+
+## Quality Standards
+
+**All code must:**
+- Match project's existing style (discover via exploration)
+- Include necessary imports (check existing files)
+- Be runnable immediately
+- Handle errors gracefully
+
+**For web apps:**
+- Beautiful, modern UI
+- Best UX practices
+- Responsive design
+- Accessible (ARIA, semantic HTML)
+
+## Key Insight
+
+**You have tools to explore ANY codebase. USE THEM.**
+
+Don't rely on "how projects usually work."
+Explore THIS project to see how IT actually works.
+
+This makes you a true IDE assistant, not just a chatbot.
+
+## Style
+
+- **Helpful First**: Answer questions, provide information, wait for direction
+- **Evidence-Based**: Show what you find, let the human decide
+- **Thorough**: When asked, explore comprehensively using tools
+- **Professional**: IDE assistant demeanor
+- **Patient**: Don't rush to change things - understand what the human wants
+- **Transparent**: Explain your findings, propose options
+
+## COSMO Directory Structure
+
+When exploring COSMO research outputs, know the dual structure:
+- **agents/** → Agent discoveries, insights, findings
+- **outputs/** → Actual deliverables (documents, code, reports)
+
+## Remember
+
+You are here to HELP the human work with COSMO's research. Do not take autonomous action.
+When asked to explore, do so thoroughly. When asked to edit, do so precisely.
+But always wait for the human to direct you.`;
+}
+
+// ============================================================================
+// BRAIN CONTEXT BUILDER - For auto-injection when brain toggle is enabled
+// ============================================================================
+
+function buildBrainContextSection(nodes, loader) {
+  const sections = [];
+
+  sections.push('\n\n## Brain Knowledge Context\n');
+  sections.push(`*${nodes.length} relevant findings from COSMO brain (${loader.nodes.length} total nodes)*\n`);
+
+  // NO artificial limit - include ALL nodes that passed the relevance threshold
+  // Consistent content length for all nodes - relevance is already filtered by threshold
+  const MAX_NODE_CONTENT = 5000;  // All relevant nodes get full content
+
+  nodes.forEach((node, i) => {
+    const score = Math.round(node.score * 100) / 100;
+    const tags = Array.isArray(node.tag) ? node.tag.join(', ') : node.tag;
+
+    // All nodes above threshold get the same generous content limit
+    const content = (node.concept || '').substring(0, MAX_NODE_CONTENT);
+
+    sections.push(`\n### Finding ${i + 1} (score: ${score}, tags: ${tags})`);
+    sections.push(`**Node ID:** ${node.id}`);
+    if (node.connected) sections.push(`*(connected to top results)*`);
+    sections.push(`\n${content}`);
+
+    if (node.concept && node.concept.length > MAX_NODE_CONTENT) {
+      sections.push(`\n*[...${node.concept.length - MAX_NODE_CONTENT} more chars available via brain_node tool]*`);
+    }
+  });
+
+  sections.push('\n\n---\n');
+  sections.push('*Use brain_search, brain_node, brain_thoughts tools for deeper exploration.*\n');
+
+  return sections.join('\n');
+}
+
+// ============================================================================
+// HELPER: Format tool result content (handle images)
+// ============================================================================
+
+function formatToolResultContent(result, isClaudeFormat = false) {
+  // Check if result contains an image
+  if (result.type === 'image' && result.data && result.mime_type) {
+    if (isClaudeFormat) {
+      // Claude format: array with text description + image
+      return [
+        {
+          type: 'text',
+          text: `Image loaded from ${result.path} (${result.format}, ${Math.round(result.size / 1024)}KB)`
+        },
+        {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: result.mime_type,
+            data: result.data
+          }
+        }
+      ];
+    } else {
+      // OpenAI/Grok format: JSON string with metadata (image will be in next iteration)
+      // Store image data in a special field for later use
+      return JSON.stringify({
+        ...result,
+        _image_data_note: 'Image data available but not displayed in tool result. Ask for description.'
+      });
+    }
+  }
+  
+  // Regular non-image result
+  return JSON.stringify(result);
+}
+
+// ============================================================================
+// FUNCTION CALLING HANDLER
+// ============================================================================
+
+async function handleFunctionCalling(openai, anthropic, xai, indexer, params, eventEmitter) {
+  const {
+    message, currentFolder, model = 'gpt-5.2', context = [],
+    documentContent, selectedText, fileName, language,
+    fileTreeContext, conversationHistory, allowedRoot,
+    brainEnabled = false
+  } = params;
+
+  // Get OAuth credentials info for system prompt preparation
+  let isOAuthMode = false;
+  try {
+    const credentials = await getAnthropicApiKey();
+    isOAuthMode = credentials.isOAuth || false;
+  } catch (e) {
+    console.log('[AI] Could not determine OAuth mode:', e.message);
+  }
+
+  // DEBUG: Log brain status
+  console.log(`[AI] brainEnabled param: ${brainEnabled} (type: ${typeof brainEnabled})`);
+  eventEmitter?.({ type: 'debug', message: `brainEnabled=${brainEnabled}` });
+  
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SITUATIONAL AWARENESS: Load run context for domain-aware assistance
+  // ═══════════════════════════════════════════════════════════════════════════
+  let runContext = null;
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    
+    // Find the run root (where run-metadata.json lives)
+    let runRoot = null;
+    let checkDir = currentFolder || process.cwd();
+    
+    // Recursive search up for run-metadata.json
+    while (checkDir && checkDir !== path.parse(checkDir).root) {
+      const metaPath = path.join(checkDir, 'run-metadata.json');
+      if (fs.existsSync(metaPath)) {
+        runRoot = checkDir;
+        break;
+      }
+      checkDir = path.dirname(checkDir);
+    }
+    
+    if (runRoot) {
+      const metadata = JSON.parse(fs.readFileSync(path.join(runRoot, 'run-metadata.json'), 'utf-8'));
+      runContext = {
+        domain: metadata.domain,
+        context: metadata.context || metadata.guidedFocus?.context || '',
+        runId: metadata.runId,
+        originalQuestion: metadata.originalQuestion || metadata.guidedFocus?.question || ''
+      };
+      console.log(`[AI] Loaded run context: ${runContext.domain} from ${runRoot}`);
+    }
+    
+    // If we found a run root, load what exists for context
+    if (runRoot && runContext) {
+      runContext.structure = {};
+      
+      // Check outputs directory
+      const outputsDir = path.join(runRoot, 'outputs');
+      if (fs.existsSync(outputsDir)) {
+        try {
+          const outputFolders = fs.readdirSync(outputsDir).filter(f => !f.startsWith('.'));
+          runContext.structure.outputs = outputFolders.slice(0, 10); // First 10
+          runContext.structure.outputsCount = outputFolders.length;
+        } catch (e) { /* ignore */ }
+      }
+      
+      // Check agents directory  
+      const agentsDir = path.join(runRoot, 'agents');
+      if (fs.existsSync(agentsDir)) {
+        try {
+          const agentFolders = fs.readdirSync(agentsDir).filter(f => !f.startsWith('.'));
+          runContext.structure.agents = agentFolders.slice(0, 10); // First 10
+          runContext.structure.agentsCount = agentFolders.length;
+        } catch (e) { /* ignore */ }
+      }
+      
+      // Check for recent progress
+      const progressPath = path.join(runRoot, 'cosmo-progress.md');
+      if (fs.existsSync(progressPath)) {
+        try {
+          const progress = fs.readFileSync(progressPath, 'utf-8');
+          // Get first 500 chars of progress
+          runContext.recentProgress = progress.substring(0, 500) + (progress.length > 500 ? '...' : '');
+        } catch (e) { /* ignore */ }
+      }
+    }
+  } catch (e) {
+    console.log('[AI] No run context available:', e.message);
+  }
+  
+  // Build system prompt with context
+  let systemPrompt = buildSystemPrompt({
+    fileName, language, currentFolder, selectedText,
+    documentContent, fileTreeContext, message, runContext
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // BRAIN CONTEXT INJECTION: Auto-inject relevant brain knowledge when enabled
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (brainEnabled) {
+    const { getQueryEngine, getBrainLoader } = require('./brain-loader-module');
+    const qe = getQueryEngine();
+    const loader = getBrainLoader();
+
+    if (qe && loader) {
+      try {
+        console.log('[AI] Brain context injection enabled - searching brain...');
+        eventEmitter?.({ type: 'brain_search', status: 'searching' });
+
+        const state = await qe.queryEngine.loadBrainState();
+        const relevantNodes = await qe.queryEngine.queryMemory(state, message, {
+          limit: 20,
+          includeConnected: true,
+          useSemanticSearch: true
+        });
+
+        if (relevantNodes.length > 0) {
+          const brainContext = buildBrainContextSection(relevantNodes, loader);
+          systemPrompt = systemPrompt + brainContext;
+          console.log(`[AI] Injected ${relevantNodes.length} brain nodes into context`);
+          eventEmitter?.({ type: 'brain_search', status: 'injected', nodeCount: relevantNodes.length });
+        } else {
+          console.log('[AI] No relevant brain nodes found for query');
+          eventEmitter?.({ type: 'brain_search', status: 'no_results' });
+        }
+      } catch (err) {
+        console.error('[AI] Brain context injection failed:', err.message);
+        eventEmitter?.({ type: 'brain_search', status: 'error', error: err.message });
+      }
+    } else {
+      console.log('[AI] Brain not loaded - skipping context injection');
+      eventEmitter?.({ type: 'brain_search', status: 'not_loaded' });
+    }
+  }
+
+  // Prepare system prompt for OAuth if needed (prepends "You are Claude Code...")
+  const preparedSystemPrompt = prepareSystemPrompt(systemPrompt, isOAuthMode);
+
+  // Build messages
+  const messages = [{ role: 'system', content: preparedSystemPrompt }];
+
+  if (conversationHistory) {
+    const safeHistory = Array.isArray(conversationHistory)
+      ? conversationHistory
+          .filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
+          .map(m => {
+            let c = m.content;
+            // Avoid accidentally carrying giant payloads (e.g. pasted files, data URLs)
+            if (c.includes('data:image') && c.length > 20000) {
+              c = c.substring(0, 20000) + '\n\n[...truncated data URL...]';
+            }
+            if (c.length > 12000) c = c.substring(0, 12000) + '\n\n[...truncated history...]';
+            return { role: m.role, content: c };
+          })
+      : [];
+
+    messages.push(...safeHistory);
+  }
+  
+  let userMessage = message;
+  if (selectedText) {
+    // Limit selection to prevent token explosion
+    const trimmedSelection = selectedText.length > 50000 ? selectedText.substring(0, 50000) + '\n\n[...truncated...]' : selectedText;
+    userMessage = `Selected:\n---\n${trimmedSelection}\n---\n\nRequest: ${message}`;
+  } else if (documentContent && documentContent.length < 50000) {
+    // Increased limit but still capped to prevent huge documents
+    userMessage = `Current document:\n---\n${documentContent}\n---\n\nRequest: ${message}`;
+  } else if (documentContent) {
+    // Document too large, just mention it
+    userMessage = `[Current document: ${documentContent.length} chars - too large to include]\n\nRequest: ${message}`;
+  }
+  
+  messages.push({ role: 'user', content: userMessage });
+
+  // Initialize tool executor with security boundary
+  // Admin mode bypasses path restrictions
+  const isAdminMode = process.env.COSMO_ADMIN_MODE === 'true';
+  const effectiveRoot = isAdminMode ? null : allowedRoot;
+  const toolExecutor = new ToolExecutor(indexer, currentFolder || process.cwd(), effectiveRoot);
+  
+  // Function calling loop
+  const MAX_ITERATIONS = 75;
+  let iterations = 0;
+  let totalTokens = 0;
+  let pendingEdits = [];
+
+  // OpenAI Responses API (stateful across tool-calling turns)
+  let openaiPreviousResponseId = null;
+  let openaiNextInputItems = null;
+  
+  const isClaudeModel = model.startsWith('claude');
+  const isGrokModel = model.startsWith('grok');
+  
+  console.log(`[AI] Starting ${isClaudeModel ? 'Claude' : 'GPT'} ${model} in ${currentFolder}`);
+  
+  try {
+    while (iterations < MAX_ITERATIONS) {
+      iterations++;
+
+      // Prevent previous iterations' ephemeral blobs from accumulating
+      pruneEphemeralMessages(messages, iterations);
+      
+      eventEmitter?.({ type: 'iteration', iteration: iterations, max: MAX_ITERATIONS });
+      
+      let assistantMessage;
+      let toolCalls = [];
+      
+      if (isClaudeModel) {
+        // ============ CLAUDE ============
+        // Trim messages to prevent token explosion
+        const trimmedMessages = trimMessages(messages, 200000);
+        
+        const systemMsg = trimmedMessages.find(m => m.role === 'system');
+        const userMsgs = trimmedMessages.filter(m => m.role !== 'system');
+        
+        // First pass: collect all valid tool_use IDs from assistant messages
+        const validToolUseIds = new Set();
+        for (const msg of userMsgs) {
+          if (msg.role === 'assistant' && msg.tool_calls) {
+            for (const tc of msg.tool_calls) {
+              if (tc.id) validToolUseIds.add(tc.id);
+            }
+          }
+        }
+
+        // Convert to Claude format, skipping orphaned tool results
+        const claudeMessages = [];
+        let skippedOrphanedTools = 0;
+
+        for (const msg of userMsgs) {
+          if (msg.role === 'user') {
+            claudeMessages.push({ role: 'user', content: msg.content });
+          } else if (msg.role === 'assistant') {
+            if (msg.tool_calls) {
+              const content = [];
+              if (msg.content) content.push({ type: 'text', text: msg.content });
+              for (const tc of msg.tool_calls) {
+                let parsedInput = {};
+                try {
+                  parsedInput = JSON.parse(tc.function.arguments || '{}');
+                } catch (e) {
+                  console.warn(`[AI] Failed to parse tool arguments for ${tc.function?.name}:`, e.message);
+                  parsedInput = {};
+                }
+                content.push({
+                  type: 'tool_use',
+                  id: tc.id,
+                  name: tc.function.name,
+                  input: parsedInput
+                });
+              }
+              claudeMessages.push({ role: 'assistant', content });
+            } else {
+              claudeMessages.push({ role: 'assistant', content: msg.content });
+            }
+          } else if (msg.role === 'tool') {
+            // Skip orphaned tool results (no corresponding tool_use in prior assistant message)
+            if (!validToolUseIds.has(msg.tool_call_id)) {
+              skippedOrphanedTools++;
+              console.warn(`[AI] Skipping orphaned tool_result with id: ${msg.tool_call_id}`);
+              continue;
+            }
+
+            // Parse the tool result (content is guaranteed to be valid JSON string from sanitizeToolResult)
+            let toolResultContent;
+            try {
+              // msg.content is always a JSON string (see line where we store tool results)
+              const parsedResult = JSON.parse(msg.content);
+              // Format for Anthropic (handles images, etc.)
+              toolResultContent = formatToolResultContent(parsedResult, true);
+
+              // Ensure it's a string for Anthropic API
+              if (typeof toolResultContent !== 'string') {
+                toolResultContent = JSON.stringify(toolResultContent, null, 2);
+              }
+            } catch (e) {
+              // This should never happen since we validate on storage, but handle gracefully
+              console.error(`[AI] CRITICAL: Tool result for ${msg.tool_call_id} has invalid JSON:`, e.message);
+              console.error(`[AI] Content (first 500 chars):`, msg.content.substring(0, 500));
+
+              // Use content as-is as last resort
+              toolResultContent = typeof msg.content === 'string'
+                ? msg.content
+                : JSON.stringify({ error: 'Invalid tool result', original: String(msg.content).substring(0, 200) }, null, 2);
+            }
+
+            // Build and validate the Anthropic message structure
+            const toolResultMessage = {
+              role: 'user',
+              content: [{
+                type: 'tool_result',
+                tool_use_id: msg.tool_call_id,
+                content: toolResultContent
+              }]
+            };
+
+            // Final validation - ensure the entire message serializes correctly
+            try {
+              JSON.stringify(toolResultMessage);
+              claudeMessages.push(toolResultMessage);
+            } catch (serializeErr) {
+              // This should be impossible now, but log if it happens
+              console.error(`[AI] CRITICAL: Failed to serialize tool result message for ${msg.tool_call_id}:`, serializeErr.message);
+              throw new Error(`Tool result serialization failed: ${serializeErr.message}`);
+            }
+          }
+        }
+
+        if (skippedOrphanedTools > 0) {
+          console.log(`[AI] Cleaned ${skippedOrphanedTools} orphaned tool result(s) from message history`);
+        }
+        
+        // Use exact model names from COSMO (tested and working)
+        const claudeModel = model === 'claude-opus-4-5'
+          ? 'claude-opus-4-5'  // Opus - latest
+          : 'claude-sonnet-4-5';  // Sonnet - latest
+
+        console.log(`[AI] Calling Anthropic API with ${claudeMessages.length} messages in iteration ${iterations}`);
+
+        // DEBUG: Log message structure in iteration 2
+        if (iterations >= 2) {
+          console.log(`[AI] Iteration ${iterations} message summary:`);
+          claudeMessages.forEach((msg, idx) => {
+            const contentPreview = typeof msg.content === 'string'
+              ? msg.content.substring(0, 100)
+              : Array.isArray(msg.content)
+                ? `[${msg.content.length} blocks: ${msg.content.map(b => b.type).join(', ')}]`
+                : JSON.stringify(msg.content).substring(0, 100);
+            console.log(`  [${idx}] ${msg.role}: ${contentPreview}`);
+          });
+        }
+
+        let stream;
+        try {
+          stream = await anthropic.messages.create({
+            model: claudeModel,
+            max_tokens: 64000,
+            temperature: 0.1,
+            system: systemMsg?.content,
+            messages: claudeMessages,
+            tools: anthropicTools,
+            stream: true
+          });
+        } catch (apiError) {
+          console.error(`[AI] Anthropic API call failed:`, apiError.message);
+          console.error(`[AI] Error details:`, JSON.stringify(apiError, null, 2).substring(0, 500));
+          throw new Error(`Anthropic API error: ${apiError.message}`);
+        }
+
+        let textContent = '';
+        let currentToolUse = null;
+
+        try {
+          for await (const event of stream) {
+          if (event.type === 'message_start') {
+            totalTokens += event.message?.usage?.input_tokens || 0;
+          } else if (event.type === 'content_block_start') {
+            if (event.content_block?.type === 'tool_use') {
+              currentToolUse = {
+                id: event.content_block.id,
+                name: event.content_block.name,
+                input: ''
+              };
+            }
+          } else if (event.type === 'content_block_delta') {
+            if (event.delta?.type === 'text_delta') {
+              const chunk = event.delta.text;
+              textContent += chunk;
+              // Emit chunk for real-time display
+              eventEmitter?.({ type: 'response_chunk', chunk });
+            } else if (event.delta?.type === 'input_json_delta' && currentToolUse) {
+              currentToolUse.input += event.delta.partial_json;
+            }
+          } else if (event.type === 'content_block_stop') {
+            if (currentToolUse) {
+              // Validate that the accumulated JSON is complete
+              let isValidJSON = false;
+              try {
+                JSON.parse(currentToolUse.input || '{}');
+                isValidJSON = true;
+              } catch (e) {
+                console.error(`[AI] Invalid tool input JSON for ${currentToolUse.name}:`, e.message);
+                console.error(`[AI] Accumulated input (first 200 chars):`, currentToolUse.input.substring(0, 200));
+                // Use empty object as fallback to prevent downstream errors
+                currentToolUse.input = '{}';
+              }
+
+              toolCalls.push({
+                id: currentToolUse.id,
+                function: {
+                  name: currentToolUse.name,
+                  arguments: currentToolUse.input
+                }
+              });
+              currentToolUse = null;
+            }
+          } else if (event.type === 'message_delta') {
+            totalTokens += event.usage?.output_tokens || 0;
+          } else if (event.type === 'error') {
+            console.error(`[AI] Anthropic stream error event:`, event);
+            throw new Error(`Anthropic error: ${event.error?.message || 'Unknown error'}`);
+          }
+        }
+        } catch (streamError) {
+          console.error(`[AI] Anthropic stream processing error:`, streamError.message);
+          console.error(`[AI] Stream error stack:`, streamError.stack);
+          throw new Error(`Stream processing failed: ${streamError.message}`);
+        }
+
+        assistantMessage = { content: textContent, tool_calls: toolCalls.length > 0 ? toolCalls : null };
+        
+      } else if (isGrokModel) {
+        // ============ GROK (xAI) ============
+        const trimmedMessages = trimMessages(messages, 200000);
+        
+        const stream = await xai.chat.completions.create({
+          model: model,
+          messages: trimmedMessages,
+          tools: openaiToolDefinitions,
+          tool_choice: 'auto',
+          temperature: 0.2,
+          stream: true
+        });
+        
+        let textContent = '';
+        let streamedToolCalls = [];
+        
+        for await (const chunk of stream) {
+          const delta = chunk.choices[0]?.delta;
+          
+          if (delta?.content) {
+            textContent += delta.content;
+            eventEmitter?.({ type: 'response_chunk', chunk: delta.content });
+          }
+          
+          if (delta?.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              if (tc.index !== undefined) {
+                if (!streamedToolCalls[tc.index]) {
+                  streamedToolCalls[tc.index] = {
+                    id: tc.id || '',
+                    function: { name: '', arguments: '' }
+                  };
+                }
+                if (tc.id) streamedToolCalls[tc.index].id = tc.id;
+                if (tc.function?.name) streamedToolCalls[tc.index].function.name = tc.function.name;
+                if (tc.function?.arguments) streamedToolCalls[tc.index].function.arguments += tc.function.arguments;
+              }
+            }
+          }
+          
+          if (chunk.usage) {
+            totalTokens += chunk.usage.total_tokens || 0;
+          }
+        }
+        
+        assistantMessage = {
+          content: textContent,
+          tool_calls: streamedToolCalls.length > 0 ? streamedToolCalls : null
+        };
+        toolCalls = streamedToolCalls;
+        
+      } else {
+        // ============ OPENAI (Responses API) ============
+        // GPT-5.2 best practice: use Responses API, keep state with previous_response_id,
+        // and rely on truncation='auto' instead of failing hard on context overflow.
+
+        const trimmedMessages = trimMessages(messages, 200000);
+        const openaiModel = model;
+
+        const toolsForResponses = buildOpenAIResponsesToolsFromChatTools(openaiToolDefinitions);
+        const instructions = buildOpenAIResponsesInstructionsFromMessages(trimmedMessages);
+
+        // If we have pending tool outputs from the previous iteration, only send those.
+        // Otherwise, send the initial conversation input.
+        const inputItems = Array.isArray(openaiNextInputItems) && openaiNextInputItems.length > 0
+          ? openaiNextInputItems
+          : buildOpenAIResponsesInputFromMessages(trimmedMessages);
+
+        const responseParams = {
+          model: openaiModel,
+          instructions,
+          input: inputItems,
+          tools: toolsForResponses,
+          tool_choice: 'auto',
+          parallel_tool_calls: true,
+          truncation: 'auto',
+          max_output_tokens: 64000,
+          reasoning: String(openaiModel).startsWith('gpt-5.2') ? { effort: 'none' } : undefined,
+          text: String(openaiModel).startsWith('gpt-5.2') ? { verbosity: 'medium' } : undefined,
+          temperature: 0.1,
+          stream: true
+        };
+
+        if (openaiPreviousResponseId) {
+          responseParams.previous_response_id = openaiPreviousResponseId;
+        }
+
+        const stream = await openai.responses.create(responseParams);
+
+        let textContent = '';
+        let responseId = null;
+        let outputItems = [];
+        
+        for await (const chunk of stream) {
+          // Debug: log first chunk to verify structure
+          if (!textContent && !responseId) {
+            console.log('[OPENAI STREAM] First chunk:', JSON.stringify(chunk).substring(0, 300));
+          }
+          
+          if (chunk.id) {
+            responseId = chunk.id;
+          }
+          
+          // Collect output items from the stream
+          if (chunk.output) {
+            outputItems = chunk.output;
+          }
+          
+          // Also collect individual items as they complete (only when done, not added/in_progress)
+          if (chunk.type === 'response.output_item.done' && chunk.item && chunk.item.type === 'function_call') {
+            // Check if this item is already in outputItems to avoid duplicates
+            const existingIndex = outputItems.findIndex(item => item.call_id === chunk.item.call_id);
+            if (existingIndex >= 0) {
+              // Replace with the completed version
+              outputItems[existingIndex] = chunk.item;
+            } else {
+              // Add new item
+              outputItems.push(chunk.item);
+            }
+          }
+          
+          // Stream text deltas - check all possible fields
+          if (chunk.output_text_delta) {
+            textContent += chunk.output_text_delta;
+            eventEmitter?.({ type: 'response_chunk', chunk: chunk.output_text_delta });
+          } else if (chunk.output_text && !textContent) {
+            // Fallback if deltas not available
+            textContent = chunk.output_text;
+            eventEmitter?.({ type: 'response_chunk', chunk: chunk.output_text });
+          } else if (chunk.delta?.text) {
+            // Alternative delta format
+            textContent += chunk.delta.text;
+            eventEmitter?.({ type: 'response_chunk', chunk: chunk.delta.text });
+          } else if (chunk.text) {
+            // Direct text field
+            textContent += chunk.text;
+            eventEmitter?.({ type: 'response_chunk', chunk: chunk.text });
+          }
+          
+          if (chunk.usage) {
+            totalTokens += chunk.usage.total_tokens ?? ((chunk.usage.input_tokens || 0) + (chunk.usage.output_tokens || 0));
+          }
+        }
+        
+        console.log('[OPENAI] Final text content length:', textContent.length, 'tokens:', totalTokens); // DEBUG
+
+        openaiPreviousResponseId = responseId;
+        openaiNextInputItems = null;
+
+        const responseToolCalls = (outputItems || []).filter(i => i && i.type === 'function_call');
+        toolCalls = responseToolCalls.map(tc => ({
+          id: tc.call_id,
+          function: { name: tc.name, arguments: tc.arguments }
+        }));
+
+        assistantMessage = {
+          content: textContent,
+          tool_calls: toolCalls.length > 0 ? toolCalls : null
+        };
+      }
+      
+      // Check for tool calls
+      if (toolCalls?.length > 0) {
+        try {
+          console.log(`[AI] ${toolCalls.length} tools: ${toolCalls.map(t => t?.function?.name || 'unknown').join(', ')}`);
+          console.log(`[AI] Assistant content: "${assistantMessage.content}"`); // DEBUG
+
+          // NEW: Emit thinking/reasoning text if present
+          if (assistantMessage.content && assistantMessage.content.trim()) {
+            console.log(`[AI] Emitting thinking event`); // DEBUG
+            try {
+              eventEmitter?.({
+                type: 'thinking',
+                content: assistantMessage.content
+              });
+            } catch (thinkingErr) {
+              console.error(`[AI] Failed to emit thinking event:`, thinkingErr.message);
+            }
+          } else {
+            console.log(`[AI] No thinking content to emit`); // DEBUG
+          }
+
+          // Safely build tools array with comprehensive error handling
+          const safeTools = toolCalls.map(t => {
+            if (!t || !t.function) {
+              console.error(`[AI] Malformed tool call:`, JSON.stringify(t).substring(0, 200));
+              return { name: 'unknown', args: {} };
+            }
+
+            let args = {};
+            try {
+              args = JSON.parse(t.function.arguments || '{}');
+            } catch (e) {
+              console.error(`[AI] Failed to parse tool arguments for ${t.function.name}:`, e.message);
+              console.error(`[AI] Raw arguments:`, (t.function.arguments || '').substring(0, 200));
+              // Use safe fallback instead of crashing
+              args = { _parse_error: e.message };
+            }
+            return { name: t.function.name, args };
+          });
+
+          try {
+            eventEmitter?.({
+              type: 'tools_start',
+              tools: safeTools
+            });
+          } catch (toolsStartErr) {
+            console.error(`[AI] Failed to emit tools_start event:`, toolsStartErr.message);
+          }
+        } catch (toolCallsErr) {
+          console.error(`[AI] Critical error in tool calls handling:`, toolCallsErr);
+          // Continue anyway - don't crash the entire conversation
+        }
+        
+        messages.push({
+          role: 'assistant',
+          content: assistantMessage.content || '',
+          tool_calls: toolCalls
+        });
+        
+        // Execute tools in parallel with comprehensive error handling
+        const results = await Promise.all(
+          toolCalls.map(async (tc, idx) => {
+            try {
+              if (!tc || !tc.function) {
+                console.error(`[AI] Invalid tool call structure at index ${idx}`);
+                return { toolCall: tc, result: { error: 'Invalid tool call structure' } };
+              }
+
+              const toolName = tc.function.name || 'unknown';
+              let args;
+              try {
+                // Handle null, undefined, or empty arguments
+                const argsStr = tc.function.arguments;
+                if (!argsStr || argsStr.trim() === '') {
+                  args = {};
+                } else {
+                  args = JSON.parse(argsStr);
+                }
+              } catch (e) {
+                console.error(`[AI] Failed to parse arguments for ${toolName}:`, e.message);
+                console.error(`[AI] Raw arguments (first 200 chars):`, (tc.function.arguments || '').substring(0, 200));
+                return { toolCall: tc, result: { error: `Failed to parse arguments: ${e.message}` } };
+              }
+
+              try {
+                eventEmitter?.({ type: 'tool_start', tool: toolName, args, index: idx });
+              } catch (emitErr) {
+                console.error(`[AI] Failed to emit tool_start:`, emitErr.message);
+              }
+
+              const result = await toolExecutor.execute(toolName, args);
+            
+            if (result.action === 'queue_edit') {
+              pendingEdits.push({
+                file: result.file_path,
+                instructions: result.instructions,
+                edit: result.code_edit
+              });
+            }
+            
+            eventEmitter?.({ type: 'tool_complete', tool: toolName, result, index: idx });
+            
+            // NEW: Emit tool result summary for visibility
+            const summary = result.error ? `Error: ${result.error}` : 
+                           result.action === 'queue_edit' ? 'Edit queued' :
+                           result.content ? `${result.content.substring(0, 100)}${result.content.length > 100 ? '...' : ''}` :
+                           result.files ? `${result.files.length} items` :
+                           'Success';
+            
+            console.log(`[AI] Tool result for ${toolName}: ${summary}`); // DEBUG
+            
+            try {
+              eventEmitter?.({
+                type: 'tool_result',
+                tool: toolName,
+                success: !result.error,
+                summary: summary,
+                index: idx
+              });
+            } catch (emitErr) {
+              console.error(`[AI] Failed to emit tool_result:`, emitErr.message);
+            }
+
+            return { toolCall: tc, result };
+            } catch (toolExecErr) {
+              console.error(`[AI] Critical error executing tool at index ${idx}:`, toolExecErr);
+              return {
+                toolCall: tc,
+                result: { error: `Tool execution failed: ${toolExecErr.message}` }
+              };
+            }
+          })
+        );
+        
+        // Add tool results
+        // For OpenAI Responses API: capture BOTH function_call AND function_call_output items for next iteration
+        const isOpenAIResponses = !isClaudeModel && !isGrokModel;
+        const openaiFunctionOutputsForNextTurn = [];
+
+        // First, add all the function_call items
+        if (isOpenAIResponses && toolCalls?.length > 0) {
+          for (const tc of toolCalls) {
+            openaiFunctionOutputsForNextTurn.push({
+              type: 'function_call',
+              call_id: tc.id,
+              name: tc.function.name,
+              arguments: tc.function.arguments
+            });
+          }
+        }
+
+        // Then add the corresponding function_call_output items
+        for (const { toolCall, result } of results) {
+          // Store result - will be formatted per-provider when messages are sent
+          const safeResult = sanitizeToolResult(result);
+
+          // Ensure JSON serialization works and produces valid output
+          let serializedContent;
+          try {
+            // Use a replacer to handle circular references and non-serializable values
+            serializedContent = JSON.stringify(safeResult, (key, value) => {
+              // Handle circular references
+              if (typeof value === 'object' && value !== null) {
+                if (value instanceof Error) {
+                  return {
+                    _error: true,
+                    message: value.message,
+                    name: value.name,
+                    stack: value.stack?.substring(0, 500)
+                  };
+                }
+                // Handle functions
+                if (typeof value === 'function') {
+                  return '[Function]';
+                }
+              }
+              // Handle undefined
+              if (value === undefined) {
+                return null;
+              }
+              return value;
+            }, 2); // Pretty print for debugging
+
+            // Validate that we can parse it back
+            JSON.parse(serializedContent);
+
+          } catch (stringifyError) {
+            console.error(`[AI] Failed to serialize tool result for ${toolCall.id}:`, stringifyError.message);
+            console.error(`[AI] Result type:`, typeof safeResult, Array.isArray(safeResult) ? 'array' : '');
+
+            // Fallback to simple string representation
+            serializedContent = JSON.stringify({
+              error: 'Failed to serialize tool result',
+              message: stringifyError.message,
+              resultType: typeof safeResult,
+              keys: safeResult && typeof safeResult === 'object' ? Object.keys(safeResult).slice(0, 20) : []
+            }, null, 2);
+          }
+
+          messages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: serializedContent,
+            _raw_result: safeResult  // Keep sanitized result for image detection
+          });
+
+          if (isOpenAIResponses && toolCall?.id) {
+            openaiFunctionOutputsForNextTurn.push({
+              type: 'function_call_output',
+              call_id: toolCall.id,
+              output: JSON.stringify(safeResult)
+            });
+          }
+        }
+        
+        // Handle images from tools:
+        // - Claude supports images in tool_result (we keep that path).
+        // - OpenAI/Grok can accept image inputs, but data URLs are extremely token-heavy.
+        //   So we only include images if total base64 size is small; otherwise we include metadata only.
+        const imageResults = results.filter(r => r.result?.type === 'image' && r.result?.data && r.result?.mime_type);
+        if (!isClaudeModel && imageResults.length > 0) {
+          const MAX_IMAGE_BASE64_CHARS = 200_000; // guardrail
+          const MAX_IMAGES = 8; // guardrail
+          const selectedImages = imageResults.slice(0, MAX_IMAGES);
+          const totalChars = selectedImages.reduce((sum, r) => sum + (r.result.data?.length || 0), 0);
+
+          const summaryLines = selectedImages.map(r => `- ${r.result.path || '(unknown)'} (${r.result.format || 'image'}, ~${Math.round((r.result.size || 0) / 1024)}KB)`);
+          const summaryText = `[Images loaded from read_image tool calls]\n${summaryLines.join('\n')}\n\n` +
+            (totalChars <= MAX_IMAGE_BASE64_CHARS
+              ? `[Including up to ${MAX_IMAGES} images inline for vision.]`
+              : `[Omitting base64 image payloads to avoid token explosion. If you need visual analysis, ask explicitly and/or switch to Claude vision flow.]`);
+
+          // Always store a light-weight text summary in our internal message history
+          messages.push({
+            role: 'user',
+            content: summaryText,
+            _cosmo_ephemeral: 'image_context',
+            _iteration: iterations
+          });
+
+          // For OpenAI Responses, attach images only if within guardrails
+          if (isOpenAIResponses) {
+            if (totalChars <= MAX_IMAGE_BASE64_CHARS) {
+              const contentList = [{ type: 'input_text', text: summaryText }];
+              for (const r of selectedImages) {
+                contentList.push({
+                  type: 'input_image',
+                  detail: 'auto',
+                  image_url: `data:${r.result.mime_type};base64,${r.result.data}`
+                });
+              }
+              openaiFunctionOutputsForNextTurn.push({ role: 'user', content: contentList });
+            } else {
+              openaiFunctionOutputsForNextTurn.push({ role: 'user', content: summaryText });
+            }
+          }
+        }
+
+        if (isOpenAIResponses) {
+          openaiNextInputItems = openaiFunctionOutputsForNextTurn;
+        }
+        
+        continue; // Next iteration
+      }
+      
+      // No more tools - done!
+      const finalResponse = assistantMessage.content || '';
+      
+      console.log(`[AI] ✅ Complete: ${iterations} iterations, ${totalTokens} tokens`);
+      
+      return {
+        success: true,
+        response: finalResponse,
+        tokensUsed: totalTokens,
+        iterations,
+        pendingEdits
+      };
+    }
+    
+    // Max iterations
+    return {
+      success: false,
+      error: `Max iterations (${MAX_ITERATIONS}) reached`,
+      tokensUsed: totalTokens,
+      iterations,
+      pendingEdits
+    };
+    
+  } catch (error) {
+    console.error('[AI] Error:', error);
+    return {
+      success: false,
+      error: error.message,
+      tokensUsed: totalTokens,
+      iterations,
+      pendingEdits
+    };
+  }
+}
+
+module.exports = { handleFunctionCalling };
+

@@ -1,0 +1,10 @@
+{
+  "ok": true,
+  "agent_id": "jerry",
+  "found": true,
+  "unregistered": false,
+  "device_unregistered": false,
+  "removed_chat_ids": ["ios_contract_smoke"],
+  "remaining_chat_ids": ["ios_contract_followup"],
+  "updated_at": "2026-06-26T16:05:00Z"
+}

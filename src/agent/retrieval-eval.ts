@@ -33,9 +33,9 @@ export function continuityEnrichmentDisclosure(opts: {
   return [
     '[CONTINUITY ENRICHMENT]',
     `Pre-turn injection ran: brainCues=${opts.brainCueCount} relationshipEntries=${opts.relationshipCount}.`,
-    'Do not treat phrases in this prompt block as evidence that brain_search or relationship_recall found them.',
-    'A retrieval test that used these phrases is contaminated.',
-    'If completeness=incomplete or this block is present, do not close the experiment as a retrieval proof.',
+    'Use these injected matches as working memory for this turn.',
+    'When they answer the user question, prefer their wording over general knowledge and do not call brain_search this turn.',
+    'They were not produced by a brain_search or relationship_recall tool call; do not claim you called those tools unless you did.',
     '[/CONTINUITY ENRICHMENT]',
   ].join('\n');
 }

@@ -1,0 +1,796 @@
+/**
+ * Media tools — image generation, music generation, and text-to-speech.
+ */
+
+import { createHash, randomBytes } from 'node:crypto';
+import {
+  closeSync,
+  constants as fsConstants,
+  fsyncSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { join } from 'node:path';
+import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
+import { loadConfig } from '../../config.js';
+import { resolveProviderKey } from '../provider-credentials.js';
+import {
+  detectReturnedArtifactContentType,
+  MAX_RETURNED_ARTIFACT_BYTES,
+} from '../../returned-artifacts.js';
+import {
+  canonicalReturnedArtifactDirectory,
+  returnedArtifactResult,
+  writeReturnedArtifactBytes,
+} from './return-artifact.js';
+
+type ImageGeneratorConfig = {
+  provider: string;
+  model: string;
+  apiKey: string;
+  baseUrl: string;
+};
+
+type ImageProvider = 'openai' | 'minimax' | 'xai';
+
+function normalizeImageProvider(provider: unknown): ImageProvider | null {
+  if (typeof provider !== 'string') return null;
+  const normalized = provider.trim().toLowerCase();
+  if (normalized === 'openai' || normalized === 'minimax' || normalized === 'xai') return normalized;
+  return null;
+}
+
+type MusicGeneratorConfig = {
+  provider: string;
+  model: string;
+  apiKey: string;
+  baseUrl: string;
+  textBaseUrl: string;
+  textModel: string;
+};
+
+function normalizeMiniMaxApiBase(baseUrl?: string): string {
+  const raw = typeof baseUrl === 'string' && baseUrl.trim()
+    ? baseUrl.trim()
+    : 'https://api.minimax.io';
+  return raw.replace(/\/+$/, '').replace(/\/anthropic(?:\/v1)?$/, '');
+}
+
+function normalizeAnthropicCompatibleBase(baseUrl?: string): string {
+  const raw = typeof baseUrl === 'string' && baseUrl.trim()
+    ? baseUrl.trim()
+    : 'https://api.minimax.io/anthropic';
+  return raw.replace(/\/+$/, '').replace(/\/v1$/, '');
+}
+
+function defaultImageModel(provider: string): string {
+  if (provider === 'minimax') return 'image-01';
+  if (provider === 'xai') return 'grok-imagine-image';
+  return 'gpt-image-2';
+}
+
+function resolveImageGeneratorConfig(overrides: { provider?: string; model?: string } = {}): ImageGeneratorConfig {
+  const agentName = process.env.HOME23_AGENT ?? 'test-agent';
+  const config = loadConfig(agentName);
+  const configured = config.media?.imageGeneration || {};
+  const configuredProvider = normalizeImageProvider(configured.provider) ?? 'openai';
+  const overrideProvider = normalizeImageProvider(overrides.provider);
+  const provider = overrideProvider ?? configuredProvider;
+  const model = typeof overrides.model === 'string' && overrides.model.trim()
+    ? overrides.model.trim()
+    : (!overrideProvider && typeof configured.model === 'string' && configured.model.trim()
+      ? configured.model.trim()
+      : defaultImageModel(provider));
+
+  const providers = config.providers as Record<string, { apiKey?: string; baseUrl?: string }> | undefined;
+
+  // Keys resolve at use (2026-08-11): secrets.yaml via the resolver with the
+  // config value as a deliberate pin and env as the floor — media tools were
+  // rotation-blind before this.
+  if (provider === 'minimax') {
+    return {
+      provider,
+      model,
+      apiKey: resolveProviderKey('minimax', providers?.minimax?.apiKey),
+      baseUrl: normalizeMiniMaxApiBase(providers?.minimax?.baseUrl),
+    };
+  }
+
+  if (provider === 'xai') {
+    const xaiProvider = providers?.xai;
+    return {
+      provider,
+      model,
+      apiKey: resolveProviderKey('xai', xaiProvider?.apiKey),
+      baseUrl: xaiProvider?.baseUrl ?? process.env.XAI_BASE_URL ?? 'https://api.x.ai/v1',
+    };
+  }
+
+  const openaiProvider = providers?.openai;
+  return {
+    provider,
+    model,
+    apiKey: resolveProviderKey('openai', openaiProvider?.apiKey),
+    baseUrl: openaiProvider?.baseUrl ?? process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1',
+  };
+}
+
+function resolveMusicGeneratorConfig(): MusicGeneratorConfig {
+  const agentName = process.env.HOME23_AGENT ?? 'test-agent';
+  const config = loadConfig(agentName);
+  const configured = config.media?.musicGeneration || {};
+  const provider = typeof configured.provider === 'string' && configured.provider.trim()
+    ? configured.provider.trim()
+    : 'minimax';
+  const model = typeof configured.model === 'string' && configured.model.trim()
+    ? configured.model.trim()
+    : 'music-2.6';
+
+  const providers = config.providers as Record<string, { apiKey?: string; baseUrl?: string }> | undefined;
+  const textBaseUrl = normalizeAnthropicCompatibleBase(providers?.minimax?.baseUrl);
+  const textModel = config.chat?.defaultProvider === 'minimax'
+    ? (config.chat?.defaultModel || 'MiniMax-M3')
+    : 'MiniMax-M3';
+
+  if (provider === 'minimax') {
+    return {
+      provider,
+      model,
+      apiKey: resolveProviderKey('minimax', providers?.minimax?.apiKey),
+      baseUrl: normalizeMiniMaxApiBase(providers?.minimax?.baseUrl),
+      textBaseUrl,
+      textModel,
+    };
+  }
+
+  return {
+    provider,
+    model,
+    apiKey: '',
+    baseUrl: '',
+    textBaseUrl: '',
+    textModel,
+  };
+}
+
+function isGptImageModel(model: string): boolean {
+  return model.startsWith('gpt-image-');
+}
+
+function sizeToAspectRatio(size?: string): string | undefined {
+  if (!size) return undefined;
+  const map: Record<string, string> = {
+    '1024x1024': '1:1', '1536x1024': '3:2', '1024x1536': '2:3',
+    '1792x1024': '16:9', '1024x1792': '9:16',
+    '16:9': '16:9', '9:16': '9:16', '4:3': '4:3', '3:4': '3:4',
+    '1:1': '1:1', '3:2': '3:2', '2:3': '2:3', '2:1': '2:1',
+    '1:2': '1:2', '19.5:9': '19.5:9', '9:19.5': '9:19.5',
+    '20:9': '20:9', '9:20': '9:20', '21:9': '21:9', 'auto': 'auto',
+  };
+  return map[size] ?? undefined;
+}
+
+type ImageArtifactInfo = {
+  provider: string;
+  model: string;
+  prompt: string;
+  path: string;
+  receiptPath: string;
+  mimeType: string;
+  fileName: string;
+  byteCount: number;
+  sha256: string;
+  bytes: number;
+  createdAt: string;
+};
+
+function exactImageFormat(buf: Buffer): { mimeType: string; extension: string } {
+  if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return { mimeType: 'image/png', extension: '.png' };
+  }
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return { mimeType: 'image/jpeg', extension: '.jpg' };
+  }
+  const signature = buf.subarray(0, 6).toString('ascii');
+  if (signature === 'GIF87a' || signature === 'GIF89a') {
+    return { mimeType: 'image/gif', extension: '.gif' };
+  }
+  throw new Error('Image provider returned an unsupported image format.');
+}
+
+function writeImageArtifact(
+  ctx: ToolContext,
+  cfg: ImageGeneratorConfig,
+  prompt: string,
+  buf: Buffer,
+  extra: Record<string, unknown> = {},
+): ImageArtifactInfo {
+  if (buf.length < 1 || buf.length > MAX_RETURNED_ARTIFACT_BYTES) {
+    throw new Error('Image provider returned an artifact outside the 25 MB boundary.');
+  }
+  const createdAt = new Date().toISOString();
+  const safeProvider = cfg.provider.replace(/[^a-z0-9_-]/gi, '-').toLowerCase();
+  const artifactDir = canonicalReturnedArtifactDirectory((ctx.artifactWorkspacePath ?? ctx.workspacePath));
+  const stamp = createdAt.replace(/[:.]/g, '-');
+  const format = exactImageFormat(buf);
+  const sha256 = createHash('sha256').update(buf).digest('hex');
+  let fileName = '';
+  let filePath = '';
+  let receiptPath = '';
+  let createdImagePath = '';
+  let createdReceiptPath = '';
+  let imageFd: number | undefined;
+  let receiptFd: number | undefined;
+  const createFlags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW;
+  const directoryFd = openSync(
+    artifactDir,
+    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+  );
+  const directoryEntry = fstatSync(directoryFd);
+  let complete = false;
+  try {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const stem = `${stamp}-${safeProvider}-${randomBytes(6).toString('hex')}`;
+      fileName = `${stem}${format.extension}`;
+      filePath = join(artifactDir, fileName);
+      receiptPath = join(artifactDir, `${stem}.json`);
+      try {
+        imageFd = openSync(filePath, createFlags, 0o600);
+        createdImagePath = filePath;
+        try {
+          receiptFd = openSync(receiptPath, createFlags, 0o600);
+          createdReceiptPath = receiptPath;
+        } catch (error) {
+          closeSync(imageFd);
+          imageFd = undefined;
+          unlinkSync(createdImagePath);
+          createdImagePath = '';
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
+          throw error;
+        }
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
+        throw error;
+      }
+    }
+    if (imageFd === undefined || receiptFd === undefined) {
+      throw new Error('Could not reserve a unique generated-image artifact name.');
+    }
+    const receipt: ImageArtifactInfo & Record<string, unknown> = {
+      ...extra,
+      provider: cfg.provider,
+      model: cfg.model,
+      prompt,
+      path: filePath,
+      receiptPath,
+      mimeType: format.mimeType,
+      fileName,
+      byteCount: buf.length,
+      sha256,
+      bytes: buf.length,
+      createdAt,
+    };
+    writeFileSync(imageFd, buf);
+    fsyncSync(imageFd);
+    writeFileSync(receiptFd, JSON.stringify({
+      ...extra,
+      provider: cfg.provider,
+      model: cfg.model,
+      prompt,
+      mimeType: format.mimeType,
+      fileName,
+      byteCount: buf.length,
+      sha256,
+      bytes: buf.length,
+      createdAt,
+    }, null, 2));
+    fsyncSync(receiptFd);
+    const currentDirectory = lstatSync(artifactDir);
+    if (
+      !currentDirectory.isDirectory() ||
+      currentDirectory.isSymbolicLink() ||
+      currentDirectory.dev !== directoryEntry.dev ||
+      currentDirectory.ino !== directoryEntry.ino ||
+      realpathSync(artifactDir) !== artifactDir
+    ) {
+      throw new Error('Generated-image directory changed during artifact creation.');
+    }
+    fsyncSync(directoryFd);
+    complete = true;
+    return receipt;
+  } finally {
+    if (imageFd !== undefined) closeSync(imageFd);
+    if (receiptFd !== undefined) closeSync(receiptFd);
+    if (!complete) {
+      if (createdImagePath) {
+        try { unlinkSync(createdImagePath); } catch { /* best-effort rollback of our exclusive file */ }
+      }
+      if (createdReceiptPath) {
+        try { unlinkSync(createdReceiptPath); } catch { /* best-effort rollback of our exclusive file */ }
+      }
+      try { fsyncSync(directoryFd); } catch { /* best-effort durability of rollback */ }
+    }
+    closeSync(directoryFd);
+  }
+}
+
+function mediaSignal(ctx: ToolContext, timeoutMs: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return ctx.abortSignal ? AbortSignal.any([ctx.abortSignal, timeout]) : timeout;
+}
+
+function generatedImageMedia(info: ImageArtifactInfo, prompt: string): NonNullable<ToolResult['media']>[number] {
+  return {
+    type: 'image',
+    path: info.path,
+    generatedBy: 'generate_image',
+    mimeType: info.mimeType,
+    fileName: info.fileName,
+    byteCount: info.byteCount,
+    sha256: info.sha256,
+    caption: prompt.slice(0, 200),
+  };
+}
+
+function imageResultContent(info: ImageArtifactInfo, details = ''): string {
+  return [
+    `Image generated via ${info.provider}/${info.model}${details}`,
+    `Ready to return ${JSON.stringify(info.fileName)} (${info.mimeType}, ${info.bytes} bytes, sha256 ${info.sha256}).`,
+  ].join('\n');
+}
+
+async function generateMiniMaxImage(
+  prompt: string, size: string | undefined,
+  cfg: ImageGeneratorConfig, ctx: ToolContext,
+): Promise<ToolResult> {
+  const body: Record<string, unknown> = {
+    model: cfg.model,
+    prompt,
+    n: 1,
+    response_format: 'url',
+  };
+  const aspect = sizeToAspectRatio(size);
+  if (aspect) body.aspect_ratio = aspect;
+
+  const res = await fetch(`${cfg.baseUrl.replace(/\/$/, '')}/v1/image_generation`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${cfg.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal: mediaSignal(ctx, 120_000),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    return { content: `MiniMax Image API error: HTTP ${res.status} — ${errText.slice(0, 300)}`, is_error: true };
+  }
+
+  const data = await res.json() as { data?: { image_urls?: string[] }; metadata?: { failed_count?: number } };
+  const urls = data.data?.image_urls;
+  const imageUrl = urls?.[0];
+  if (!imageUrl) {
+    return { content: `No image returned from MiniMax ${cfg.model}.`, is_error: true };
+  }
+
+  const fileRes = await fetch(imageUrl, { signal: mediaSignal(ctx, 60_000) });
+  if (!fileRes.ok) {
+    return { content: `Image download failed: HTTP ${fileRes.status}`, is_error: true };
+  }
+  const buf = Buffer.from(await fileRes.arrayBuffer());
+  const artifact = writeImageArtifact(ctx, cfg, prompt, buf, { aspectRatio: aspect ?? null });
+
+  return {
+    content: imageResultContent(artifact, aspect ? ` (${aspect})` : ''),
+    media: [generatedImageMedia(artifact, prompt)],
+  };
+}
+
+async function generateOpenAIImage(
+  prompt: string, size: string | undefined,
+  cfg: ImageGeneratorConfig, ctx: ToolContext,
+): Promise<ToolResult> {
+  const body: Record<string, unknown> = {
+    model: cfg.model,
+    prompt,
+    n: 1,
+  };
+  if (size) body.size = size;
+  if (isGptImageModel(cfg.model)) {
+    body.output_format = 'png';
+  } else {
+    body.response_format = 'b64_json';
+  }
+
+  const res = await fetch(`${cfg.baseUrl.replace(/\/$/, '')}/images/generations`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${cfg.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal: mediaSignal(ctx, 60_000),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    return { content: `Image API error (${cfg.model}): HTTP ${res.status} — ${errText.slice(0, 300)}`, is_error: true };
+  }
+
+  const data = await res.json() as { data: Array<{ b64_json?: string; url?: string; revised_prompt?: string }> };
+  const imgData = data.data[0];
+  if (!imgData) return { content: `No image returned from ${cfg.model}.`, is_error: true };
+
+  let buf: Buffer | null = null;
+  if (imgData.b64_json) {
+    buf = Buffer.from(imgData.b64_json, 'base64');
+  } else if (imgData.url) {
+    const fileRes = await fetch(imgData.url, { signal: mediaSignal(ctx, 60_000) });
+    if (!fileRes.ok) {
+      return { content: `Image download failed: HTTP ${fileRes.status}`, is_error: true };
+    }
+    buf = Buffer.from(await fileRes.arrayBuffer());
+  }
+
+  if (!buf) return { content: `No image bytes returned from ${cfg.model}.`, is_error: true };
+
+  const artifact = writeImageArtifact(ctx, cfg, prompt, buf, { revisedPrompt: imgData.revised_prompt ?? null });
+  const details = imgData.revised_prompt ? ` (revised prompt: "${imgData.revised_prompt}")` : '';
+
+  return {
+    content: imageResultContent(artifact, details),
+    media: [generatedImageMedia(artifact, prompt)],
+  };
+}
+
+async function generateXAIImage(
+  prompt: string, size: string | undefined,
+  cfg: ImageGeneratorConfig, ctx: ToolContext,
+): Promise<ToolResult> {
+  const body: Record<string, unknown> = {
+    model: cfg.model,
+    prompt,
+    n: 1,
+    response_format: 'b64_json',
+  };
+  const aspect = sizeToAspectRatio(size);
+  if (aspect) body.aspect_ratio = aspect;
+
+  const res = await fetch(`${cfg.baseUrl.replace(/\/$/, '')}/images/generations`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${cfg.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal: mediaSignal(ctx, 120_000),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    return { content: `xAI Image API error (${cfg.model}): HTTP ${res.status} — ${errText.slice(0, 300)}`, is_error: true };
+  }
+
+  const data = await res.json() as { data: Array<{ b64_json?: string; url?: string; revised_prompt?: string }> };
+  const imgData = data.data?.[0];
+  if (!imgData) return { content: `No image returned from ${cfg.model}.`, is_error: true };
+
+  let buf: Buffer | null = null;
+  if (imgData.b64_json) {
+    buf = Buffer.from(imgData.b64_json, 'base64');
+  } else if (imgData.url) {
+    const fileRes = await fetch(imgData.url, { signal: mediaSignal(ctx, 60_000) });
+    if (!fileRes.ok) {
+      return { content: `Image download failed: HTTP ${fileRes.status}`, is_error: true };
+    }
+    buf = Buffer.from(await fileRes.arrayBuffer());
+  }
+
+  if (!buf) return { content: `No image bytes returned from ${cfg.model}.`, is_error: true };
+
+  const artifact = writeImageArtifact(ctx, cfg, prompt, buf, { aspectRatio: aspect ?? null });
+
+  return {
+    content: imageResultContent(artifact, aspect ? ` (${aspect})` : ''),
+    media: [generatedImageMedia(artifact, prompt)],
+  };
+}
+
+function formatMusicDuration(rawDuration?: number): string | null {
+  if (!rawDuration || !Number.isFinite(rawDuration)) return null;
+  const seconds = rawDuration > 1000 ? rawDuration / 1000 : rawDuration;
+  return `${Math.round(seconds * 10) / 10}s`;
+}
+
+async function draftMiniMaxLyrics(prompt: string, cfg: MusicGeneratorConfig, ctx: ToolContext): Promise<string> {
+  const res = await fetch(`${cfg.textBaseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${cfg.apiKey}`,
+      'Content-Type': 'application/json',
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: cfg.textModel,
+      max_tokens: 1200,
+      temperature: 0.8,
+      system: 'You write concise, singable song lyrics for music generation APIs. Return only lyrics with section tags like [Verse 1], [Chorus], [Verse 2], [Bridge]. Do not include commentary or markdown fences.',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: `Write original lyrics for this song request:\n\n${prompt}\n\nRequirements:\n- 2 verses, 1 chorus, optional bridge\n- vivid but concise\n- keep it easy to sing\n- return only the final tagged lyrics`,
+            },
+          ],
+        },
+      ],
+    }),
+    signal: mediaSignal(ctx, 120_000),
+  });
+
+  if (!res.ok) {
+    throw new Error(`MiniMax lyric draft failed: HTTP ${res.status} — ${(await res.text().catch(() => '')).slice(0, 300)}`);
+  }
+
+  const body = await res.json() as {
+    content?: Array<{ type?: string; text?: string }>;
+    error?: { message?: string };
+  };
+  if (body.error?.message) {
+    throw new Error(`MiniMax lyric draft failed: ${body.error.message}`);
+  }
+
+  const text = (body.content ?? [])
+    .filter((block) => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text?.trim() || '')
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+
+  if (!text) {
+    throw new Error('MiniMax lyric draft returned no text');
+  }
+
+  return text;
+}
+
+async function generateMiniMaxMusic(
+  input: {
+    prompt?: string;
+    lyrics?: string;
+    instrumental?: boolean;
+    autoLyrics?: boolean;
+    referenceAudioUrl?: string;
+    model?: string;
+  },
+  cfg: MusicGeneratorConfig,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  const prompt = input.prompt?.trim();
+  const referenceAudioUrl = input.referenceAudioUrl?.trim();
+  const model = input.model?.trim() || (referenceAudioUrl ? 'music-cover' : cfg.model);
+  let lyrics = input.lyrics?.trim();
+
+  if (!prompt && !lyrics && !referenceAudioUrl) {
+    return {
+      content: 'Music generation requires at least one of: prompt, lyrics, or referenceAudioUrl.',
+      is_error: true,
+    };
+  }
+
+  let generatedLyrics = false;
+  if (!lyrics && !input.instrumental && prompt) {
+    lyrics = await draftMiniMaxLyrics(prompt, cfg, ctx);
+    generatedLyrics = true;
+  }
+
+  const body: Record<string, unknown> = {
+    model,
+    output_format: 'url',
+  };
+  if (prompt) body.prompt = prompt;
+  if (lyrics) body.lyrics = lyrics;
+  if (input.instrumental) body.is_instrumental = true;
+  const shouldAutoGenerateLyrics = Boolean(input.autoLyrics && !lyrics);
+  if (shouldAutoGenerateLyrics) body.lyrics_optimizer = true;
+  if (referenceAudioUrl) body.audio_url = referenceAudioUrl;
+
+  const res = await fetch(`${cfg.baseUrl}/v1/music_generation`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${cfg.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal: mediaSignal(ctx, 240_000),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    return { content: `MiniMax Music API error: HTTP ${res.status} — ${errText.slice(0, 300)}`, is_error: true };
+  }
+
+  const data = await res.json() as {
+    data?: { audio?: string; status?: number };
+    extra_info?: { music_duration?: number; music_sample_rate?: number };
+    base_resp?: { status_code?: number; status_msg?: string };
+  };
+  if (data.base_resp?.status_code && data.base_resp.status_code !== 0) {
+    return { content: `MiniMax Music API error: ${data.base_resp.status_msg ?? 'unknown error'}`, is_error: true };
+  }
+
+  const audioValue = data.data?.audio;
+  if (!audioValue) {
+    return { content: `No audio returned from MiniMax ${model}.`, is_error: true };
+  }
+
+  let buf: Buffer;
+  if (/^https?:\/\//i.test(audioValue)) {
+    const fileRes = await fetch(audioValue, { signal: mediaSignal(ctx, 120_000) });
+    if (!fileRes.ok) {
+      return { content: `Music download failed: HTTP ${fileRes.status}`, is_error: true };
+    }
+    buf = Buffer.from(await fileRes.arrayBuffer());
+  } else {
+    buf = Buffer.from(audioValue, 'hex');
+  }
+
+  if (detectReturnedArtifactContentType(buf) !== 'audio/mpeg') {
+    throw new Error('MiniMax returned unsupported audio; only MP3 can be attached.');
+  }
+
+  const details = [
+    `model=${model}`,
+    input.instrumental ? 'instrumental' : 'vocal',
+    generatedLyrics ? 'lyrics=drafted' : null,
+    formatMusicDuration(data.extra_info?.music_duration) ? `duration=${formatMusicDuration(data.extra_info?.music_duration)}` : null,
+    data.extra_info?.music_sample_rate ? `sample_rate=${data.extra_info.music_sample_rate}` : null,
+  ].filter(Boolean).join(', ');
+
+  const artifact = writeReturnedArtifactBytes({
+    workspacePath: (ctx.artifactWorkspacePath ?? ctx.workspacePath),
+    bytes: buf,
+    stem: `music-${model}`,
+    generatedBy: 'generate_music',
+    caption: prompt?.slice(0, 200) || 'MiniMax music generation',
+  });
+  return returnedArtifactResult(
+    artifact,
+    `Music generated via minimax/${model}${details ? ` (${details})` : ''}`,
+  );
+}
+
+export const generateImageTool: ToolDefinition = {
+  name: 'generate_image',
+  description: 'Generate an image from a text prompt. Supports OpenAI (gpt-image-2, GPT Image legacy models, DALL-E), MiniMax (image-01), and xAI (grok-imagine-image, grok-imagine-image-pro). The image is returned to the current channel when that channel supports media. Size can be dimensions (1024x1024) or aspect ratio (16:9).',
+  input_schema: {
+    type: 'object',
+    properties: {
+      prompt: { type: 'string', description: 'Image generation prompt' },
+      size: { type: 'string', description: 'Optional image size override (for example: auto, 1024x1024, 1536x1024, 1024x1536, 16:9)' },
+      provider: { type: 'string', enum: ['openai', 'minimax', 'xai'], description: 'Optional provider override. Use xai for faster Grok image generation; openai for GPT Image.' },
+      model: { type: 'string', description: 'Optional model override, e.g. grok-imagine-image, grok-imagine-image-pro, gpt-image-2, image-01.' },
+    },
+    required: ['prompt'],
+  },
+
+  async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+    const prompt = input.prompt as string;
+    const size = typeof input.size === 'string' && input.size.trim() ? input.size.trim() : undefined;
+    const provider = typeof input.provider === 'string' && input.provider.trim() ? input.provider.trim() : undefined;
+    const model = typeof input.model === 'string' && input.model.trim() ? input.model.trim() : undefined;
+    const imageConfig = resolveImageGeneratorConfig({ provider, model });
+
+    if (!imageConfig.apiKey) {
+      return { content: `Image generation unavailable — ${imageConfig.provider} API key not configured.`, is_error: true };
+    }
+
+    try {
+      if (imageConfig.provider === 'minimax') {
+        return await generateMiniMaxImage(prompt, size, imageConfig, ctx);
+      }
+      if (imageConfig.provider === 'openai') {
+        return await generateOpenAIImage(prompt, size, imageConfig, ctx);
+      }
+      if (imageConfig.provider === 'xai') {
+        return await generateXAIImage(prompt, size, imageConfig, ctx);
+      }
+      return {
+        content: `Image generation unavailable — provider "${imageConfig.provider}" is not implemented. Use "openai", "minimax", or "xai" in Settings.`,
+        is_error: true,
+      };
+    } catch (err) {
+      return { content: `Image generation error: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
+    }
+  },
+};
+
+export const generateMusicTool: ToolDefinition = {
+  name: 'generate_music',
+  description: 'Generate music via MiniMax Music. Supports original songs, instrumentals, and cover generation from a reference audio URL. Returns the generated track as an audio file attachment.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      prompt: { type: 'string', description: 'Style, mood, or song concept. Example: cinematic outlaw ballad with dusty guitars and a female vocal.' },
+      lyrics: { type: 'string', description: 'Optional lyrics. MiniMax works best with section tags like [Verse], [Chorus], [Bridge].' },
+      instrumental: { type: 'boolean', description: 'Set true to generate an instrumental track.' },
+      autoLyrics: { type: 'boolean', description: 'Set true to have MiniMax generate/refine lyrics from the prompt. If omitted, Home23 enables this automatically for prompt-only vocal requests.' },
+      referenceAudioUrl: { type: 'string', description: 'Optional reference audio URL for cover mode. If provided, the tool defaults to MiniMax music-cover.' },
+      model: { type: 'string', description: 'Optional MiniMax music model override. Defaults to music-2.6, or music-cover when referenceAudioUrl is provided.' },
+    },
+  },
+
+  async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+    const musicConfig = resolveMusicGeneratorConfig();
+
+    if (!musicConfig.apiKey) {
+      return { content: `Music generation unavailable — ${musicConfig.provider} API key not configured.`, is_error: true };
+    }
+    if (musicConfig.provider !== 'minimax') {
+      return {
+        content: `Music generation unavailable — provider "${musicConfig.provider}" is not implemented. Use "minimax" in config.`,
+        is_error: true,
+      };
+    }
+
+    try {
+      return await generateMiniMaxMusic({
+        prompt: typeof input.prompt === 'string' ? input.prompt : undefined,
+        lyrics: typeof input.lyrics === 'string' ? input.lyrics : undefined,
+        instrumental: input.instrumental === true,
+        autoLyrics: input.autoLyrics === true,
+        referenceAudioUrl: typeof input.referenceAudioUrl === 'string' ? input.referenceAudioUrl : undefined,
+        model: typeof input.model === 'string' ? input.model : undefined,
+      }, musicConfig, ctx);
+    } catch (err) {
+      return { content: `Music generation error: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
+    }
+  },
+};
+
+export const ttsTool: ToolDefinition = {
+  name: 'tts',
+  description: 'Convert text to speech using the configured TTS provider. The voice file is returned to the current channel when that channel supports media.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      text: { type: 'string', description: 'Text to speak' },
+    },
+    required: ['text'],
+  },
+
+  async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+    const text = input.text as string;
+
+    if (!ctx.ttsService) {
+      return { content: 'TTS not available — service not configured.', is_error: true };
+    }
+
+    try {
+      const buf = await ctx.ttsService.speak(text, true, ctx.abortSignal);
+      if (!buf) return { content: 'TTS returned no audio.', is_error: true };
+      if (detectReturnedArtifactContentType(buf) !== 'audio/mpeg') {
+        throw new Error('TTS returned unsupported audio; only MP3 can be attached.');
+      }
+
+      const artifact = writeReturnedArtifactBytes({
+        workspacePath: (ctx.artifactWorkspacePath ?? ctx.workspacePath),
+        bytes: buf,
+        stem: 'tts',
+        generatedBy: 'tts',
+        caption: text.slice(0, 200),
+      });
+      return returnedArtifactResult(artifact, 'Voice message generated');
+    } catch (err) {
+      return { content: `TTS error: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
+    }
+  },
+};

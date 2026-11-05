@@ -1,0 +1,27 @@
+{
+  "schema": "home23.embedder-stage5-context-rank-receipt.v1",
+  "ok": true,
+  "closedAt": "2026-09-11T03:27:00Z",
+  "note": "Worktree memory-search.js overlay on the running TEST dashboard only. Packaged copy restored after the probe. host.mjs was not left with a dirty payload.",
+  "query": "How does sunshine lift moisture that later falls as weather and replenishes hidden reservoirs?",
+  "beforeFix": {
+    "topHits": "conversation_sessions echoing the paraphrase and 1b plant answers; hydro/granite absent from top 8"
+  },
+  "afterFix": {
+    "retrievalMode": "semantic-ann-delta-overlay",
+    "conversationOrConsolidatedHits": 0,
+    "hits": [
+      { "id": "2", "similarity": 0.7111, "tag": ".stage5-host-import", "doc": "hydrologic" },
+      { "id": "1", "similarity": 0.5555, "tag": ".stage5-host-import", "doc": "granite" }
+    ],
+    "hydrologicFirst": true,
+    "hydrologicBeatsGranite": true
+  },
+  "chatAfterFix": {
+    "model": "llama3.2:3b",
+    "brainCues": 5,
+    "usedImportedUsgsWording": false,
+    "turn1": "Invented molecular vibration + plants; mentioned hydrologic cycle; said it could not find information",
+    "turn2": "Emitted a fake web_search instead of quoting the note"
+  }
+}

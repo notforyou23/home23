@@ -1,0 +1,108 @@
+{
+  "id": "home23-owned-embedder-stage1-public-20260910",
+  "kind": "nonpersonal",
+  "notes": [
+    "Public synthetic English only. No personal, home, or ledger text.",
+    "Private representative pairs may be supplied via gitignored private-corpus.json; aggregates only are recorded."
+  ],
+  "texts": {
+    "library_hours": "The public library on Maple Street opens at nine in the morning and closes at eight at night.",
+    "library_hours_para": "Maple Street library is open from 9 a.m. until 8 p.m.",
+    "library_closed_sundays": "The Maple Street library does not open on Sundays.",
+    "rain_forecast": "Light rain is expected this afternoon, so outdoor games will move indoors.",
+    "rain_forecast_para": "Showers later today mean the picnic should be relocated inside.",
+    "clear_skies": "Tomorrow will be sunny and dry with almost no cloud cover.",
+    "node_install": "Install Node.js 22 from the official site, then verify the version with node --version.",
+    "node_install_para": "Download the official Node 22 runtime and confirm it reports the expected version.",
+    "bread_recipe": "Mix flour, water, salt, and yeast, then let the dough rise before baking the loaf.",
+    "train_times": "The northbound commuter train leaves platform three at 7:14 and reaches Central Station at 7:46.",
+    "train_times_para": "Catch the 7:14 train from platform 3 to arrive at Central by 7:46.",
+    "airport_delay": "Fog at the coastal airport delayed departures by forty minutes this morning.",
+    "recycle_doc": "Glass bottles and jars go in the blue bin. Rinse them first. Plastic bags are not accepted in curbside recycling and should be returned to the grocery store drop-off.",
+    "recycle_query": "Where should washed glass jars be placed for recycling pickup?",
+    "embed_doc": "An embedding model turns a sentence into a list of numbers so similar meanings land near each other. Search can then rank documents by distance instead of exact keywords.",
+    "embed_query": "How can a program find documents that mean the same thing as a question?",
+    "orange_doc": "The sweet orange is a citrus fruit grown in warm climates. People eat the segments fresh or press them for juice.",
+    "orange_query": "What fruit is commonly squeezed for breakfast juice?",
+    "unrelated_geology": "Granite is an igneous rock formed from slowly cooled magma beneath the crust.",
+    "unrelated_music": "A waltz is typically written in triple meter and accented on the first beat.",
+    "short_ok": "Ok sure.",
+    "short_thanks": "Thanks!",
+    "short_gotit": "Got it.",
+    "short_morning": "Morning.",
+    "owner_setup": "A new owner creates a home through the companion app. The companion prepares local services and starts the home without asking the owner to edit process files.",
+    "owner_setup_para": "The companion application sets up a new household automatically so the owner does not configure supervisors by hand.",
+    "truncation_source": "Semantic memory stores a compact record of what was said so later retrieval can find related notes. Repeat for length: the catalog lists opening hours, late fees, and weekend closures for every branch in the county system. The same paragraph continues with interlibrary loan rules, hold limits, and the requirement that cards expire after two unused years. Additional policy text describes quiet rooms, after-school tutoring, and how to reserve a meeting space online."
+  },
+  "pairs": [
+    { "id": "p-library-para", "kind": "paraphrase", "left": "library_hours", "right": "library_hours_para", "expect": "same-side-high" },
+    { "id": "p-rain-para", "kind": "paraphrase", "left": "rain_forecast", "right": "rain_forecast_para", "expect": "same-side-high" },
+    { "id": "p-node-para", "kind": "paraphrase", "left": "node_install", "right": "node_install_para", "expect": "same-side-high" },
+    { "id": "p-train-para", "kind": "paraphrase", "left": "train_times", "right": "train_times_para", "expect": "same-side-high" },
+    { "id": "p-setup-para", "kind": "paraphrase", "left": "owner_setup", "right": "owner_setup_para", "expect": "same-side-high" },
+    { "id": "p-library-sunday", "kind": "related", "left": "library_hours", "right": "library_closed_sundays", "expect": "related" },
+    { "id": "p-rain-clear", "kind": "related-contrast", "left": "rain_forecast", "right": "clear_skies", "expect": "related-or-mid" },
+    { "id": "p-library-rain", "kind": "unrelated", "left": "library_hours", "right": "rain_forecast", "expect": "below-floor" },
+    { "id": "p-node-bread", "kind": "unrelated", "left": "node_install", "right": "bread_recipe", "expect": "below-floor" },
+    { "id": "p-train-airport", "kind": "related", "left": "train_times", "right": "airport_delay", "expect": "related" },
+    { "id": "p-library-geology", "kind": "unrelated", "left": "library_hours", "right": "unrelated_geology", "expect": "below-floor" },
+    { "id": "p-rain-music", "kind": "unrelated", "left": "rain_forecast", "right": "unrelated_music", "expect": "below-floor" },
+    { "id": "p-recycle-retr", "kind": "retrieval", "left": "recycle_query", "right": "recycle_doc", "expect": "same-side-high" },
+    { "id": "p-embed-retr", "kind": "retrieval", "left": "embed_query", "right": "embed_doc", "expect": "same-side-high" },
+    { "id": "p-orange-retr", "kind": "retrieval", "left": "orange_query", "right": "orange_doc", "expect": "same-side-high" },
+    { "id": "p-recycle-wrong", "kind": "retrieval-negative", "left": "recycle_query", "right": "embed_doc", "expect": "below-floor" },
+    { "id": "p-short-ok-library", "kind": "short-turn", "left": "short_ok", "right": "library_hours", "expect": "skip-semantic" },
+    { "id": "p-short-thanks-rain", "kind": "short-turn", "left": "short_thanks", "right": "rain_forecast", "expect": "skip-semantic" },
+    { "id": "p-short-gotit-node", "kind": "short-turn", "left": "short_gotit", "right": "node_install", "expect": "skip-semantic" },
+    { "id": "p-short-morning-train", "kind": "short-turn", "left": "short_morning", "right": "train_times", "expect": "skip-semantic" }
+  ],
+  "retrievalSets": [
+    {
+      "id": "r-recycle",
+      "query": "recycle_query",
+      "documents": ["recycle_doc", "embed_doc", "orange_doc", "library_hours", "unrelated_geology"],
+      "relevant": ["recycle_doc"]
+    },
+    {
+      "id": "r-embed",
+      "query": "embed_query",
+      "documents": ["embed_doc", "recycle_doc", "node_install", "unrelated_music", "bread_recipe"],
+      "relevant": ["embed_doc"]
+    },
+    {
+      "id": "r-orange",
+      "query": "orange_query",
+      "documents": ["orange_doc", "bread_recipe", "recycle_doc", "clear_skies", "library_hours"],
+      "relevant": ["orange_doc"]
+    },
+    {
+      "id": "r-library",
+      "query": "library_hours_para",
+      "documents": ["library_hours", "library_closed_sundays", "train_times", "rain_forecast", "unrelated_geology"],
+      "relevant": ["library_hours", "library_closed_sundays"]
+    }
+  ],
+  "seedContextPools": [
+    {
+      "id": "sc-library",
+      "turn": "library_hours_para",
+      "anchors": ["library_hours", "library_closed_sundays", "rain_forecast", "node_install", "unrelated_geology", "bread_recipe", "unrelated_music"]
+    },
+    {
+      "id": "sc-recycle",
+      "turn": "recycle_query",
+      "anchors": ["recycle_doc", "embed_doc", "orange_doc", "train_times", "clear_skies", "unrelated_music"]
+    },
+    {
+      "id": "sc-short",
+      "turn": "short_ok",
+      "anchors": ["library_hours", "rain_forecast", "node_install", "bread_recipe"]
+    }
+  ],
+  "truncation": {
+    "id": "trunc-1000",
+    "text": "truncation_source",
+    "seedSlice": 1000,
+    "memorySlice": 2000
+  }
+}

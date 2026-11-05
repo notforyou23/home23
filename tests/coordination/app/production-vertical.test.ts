@@ -64,7 +64,7 @@ function actualAgent(root: string, resident = "jerry") {
 async function startLocalModelFixture() {
   const requests: Array<{ messages?: Array<{ role?: string; content?: unknown }> }> = [];
   const server: Server = createServer(async (request, response) => {
-    if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
+    if (request.method !== "POST" || (request.url !== "/v1/chat/completions" && request.url !== "/api/chat")) {
       response.writeHead(404).end();
       return;
     }
@@ -75,10 +75,12 @@ async function startLocalModelFixture() {
       requests.push(requestBody);
       const userContent = String(requestBody.messages?.findLast((message) => message.role === "user")?.content ?? "");
       response.writeHead(200, { "content-type": "application/json" });
+      const message = { role: "assistant", content: userContent.includes("Forrest")
+        ? "Canonical Forrest response."
+        : "Canonical Jerry response." };
       response.end(JSON.stringify({
-        choices: [{ message: { role: "assistant", content: userContent.includes("Forrest")
-          ? "Canonical Forrest response."
-          : "Canonical Jerry response." } }],
+        message,
+        choices: [{ message }],
       }));
     } catch {
       response.writeHead(500).end();

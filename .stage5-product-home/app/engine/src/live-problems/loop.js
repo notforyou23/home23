@@ -1,0 +1,487 @@
+/**
+ * LiveProblemsLoop — verify → remediate → re-verify → escalate cadence.
+ *
+ * Ticks every VERIFY_INTERVAL_MS. For each tracked problem:
+ *   1. Run the verifier. Update lastResult.
+ *   2. If ok → mark resolved (if not already), stop.
+ *   3. If not ok → look at current remediation step:
+ *        - If step exists and cooldown elapsed, run it.
+ *        - If step succeeds, next tick will re-verify.
+ *        - If step is rejected or fails, advance stepIndex.
+ *   4. When stepIndex >= plan.length, the final remediation (usually
+ *      notify_jtr) has run and failed or was exhausted; mark escalated so we
+ *      don't loop the same plan.
+ *
+ * Escalation is opt-in per problem. `notify_jtr` is fuse-box only
+ * (`args.fuseBox: true` or severity critical/emergency). Scenery plans may
+ * still list notify_jtr; the loop starves those so the operator can walk away.
+ * Dashboard still shows open/chronic problems.
+ */
+
+const fs = require('fs');
+const os = require('os');
+const { runVerifier } = require('./verifiers');
+const { runRemediator } = require('./remediators');
+const { isAgendaHandoffProblem, isOperatorSuppressed } = require('./store');
+const { appendSignal } = require('../cognition/signals');
+const { createFromFuseNotify } = require('../os-kernel/operator-intents');
+
+const DEFAULT_INTERVAL_MS = 90 * 1000;          // 1.5 min between ticks
+const DEFAULT_STEP_COOLDOWN_MIN = 10;           // cooldown per step if not specified
+const WARMUP_DELAY_MS = 20 * 1000;              // wait 20s after start before first tick
+const RESOLVED_REVERIFY_MS = 10 * 60 * 1000;    // re-verify resolved every 10 min
+
+function getCompletedDispatchRecipe(problem) {
+  if (!problem?.dispatchedAt || !problem?.fixRecipe?.at) return null;
+  const dispatchedAtMs = Date.parse(problem.dispatchedAt);
+  const recipeAtMs = Date.parse(problem.fixRecipe.at);
+  if (!dispatchedAtMs || !recipeAtMs || recipeAtMs < dispatchedAtMs) return null;
+  if (problem.dispatchedTurnId && problem.fixRecipe.turnId && problem.fixRecipe.turnId !== problem.dispatchedTurnId) {
+    return null;
+  }
+  return problem.fixRecipe;
+}
+
+function classifyDispatchRecipe(recipe) {
+  const summary = String(recipe?.summary || '');
+  const summaryLower = summary.toLowerCase();
+  const explicitOutcome = String(recipe?.dispatchOutcome || '').toLowerCase();
+  const explicitVerifier = String(recipe?.verifierStatus || '').toLowerCase();
+
+  if (explicitOutcome === 'fixed' || explicitVerifier === 'pass') {
+    return { outcome: 'success', advance: false };
+  }
+  if (
+    explicitOutcome === 'failed'
+    || explicitOutcome === 'blocked'
+    || explicitOutcome === 'unknown'
+    || explicitVerifier === 'fail'
+    || explicitVerifier === 'unknown'
+  ) {
+    return { outcome: 'failed', advance: true };
+  }
+  if (
+    summaryLower.includes('operation was aborted due to timeout')
+    || summaryLower.includes('error calling ')
+    || summaryLower.includes('timed out')
+    || summaryLower.includes('timeout')
+    || summaryLower.includes('no tool calls')
+    || summaryLower.includes('tool calls in ~') && summaryLower.includes('outcome: error')
+  ) {
+    return { outcome: 'failed', advance: true };
+  }
+  return { outcome: 'failed', advance: true };
+}
+
+function expandHome(p) {
+  if (!p || typeof p !== 'string') return p;
+  return p.startsWith('~') ? p.replace(/^~/, os.homedir()) : p;
+}
+
+function verifierSourcePaths(verifier) {
+  if (!verifier?.type) return [];
+  if (verifier.type === 'composed') {
+    return (verifier.args?.verifiers || []).flatMap((child) => verifierSourcePaths(child));
+  }
+  const p = verifier.args?.path;
+  return typeof p === 'string' && p.trim() ? [expandHome(p)] : [];
+}
+
+function verifierSourceChangedSinceLastCheck(problem) {
+  const lastMs = problem?.lastCheckedAt ? Date.parse(problem.lastCheckedAt) : 0;
+  if (!lastMs) return true;
+  for (const p of verifierSourcePaths(problem?.verifier)) {
+    try {
+      if (fs.statSync(p).mtimeMs > lastMs) return true;
+    } catch {
+      // Missing/unreadable verifier inputs should be rechecked so the verifier
+      // records the current failure instead of staying hidden behind cooldown.
+      return true;
+    }
+  }
+  return false;
+}
+
+function shouldReverifyResolvedProblem(problem, { force = false, nowMs = Date.now() } = {}) {
+  if (isAgendaHandoffProblem(problem) && problem?.handoff?.status === 'terminal') return false;
+  if (force) return true;
+  const lastMs = problem?.lastCheckedAt ? Date.parse(problem.lastCheckedAt) : 0;
+  if (!lastMs) return true;
+  if (nowMs - lastMs >= RESOLVED_REVERIFY_MS) return true;
+  return verifierSourceChangedSinceLastCheck(problem);
+}
+
+class LiveProblemsLoop {
+  constructor({ store, logger, ctxProvider, intervalMs }) {
+    this.store = store;
+    this.logger = logger || { info() {}, warn() {}, error() {} };
+    this.ctxProvider = ctxProvider || (() => ({}));
+    this.intervalMs = intervalMs || DEFAULT_INTERVAL_MS;
+    this.running = false;
+    this.timer = null;
+    this._ticking = false;
+    this._processingGeneration = new Map();
+  }
+
+  start() {
+    if (this.running) return;
+    this.running = true;
+    this.timer = setTimeout(() => this.tick(), WARMUP_DELAY_MS);
+    this.logger.info?.('[live-problems] loop started');
+  }
+
+  stop() {
+    this.running = false;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  _schedule() {
+    if (!this.running) return;
+    this.timer = setTimeout(() => this.tick(), this.intervalMs);
+  }
+
+  async tick() {
+    if (this._ticking) { this._schedule(); return; }
+    this._ticking = true;
+    try {
+      // Pick up external edits (dashboard UI writes the JSON directly from a
+      // separate process). If the file changed since our last load, refresh.
+      this.store.reloadIfChanged();
+      this.store.pruneResolved();
+      const all = this.store.all();
+      for (const p of all) {
+        if (p.state === 'unverifiable') continue;
+        if (p.state === 'resolved') {
+          if (!shouldReverifyResolvedProblem(p)) continue;
+        }
+        await this._processOne(p);
+      }
+    } catch (err) {
+      this.logger.warn?.(`[live-problems] tick error: ${err.message}`);
+    } finally {
+      this._ticking = false;
+      this._schedule();
+    }
+  }
+
+  async _processOne(p) {
+    const generation = (this._processingGeneration.get(p.id) || 0) + 1;
+    this._processingGeneration.set(p.id, generation);
+    const startedUpdatedAt = p.updatedAt;
+    const ctx = this.ctxProvider();
+    const priorState = p.state;
+    const priorRemediation = Array.isArray(p.remediationLog) ? p.remediationLog.slice(-5) : [];
+    // 1. Verify
+    const result = await runVerifier(p.verifier, ctx);
+
+    // processNow/direct callers can overlap the scheduled loop. Only the most
+    // recent invocation for this problem may apply its verifier result. Also
+    // honor a resolution written outside this loop while verification ran.
+    const currentBeforeVerification = this.store.get(p.id);
+    if (this._processingGeneration.get(p.id) !== generation) return;
+    if (
+      !result.ok
+      && currentBeforeVerification?.state === 'resolved'
+      && currentBeforeVerification.updatedAt !== startedUpdatedAt
+    ) return;
+    this.store.recordVerification(p.id, result);
+
+    // recordVerification intentionally keeps already-resolved problems resolved
+    // on transient transport failures. Respect that decision here; otherwise a
+    // single aborted localhost fetch can still fall through into remediation and
+    // dispatch an agent for a healthy service.
+    const currentAfterVerification = this.store.get(p.id);
+    if (!result.ok && priorState === 'resolved' && currentAfterVerification?.state === 'resolved') {
+      return;
+    }
+
+    if (result.ok) {
+      // Emit a resolved-signal on the edge transition open/chronic → resolved.
+      if (priorState === 'open' || priorState === 'chronic') {
+        try {
+          const fixRecipe = summarizeRemediation(priorRemediation);
+          appendSignal(ctx.brainDir || this.store.brainDir, {
+            type: 'resolved',
+            source: 'live-problems',
+            title: `resolved: ${p.claim || p.id}`,
+            message: fixRecipe
+              ? `${p.claim || p.id} — ${fixRecipe}`
+              : p.claim || p.id,
+            evidence: {
+              problemId: p.id,
+              verifierDetail: result.detail || null,
+              fixRecipe: fixRecipe || null,
+              priorState,
+            },
+          });
+        } catch (err) {
+          this.logger.warn?.(`[live-problems] signal emit failed: ${err.message}`);
+        }
+      }
+      // If an agent was dispatched, clear dispatch state so a future re-opening
+      // starts fresh.
+      if (p.dispatchedAt) this.store.clearDispatch(p.id);
+      return;
+    }
+
+    // The operator has stood this one down. Keep verifying so the truth stays
+    // current on the dashboard, but spend nothing on remediating it.
+    if (isOperatorSuppressed(p)) {
+      const decision = p.operatorDecision || {};
+      this.logger.info?.(
+        `[live-problems] ${p.id}: remediation suppressed by operator `
+        + `(${decision.kind || 'muted'}${p.mutedUntil ? ` until ${p.mutedUntil}` : ''})`
+      );
+      return;
+    }
+
+    // Cap auth-spine theater: repeated 401s are one wire to fix, not a plot.
+    // Prefer one clear receipt, then stop burning cycles until the token path works.
+    const recentLog = Array.isArray(p.remediationLog) ? p.remediationLog.slice(-6) : [];
+    const authFails = recentLog.filter((e) =>
+      e && (e.type === 'dispatch_to_agent' || e.type === 'dispatch_to_worker' || e.type === 'notify_jtr')
+      && e.outcome === 'failed'
+      && /401|unauthorized/i.test(String(e.detail || ''))
+    ).length;
+    if (authFails >= 2) {
+      if (!p.escalated) this.store.markEscalated(p.id);
+      this.logger.info?.(`[live-problems] ${p.id}: starving auth-failure remediation loop (${authFails} recent 401s)`);
+      return;
+    }
+
+    // 2. Remediate if plan + cooldown allows
+    const plan = Array.isArray(p.remediation) ? p.remediation : [];
+    const step = plan[p.stepIndex || 0];
+    if (!step) {
+      if (isAgendaHandoffProblem(p)) {
+        const last = Array.isArray(p.remediationLog) ? p.remediationLog.at(-1) : null;
+        this.store.completeAgendaHandoff(p.id, {
+          outcome: /budget exhausted/i.test(String(last?.detail || ''))
+            ? 'budget_exhausted'
+            : (last?.outcome === 'rejected' ? 'dispatch_rejected' : 'dispatch_failed'),
+          detail: last?.detail || 'agenda handoff remediation plan exhausted',
+          source: 'dispatch',
+        });
+        return;
+      }
+      // Plan exhausted. If the last step was notify_jtr, it has already fired.
+      // Mark escalated once so we don't keep trying.
+      if (!p.escalated && plan.length > 0) this.store.markEscalated(p.id);
+      return;
+    }
+
+    // A rigid remediation can succeed mechanically while failing to change
+    // reality. Example: a cleanup/restart command exits 0, but the verifier is
+    // still false on the next tick. Advance instead of repeating the same
+    // ineffective success forever.
+    if (shouldAdvanceAfterIneffectiveSuccess(p, step)) {
+      const limit = getSuccessAttemptLimit(step);
+      this.logger.info?.(`[live-problems] ${p.id}: step ${p.stepIndex} made no progress after ${limit} successful attempt(s), advancing`);
+      this.store.recordRemediation(p.id, {
+        step: p.stepIndex,
+        type: step.type,
+        outcome: 'failed',
+        detail: `no verifier progress after ${limit} successful ${step.type} attempt(s)`,
+      });
+      this.store.advanceRemediationStep(p.id);
+      return;
+    }
+
+    const isTier3Dispatch = step.type === 'dispatch_to_agent' || step.type === 'dispatch_to_worker';
+
+    // ── Serial Tier-3 lock: at most one Tier-3 dispatch in flight across
+    //    the whole store. If this problem is waiting to dispatch but another
+    //    is already in progress, skip this tick. (Keeps it simple; agent can
+    //    only diagnose one thing at a time without risking collisions.)
+    if (isTier3Dispatch && !p.dispatchedAt) {
+      const otherDispatched = this.store.all().find(q => q.id !== p.id && q.dispatchedAt);
+      if (otherDispatched) {
+        this.logger.info?.(`[live-problems] ${p.id}: waiting — ${otherDispatched.id} holds Tier-3 lock`);
+        return;
+      }
+    }
+
+    // For Tier-3 dispatch, skip the remediator call entirely when already
+    // dispatched — avoids 480 unnecessary HTTP calls + log entries + file
+    // writes over a 12h budget window. Just check budget expiry directly.
+    if (isTier3Dispatch && p.dispatchedAt) {
+      const completedRecipe = getCompletedDispatchRecipe(p);
+      if (completedRecipe) {
+        const completion = classifyDispatchRecipe(completedRecipe);
+        const summary = String(completedRecipe.summary || 'agent run completed').replace(/\s+/g, ' ').trim().slice(0, 240);
+        this.logger.info?.(`[live-problems] ${p.id}: dispatch finished (${completion.outcome})`);
+        this.store.recordRemediation(p.id, {
+          step: p.stepIndex,
+          type: step.type,
+          outcome: completion.outcome,
+          detail: summary,
+        });
+        this.store.clearDispatch(p.id);
+        if (completion.advance) this.store.advanceRemediationStep(p.id);
+        return;
+      }
+      const budgetHours = step.args?.budgetHours ?? 12;
+      const elapsedHours = (Date.now() - Date.parse(p.dispatchedAt)) / 3600000;
+      if (elapsedHours < budgetHours) return;  // agent still working
+      // Budget exceeded — advance past this step
+      this.logger.info?.(`[live-problems] ${p.id}: agent budget exhausted (${elapsedHours.toFixed(1)}h ≥ ${budgetHours}h)`);
+      this.store.recordRemediation(p.id, {
+        step: p.stepIndex, type: step.type,
+        outcome: 'failed', detail: `agent budget exhausted (${elapsedHours.toFixed(1)}h)`,
+      });
+      if (isAgendaHandoffProblem(p)) {
+        this.store.completeAgendaHandoff(p.id, {
+          outcome: 'budget_exhausted',
+          detail: `agent budget exhausted (${elapsedHours.toFixed(1)}h)`,
+          source: 'dispatch',
+        });
+      } else {
+        this.store.clearDispatch(p.id);
+        this.store.advanceRemediationStep(p.id);
+      }
+      return;
+    }
+
+    const cooldownMin = step.cooldownMin ?? DEFAULT_STEP_COOLDOWN_MIN;
+    const lastAt = p.lastRemediationAt ? Date.parse(p.lastRemediationAt) : 0;
+    const sinceMin = lastAt ? (Date.now() - lastAt) / 60000 : Infinity;
+    if (sinceMin < cooldownMin) {
+      return;   // in cooldown — let the next tick handle it
+    }
+
+    // Fuse-box only: do not page jtr for scenery remediations.
+    if (step.type === 'notify_jtr' && !isFuseBoxNotify(step)) {
+      this.logger.info?.(`[live-problems] ${p.id}: starving notify_jtr (fuse-box only)`);
+      this.store.recordRemediation(p.id, {
+        step: p.stepIndex,
+        type: step.type,
+        outcome: 'skipped',
+        detail: 'notify_jtr starved — fuse-box only (walk-away)',
+      });
+      if (!p.escalated) this.store.markEscalated(p.id);
+      this.store.advanceRemediationStep(p.id);
+      return;
+    }
+
+    // Fuse-box notify: raise a governed operator intent so the escalation
+    // shows up on the dashboard's "Needs You" rail, not just as a Telegram
+    // ping. The remediator formats its message from this intent when present.
+    if (isFuseBoxNotify(step) && ctx.osKernel) {
+      try {
+        const intent = createFromFuseNotify(ctx.osKernel.store, {
+          problemId: p.id,
+          agent: ctx.agentName || process.env.HOME23_AGENT || 'agent',
+          title: step.args?.title || p.claim || p.id,
+          why: step.args?.text || p.claim,
+          evidence: p.lastResult?.detail || '',
+          checklist: step.args?.checklist || [
+            'Review the issue',
+            'Take the safe action if offered',
+            'Mark done after verifier is green',
+          ],
+          safeAction: step.args?.safeAction || null,
+        });
+        step.args = { ...step.args, operatorIntent: intent };
+      } catch (err) {
+        this.logger.warn?.(`[live-problems] ${p.id}: operator intent create failed: ${err.message}`);
+      }
+    }
+
+    // 3. Run the remediator
+    this.logger.info?.(`[live-problems] ${p.id}: step ${p.stepIndex} → ${step.type}`);
+    // Pass the full problem record so dispatch_to_agent has verifier spec etc.
+    const out = await runRemediator(step, { ...ctx, problem: p });
+    this.store.recordRemediation(p.id, {
+      step: p.stepIndex,
+      type: step.type,
+      outcome: out.outcome,
+      detail: out.detail,
+    });
+
+    if (out.outcome === 'dispatched') {
+      // Agent accepted the job. Record dispatch metadata; loop will wait out
+      // the budget without re-running the step.
+      this.store.recordDispatch(p.id, { turnId: out.turnId || null });
+    } else if (out.outcome === 'in_progress') {
+      // Agent is working; nothing to do. Cooldown marker already written via
+      // lastRemediationAt so the next tick won't spam the call.
+    } else if (out.outcome === 'success' && step.type === 'notify_jtr') {
+      // Escalation step succeeded — don't keep paging jtr.
+      this.store.markEscalated(p.id);
+      this.store.advanceRemediationStep(p.id);
+    } else if (out.outcome === 'rejected' || out.outcome === 'failed') {
+      if (isTier3Dispatch && isAgendaHandoffProblem(p)) {
+        this.store.completeAgendaHandoff(p.id, {
+          outcome: out.outcome === 'rejected' ? 'dispatch_rejected' : 'dispatch_failed',
+          detail: out.detail || '',
+          source: 'dispatch',
+        });
+      } else {
+        // Clear dispatch state if this was the agent step failing past budget.
+        if (isTier3Dispatch) this.store.clearDispatch(p.id);
+        this.store.advanceRemediationStep(p.id);
+      }
+    }
+    // On 'success' for non-notify steps, leave stepIndex where it is. Next tick
+    // re-verifies; if the fix worked → resolved. If not, cooldown expires and
+    // we try the same step again until it rolls to the next one via failure.
+  }
+}
+
+function isFuseBoxNotify(step) {
+  if (!step || step.type !== 'notify_jtr') return false;
+  if (step.args?.fuseBox === true) return true;
+  const severity = String(step.args?.severity || '').toLowerCase();
+  return severity === 'critical' || severity === 'emergency';
+}
+
+function summarizeRemediation(entries) {
+  if (!entries || entries.length === 0) return '';
+  const useful = entries.filter(e => e && e.outcome && e.outcome !== 'rejected');
+  if (useful.length === 0) return '';
+  const parts = useful.slice(-3).map(e => {
+    const head = `${e.type}${e.outcome === 'success' ? ' ✓' : ` (${e.outcome})`}`;
+    const detail = e.detail ? ` — ${String(e.detail).slice(0, 120)}` : '';
+    return `${head}${detail}`;
+  });
+  return parts.join(' · ');
+}
+
+function getSuccessAttemptLimit(step) {
+  const raw = step?.maxSuccessAttempts ?? step?.maxAttempts;
+  const parsed = Number(raw);
+  if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  return 1;
+}
+
+function shouldAdvanceAfterIneffectiveSuccess(problem, step) {
+  if (!problem || !step) return false;
+  if (step.type === 'dispatch_to_agent' || step.type === 'dispatch_to_worker' || step.type === 'notify_jtr') return false;
+  const stepIndex = problem.stepIndex || 0;
+  const openedAt = Date.parse(problem.openedAt || problem.firstSeenAt || 0) || 0;
+  const lastCheckedAt = Date.parse(problem.lastCheckedAt || 0) || 0;
+  if (!lastCheckedAt) return false;
+
+  const successes = (problem.remediationLog || []).filter((entry) => {
+    if (!entry || entry.step !== stepIndex || entry.type !== step.type || entry.outcome !== 'success') {
+      return false;
+    }
+    const at = Date.parse(entry.at || 0) || 0;
+    return at >= openedAt && at <= lastCheckedAt;
+  });
+
+  if (successes.length < getSuccessAttemptLimit(step)) return false;
+
+  const lastSuccessAt = Date.parse(successes[successes.length - 1]?.at || 0) || 0;
+  return lastSuccessAt <= lastCheckedAt;
+}
+
+module.exports = {
+  LiveProblemsLoop,
+  DEFAULT_INTERVAL_MS,
+  classifyDispatchRecipe,
+  shouldAdvanceAfterIneffectiveSuccess,
+  shouldReverifyResolvedProblem,
+  isFuseBoxNotify,
+};

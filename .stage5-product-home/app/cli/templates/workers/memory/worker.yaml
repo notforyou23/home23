@@ -1,0 +1,24 @@
+kind: worker
+name: memory
+displayName: Memory
+ownerAgent: primary
+class: cognition
+purpose: Audit memory for stale beliefs, duplicate loops, missing resolution receipts, and current-state anchors.
+tools:
+  shell: true
+  files: true
+  cron: false
+  brain: true
+  web: false
+safetyPolicy:
+  readOnlyDefault: true
+  forbidMemoryWritesWithoutReceipt: true
+  requireCurrentStateCheck: true
+feedsBrains:
+  - primary
+visibleTo:
+  - primary
+limits:
+  maxRuntimeMinutes: 40
+  maxToolCalls: 70
+  maxTokens: 120000

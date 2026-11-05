@@ -1,0 +1,37 @@
+{
+  "id": "minimax-music-gen",
+  "version": "1.0.0",
+  "name": "MiniMax Music Gen",
+  "description": "Generate an original song, instrumental, or cover track when the ask is fundamentally 'make music from this idea'.",
+  "layer": "skill",
+  "runtime": "nodejs",
+  "category": "media",
+  "author": "home23",
+  "entry": "index.js",
+  "keywords": [
+    "music",
+    "song",
+    "instrumental",
+    "cover",
+    "lyrics",
+    "track",
+    "audio"
+  ],
+  "triggers": [
+    "make me a song",
+    "generate a track",
+    "create an instrumental",
+    "make a cover from this audio"
+  ],
+  "requiresTools": [],
+  "dependsOn": [],
+  "composes": [],
+  "sideEffects": true,
+  "hooks": {
+    "beforeRun": "hooks/before-run.js"
+  },
+  "actions": [
+    "compose",
+    "draft-lyrics"
+  ]
+}

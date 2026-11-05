@@ -1,0 +1,33 @@
+# Home23 Targets Registry
+#
+# Copy to config/targets.yaml for local live-problem verifier targets.
+# Keep this installation-specific: file paths, PM2 process names, private hosts,
+# and mounts should describe the current machine, not the public repo.
+
+files: []
+
+urls:
+  - url: "http://localhost:5002/home23/"
+    description: "Primary Home23 dashboard"
+  - url: "http://localhost:5002/api/live-problems"
+    description: "Live-problems registry via dashboard API"
+  - url: "http://localhost:43210/"
+    description: "Bundled COSMO23 research engine"
+  - url: "http://localhost:3415/"
+    description: "Bundled Evobrew IDE"
+
+pm2: []
+
+mounts:
+  - mount: "/"
+    description: "Root filesystem"
+
+sensors:
+  - id: "system.cpu"
+    description: "CPU load and uptime"
+  - id: "system.disk"
+    description: "Disk usage"
+  - id: "system.memory"
+    description: "Memory pressure"
+  - id: "system.process"
+    description: "PM2 process states"

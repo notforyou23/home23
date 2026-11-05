@@ -1,0 +1,11 @@
+{
+  "schema": "home23.product-install.v1",
+  "status": "installed",
+  "homeRoot": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-verify/.stage5-product-home",
+  "appRoot": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-verify/.stage5-product-home/app",
+  "nodePath": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-verify/.stage5-product-home/bin/node",
+  "pm2Path": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-stage5-verify/.stage5-product-home/tools/node_modules/pm2/bin/pm2",
+  "packageId": "b2bbac7377d83d1688466227fd7185aadb0b0e5a572a4bfd17d0d5057238a501",
+  "sourceCommit": "d8f45ba3c4173a02d4a722a66732ac78ceaacc31",
+  "replayed": false
+}

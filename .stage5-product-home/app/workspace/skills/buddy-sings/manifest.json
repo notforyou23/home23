@@ -1,0 +1,39 @@
+{
+  "id": "buddy-sings",
+  "version": "1.0.0",
+  "name": "Buddy Sings",
+  "description": "Let a Home23 companion sing in first person by turning persona context into a repeatable vocal identity and song prompt.",
+  "layer": "skill",
+  "runtime": "nodejs",
+  "category": "media",
+  "author": "home23",
+  "entry": "index.js",
+  "keywords": [
+    "buddy",
+    "sings",
+    "persona",
+    "character",
+    "song",
+    "first person",
+    "companion"
+  ],
+  "triggers": [
+    "let jerry sing",
+    "make the buddy sing",
+    "sing as the character",
+    "turn this persona into a song"
+  ],
+  "requiresTools": [],
+  "dependsOn": [],
+  "composes": [
+    "minimax-music-gen"
+  ],
+  "sideEffects": true,
+  "hooks": {
+    "beforeRun": "hooks/before-run.js"
+  },
+  "actions": [
+    "profile",
+    "sing"
+  ]
+}

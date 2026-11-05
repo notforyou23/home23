@@ -1,0 +1,71 @@
+{
+  "realInference": true,
+  "fixtureSubstituted": false,
+  "node": "v22.19.0",
+  "recipeId": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+  "expectedRecipeId": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+  "dimension": 768,
+  "expectedDimension": 768,
+  "warm": true,
+  "readyStatus": 200,
+  "artifactDigests": {
+    "config.json": "9ab00bd92cee80a569f708140b7b6c1661a65891ff3765b1519e181ba2f2c92b",
+    "onnx/model.onnx": "147d5aa88c2101237358e17796cf3a227cead1ec304ec34b465bb08e9d952965",
+    "tokenizer.json": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+    "tokenizer_config.json": "d7e0000bcc80134debd2222220427e6bf5fa20a669f40a0d0d1409cc18e0a9bc"
+  },
+  "encodings": [
+    {
+      "id": "library_hours",
+      "protocol": "ollama-native",
+      "status": 200,
+      "dim": 768,
+      "finite": true,
+      "l2": 20.235163
+    },
+    {
+      "id": "rain_forecast",
+      "protocol": "ollama-native",
+      "status": 200,
+      "dim": 768,
+      "finite": true,
+      "l2": 20.828318
+    },
+    {
+      "id": "node_install",
+      "protocol": "ollama-native",
+      "status": 200,
+      "dim": 768,
+      "finite": true,
+      "l2": 19.66415
+    },
+    {
+      "id": "recycle_query",
+      "protocol": "ollama-native",
+      "status": 200,
+      "dim": 768,
+      "finite": true,
+      "l2": 21.184826
+    },
+    {
+      "id": "unrelated_geology",
+      "protocol": "ollama-native",
+      "status": 200,
+      "dim": 768,
+      "finite": true,
+      "l2": 20.672376
+    }
+  ],
+  "openaiBatch": {
+    "status": 200,
+    "count": 5,
+    "dims": [
+      768,
+      768,
+      768,
+      768,
+      768
+    ]
+  },
+  "cacheReused": "/Users/jtr/_JTR23_/development/home23/.home23-worktrees/owned-embedder-encoder-stage1/scripts/embedder-experiment/.cache"
+}

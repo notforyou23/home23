@@ -1,0 +1,24 @@
+kind: worker
+name: freshness
+displayName: Freshness
+ownerAgent: primary
+class: ops
+purpose: Verify whether Home23 data, metrics, snapshots, receipts, and source files are current enough to trust.
+tools:
+  shell: true
+  files: true
+  cron: true
+  brain: true
+  web: false
+safetyPolicy:
+  readOnlyDefault: true
+  requireSemanticFreshness: true
+  requireVerifierBeforeSuccess: true
+feedsBrains:
+  - primary
+visibleTo:
+  - primary
+limits:
+  maxRuntimeMinutes: 30
+  maxToolCalls: 60
+  maxTokens: 90000

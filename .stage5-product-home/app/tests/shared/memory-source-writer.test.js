@@ -1,0 +1,673 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { copyFileSync, renameSync } from 'node:fs';
+import { promises as fsp } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
+
+const require = createRequire(import.meta.url);
+const {
+  advanceAnnBuiltFromRevision,
+  appendMemoryRevision,
+  compareAndSwapSourceRevision,
+  createMemorySourcePinProvider,
+  createOperationScratchQuota,
+  openMemorySource,
+  openPinnedSource,
+  readJsonl,
+  readManifest,
+  releaseOperationSource,
+  retireUnpinnedSources,
+  rewriteMemoryBase,
+  sourceDescriptorDigest,
+  writeJsonlGzAtomic,
+} = require('../../shared/memory-source');
+
+async function tempDir(prefix) {
+  return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
+}
+
+async function createCommittedFixture() {
+  const dir = await tempDir('home23-memory-source-writer-brain-');
+  const runtime = await tempDir('home23-memory-source-writer-runtime-');
+  const lockRoot = path.join(runtime, 'runtime', 'brain-source-locks');
+  const nodes = await writeJsonlGzAtomic(path.join(dir, 'memory-nodes.base-1.jsonl.gz'), [
+    { id: 'n1', concept: 'old committed canary' },
+  ]);
+  const edges = await writeJsonlGzAtomic(path.join(dir, 'memory-edges.base-1.jsonl.gz'), []);
+  await fsp.writeFile(path.join(dir, 'memory-delta.e2.jsonl'), '');
+  const manifest = {
+    formatVersion: 1,
+    generation: 'g1',
+    baseRevision: 1,
+    currentRevision: 1,
+    activeDeltaEpoch: 'e2',
+    activeBase: {
+      nodes: { file: 'memory-nodes.base-1.jsonl.gz', count: 1, bytes: nodes.bytes },
+      edges: { file: 'memory-edges.base-1.jsonl.gz', count: 0, bytes: edges.bytes },
+    },
+    activeDelta: {
+      epoch: 'e2',
+      file: 'memory-delta.e2.jsonl',
+      fromRevision: 2,
+      toRevision: 1,
+      count: 0,
+      committedBytes: 0,
+    },
+    ann: { indexFile: null, metaFile: null, builtFromRevision: 1 },
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  };
+  await fsp.writeFile(path.join(dir, 'memory-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  return { dir, runtime, lockRoot };
+}
+
+async function concepts(source) {
+  const result = [];
+  for await (const node of source.iterateNodes()) result.push(node.concept);
+  return result.sort();
+}
+
+function replacementCapturedView() {
+  return {
+    nodes: [{ id: 'replacement', concept: 'replacement canary' }],
+    edges: [],
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  };
+}
+
+async function readCommittedDelta(dir) {
+  const manifest = await readManifest(dir);
+  const rows = [];
+  for await (const row of readJsonl(path.join(dir, manifest.activeDelta.file), {
+    confinedRoot: dir,
+    byteLimit: manifest.activeDelta.committedBytes,
+    requireCompletePrefix: true,
+  })) rows.push(row);
+  return rows;
+}
+
+test('a fresh process can append on its first writable open', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const modulePath = require.resolve('../../shared/memory-source');
+  const script = String.raw`
+    const { appendMemoryRevision } = require(process.env.MEMORY_SOURCE_MODULE);
+    appendMemoryRevision(process.env.BRAIN_DIR, {
+      nodes: [{ id: 'fresh-process', concept: 'first writable open succeeds' }],
+    }, {
+      lockRoot: process.env.LOCK_ROOT,
+      summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+    }).then(() => process.exit(0), (error) => {
+      process.stderr.write(String(error && (error.stack || error.message) || error));
+      process.exit(1);
+    });
+  `;
+  const child = spawnSync(process.execPath, ['-e', script], {
+    env: {
+      ...process.env,
+      MEMORY_SOURCE_MODULE: modulePath,
+      BRAIN_DIR: dir,
+      LOCK_ROOT: lockRoot,
+    },
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
+
+  assert.equal(child.status, 0, child.stderr || child.stdout);
+  const manifest = await readManifest(dir);
+  assert.equal(manifest.currentRevision, 2);
+  assert.equal(manifest.summary.nodeCount, 2);
+});
+
+test('a failed full rewrite leaves the old manifest and delta authoritative', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  await assert.rejects(() => rewriteMemoryBase(dir, replacementCapturedView(), {
+    lockRoot,
+    faultAt: 'beforeManifestRename',
+  }), /injected:beforeManifestRename/);
+  const source = await openMemorySource(dir);
+  assert.deepEqual(await concepts(source), ['old committed canary']);
+  assert.equal((await readManifest(dir)).generation, 'g1');
+  await source.close();
+});
+
+test('a source change during staged full rewrite fails closed and removes staged files', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const before = await readManifest(dir);
+
+  await assert.rejects(() => rewriteMemoryBase(dir, replacementCapturedView(), {
+    lockRoot,
+    _testHooks: {
+      async afterBaseFiles() {
+        await appendMemoryRevision(dir, {
+          nodes: [{ id: 'concurrent', concept: 'concurrent committed canary' }],
+        }, {
+          lockRoot,
+          summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+        });
+      },
+    },
+  }), { code: 'source_changed', retryable: true });
+
+  const after = await readManifest(dir);
+  assert.equal(after.generation, before.generation);
+  assert.equal(after.currentRevision, before.currentRevision + 1);
+  const source = await openMemorySource(dir);
+  assert.deepEqual(await concepts(source), [
+    'concurrent committed canary',
+    'old committed canary',
+  ].sort());
+  await source.close();
+
+  const entries = await fsp.readdir(dir);
+  assert.deepEqual(
+    entries.filter((entry) => entry.includes('.tmp')).sort(),
+    [],
+    'failed staged full rewrite must not leave atomic tmp files',
+  );
+  assert.deepEqual(
+    entries.filter((entry) => entry.includes('g-2-')).sort(),
+    [],
+    'failed staged full rewrite must remove unpublished generation files',
+  );
+});
+
+test('uncommitted appended bytes are ignored and truncated by the next append', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  await assert.rejects(() => appendMemoryRevision(dir, {
+    nodes: [{ id: 'orphan', concept: 'must not cross' }],
+  }, { lockRoot, faultAt: 'afterDeltaFsync' }), /injected:afterDeltaFsync/);
+  await appendMemoryRevision(dir, {
+    nodes: [{ id: 'committed', concept: 'new committed canary' }],
+  }, {
+    lockRoot,
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+  });
+  const source = await openMemorySource(dir);
+  assert.deepEqual(await concepts(source), ['new committed canary', 'old committed canary']);
+  await source.close();
+});
+
+test('append rejects a delta pathname replacement before manifest publication', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const manifestBefore = await readManifest(dir);
+  const deltaPath = path.join(dir, manifestBefore.activeDelta.file);
+  await assert.rejects(() => appendMemoryRevision(dir, {
+    nodes: [{ id: 'raced', concept: 'must not publish' }],
+  }, {
+    lockRoot,
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+    _testHooks: {
+      beforeManifestRename() {
+        const displaced = `${deltaPath}.displaced`;
+        renameSync(deltaPath, displaced);
+        copyFileSync(displaced, deltaPath);
+      },
+    },
+  }), { code: 'source_changed' });
+  const manifestAfter = await readManifest(dir);
+  assert.equal(manifestAfter.generation, manifestBefore.generation);
+  assert.equal(manifestAfter.currentRevision, manifestBefore.currentRevision);
+  assert.equal(
+    manifestAfter.activeDelta.committedBytes,
+    manifestBefore.activeDelta.committedBytes,
+  );
+});
+
+test('delta records carry one epoch and strictly increasing sequence and revision', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const result = await appendMemoryRevision(dir, {
+    nodes: [{ id: 'n2' }, { id: 'n3' }],
+    removedNodeIds: ['n1'],
+  }, {
+    lockRoot,
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+  });
+  assert.equal(result.fromRevision + 2, result.toRevision);
+  const rows = await readCommittedDelta(dir);
+  assert.deepEqual(rows.map((row) => row.sequence), [1, 2, 3]);
+  assert.deepEqual(rows.map((row) => row.revision), [2, 3, 4]);
+  assert.equal(new Set(rows.map((row) => row.epoch)).size, 1);
+});
+
+// st_dev is assigned by the OS at MOUNT time and changes across reboots.
+// A persisted identity that includes it breaks every save after the next
+// reboot -- silently, forever. Measured 2026-07-15: both agents' manifests
+// recorded a dev that no longer matched the live volume eight minutes after
+// the manifest was written (a reboot remounted the volume); ino, size,
+// mtimeNs, and ctimeNs all still matched byte-for-byte.
+test('a committed delta whose dev changed (remount) still saves', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  await appendMemoryRevision(dir, {
+    nodes: [{ id: 'n2', concept: 'first committed append' }],
+  }, { lockRoot, summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 } });
+  const manifestPath = path.join(dir, 'memory-manifest.json');
+  const before = await readManifest(dir);
+  assert.equal(typeof before.activeDelta.fileIdentity.dev, 'string');
+
+  // Simulate a reboot remounting the volume: only the persisted dev changes.
+  // Not one byte of the delta file on disk is touched.
+  const remounted = {
+    ...before,
+    activeDelta: {
+      ...before.activeDelta,
+      fileIdentity: {
+        ...before.activeDelta.fileIdentity,
+        dev: String(BigInt(before.activeDelta.fileIdentity.dev) + 1n),
+      },
+    },
+  };
+  await fsp.writeFile(manifestPath, `${JSON.stringify(remounted, null, 2)}\n`);
+
+  const result = await appendMemoryRevision(dir, {
+    nodes: [{ id: 'n3', concept: 'second committed append after simulated remount' }],
+  }, { lockRoot, summary: { nodeCount: 3, edgeCount: 0, clusterCount: 1 } });
+  assert.equal(result.count, 1);
+
+  const source = await openMemorySource(dir);
+  assert.deepEqual(await concepts(source), [
+    'first committed append',
+    'old committed canary',
+    'second committed append after simulated remount',
+  ].sort());
+  await source.close();
+});
+
+// The guard exists to catch real content drift -- it must not be neutered
+// by the remount fix. A same-length in-place edit changes mtime/ctime but
+// keeps dev, ino, and size unchanged, so this exercises exactly the fields
+// sameCommittedContent still compares after dev is dropped.
+test('a committed delta whose CONTENT changed is still rejected', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  await appendMemoryRevision(dir, {
+    nodes: [{ id: 'n2', concept: 'first committed append' }],
+  }, { lockRoot, summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 } });
+  const manifest = await readManifest(dir);
+  const deltaPath = path.join(dir, manifest.activeDelta.file);
+  const original = await fsp.readFile(deltaPath, 'utf8');
+  assert.match(original, /first committed append/);
+  const tampered = original.replace('first committed append', 'first COMMITTED append');
+  assert.equal(tampered.length, original.length);
+  await fsp.writeFile(deltaPath, tampered);
+
+  await assert.rejects(() => appendMemoryRevision(dir, {
+    nodes: [{ id: 'n3', concept: 'must not commit' }],
+  }, { lockRoot, summary: { nodeCount: 3, edgeCount: 0, clusterCount: 1 } }), { code: 'source_changed' });
+
+  const manifestAfter = await readManifest(dir);
+  assert.equal(manifestAfter.currentRevision, manifest.currentRevision);
+});
+
+test('ANN completion advances only its built-from watermark', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const before = await readManifest(dir);
+  const result = await advanceAnnBuiltFromRevision(dir, {
+    lockRoot,
+    expectedGeneration: before.generation,
+    builtFromRevision: before.currentRevision,
+    indexFile: `memory-ann.${before.currentRevision}.index`,
+    metaFile: `memory-ann.${before.currentRevision}.meta.json`,
+  });
+  assert.equal(result.advanced, true);
+  assert.equal(result.manifest.currentRevision, before.currentRevision);
+  assert.equal(result.manifest.ann.builtFromRevision, before.currentRevision);
+});
+
+test('ANN completion publishes a bridgeable revision when source advances in the same epoch', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const pinned = await readManifest(dir);
+  await appendMemoryRevision(dir, {
+    nodes: [{ id: 'newer', concept: 'same generation newer revision' }],
+  }, {
+    lockRoot,
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+  });
+
+  const result = await advanceAnnBuiltFromRevision(dir, {
+    lockRoot,
+    expectedGeneration: pinned.generation,
+    expectedBaseRevision: pinned.baseRevision,
+    expectedDeltaEpoch: pinned.activeDeltaEpoch,
+    builtFromRevision: pinned.currentRevision,
+    indexFile: `memory-ann.${pinned.currentRevision}.index`,
+    metaFile: `memory-ann.${pinned.currentRevision}.meta.json`,
+  });
+
+  assert.equal(result.advanced, true);
+  assert.equal(result.coverage, 'overlay-covered');
+  assert.equal(result.manifest.generation, pinned.generation);
+  assert.equal(result.manifest.currentRevision, pinned.currentRevision + 1);
+  const after = await readManifest(dir);
+  assert.equal(after.ann.indexFile, `memory-ann.${pinned.currentRevision}.index`);
+  assert.equal(after.ann.metaFile, `memory-ann.${pinned.currentRevision}.meta.json`);
+  assert.equal(after.ann.builtFromRevision, pinned.currentRevision);
+});
+
+test('ANN completion rejects a scalar-valid manifest whose committed delta records are corrupt', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const pinned = await readManifest(dir);
+  await appendMemoryRevision(dir, { nodes: [{ id: 'newer', concept: 'newer' }] }, {
+    lockRoot, summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+  });
+  const current = await readManifest(dir);
+  const deltaPath = path.join(dir, current.activeDelta.file);
+  const text = await fsp.readFile(deltaPath, 'utf8');
+  await fsp.writeFile(deltaPath, text.replace('"sequence":1', '"sequence":9'));
+  await assert.rejects(() => advanceAnnBuiltFromRevision(dir, {
+    lockRoot,
+    expectedGeneration: pinned.generation,
+    expectedBaseRevision: pinned.baseRevision,
+    expectedDeltaEpoch: pinned.activeDeltaEpoch,
+    builtFromRevision: pinned.currentRevision,
+    indexFile: `memory-ann.${pinned.currentRevision}.index`,
+    metaFile: `memory-ann.${pinned.currentRevision}.meta.json`,
+  }), { code: 'source_unavailable' });
+  assert.equal((await readManifest(dir)).ann.indexFile, null);
+});
+
+test('ANN completion refuses to regress a newer published index', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const pinned = await readManifest(dir);
+  await appendMemoryRevision(dir, {
+    nodes: [{ id: 'newer', concept: 'newer' }],
+  }, { lockRoot, summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 } });
+  const current = await readManifest(dir);
+  await advanceAnnBuiltFromRevision(dir, {
+    lockRoot,
+    expectedGeneration: current.generation,
+    expectedBaseRevision: current.baseRevision,
+    expectedDeltaEpoch: current.activeDeltaEpoch,
+    builtFromRevision: current.currentRevision,
+    indexFile: `memory-ann.${current.currentRevision}.index`,
+    metaFile: `memory-ann.${current.currentRevision}.meta.json`,
+  });
+  const result = await advanceAnnBuiltFromRevision(dir, {
+    lockRoot,
+    expectedGeneration: pinned.generation,
+    expectedBaseRevision: pinned.baseRevision,
+    expectedDeltaEpoch: pinned.activeDeltaEpoch,
+    builtFromRevision: pinned.currentRevision,
+    indexFile: `memory-ann.${pinned.currentRevision}.index`,
+    metaFile: `memory-ann.${pinned.currentRevision}.meta.json`,
+  });
+  assert.equal(result.advanced, false);
+  assert.equal(result.reason, 'ann_regression');
+  assert.equal(result.manifest.ann.builtFromRevision, current.currentRevision);
+});
+
+test('ANN completion rejects a generation epoch change', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const pinned = await readManifest(dir);
+  await rewriteMemoryBase(dir, replacementCapturedView(), { lockRoot });
+  const result = await advanceAnnBuiltFromRevision(dir, {
+    lockRoot,
+    expectedGeneration: pinned.generation,
+    expectedBaseRevision: pinned.baseRevision,
+    expectedDeltaEpoch: pinned.activeDeltaEpoch,
+    builtFromRevision: pinned.currentRevision,
+    indexFile: `memory-ann.${pinned.currentRevision}.index`,
+    metaFile: `memory-ann.${pinned.currentRevision}.meta.json`,
+  });
+  assert.equal(result.advanced, false);
+  assert.equal(result.reason, 'source_changed');
+});
+
+test('ANN completion survives a post-release observer failure after manifest commit', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const before = await readManifest(dir);
+  let releaseHookCalls = 0;
+  const result = await advanceAnnBuiltFromRevision(dir, {
+    lockRoot,
+    expectedGeneration: before.generation,
+    builtFromRevision: before.currentRevision,
+    indexFile: `memory-ann.${before.currentRevision}.index`,
+    metaFile: `memory-ann.${before.currentRevision}.meta.json`,
+    _testHooks: {
+      afterLockReleased() {
+        releaseHookCalls += 1;
+        throw new Error('injected post-release observer failure');
+      },
+    },
+  });
+  assert.equal(releaseHookCalls, 1);
+  assert.equal(result.advanced, true);
+  const after = await readManifest(dir);
+  assert.equal(after.ann.indexFile, `memory-ann.${before.currentRevision}.index`);
+  assert.equal(after.ann.metaFile, `memory-ann.${before.currentRevision}.meta.json`);
+});
+
+test('derived-state compare-and-swap rejects a newer source revision', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const pinned = await openMemorySource(dir);
+  await appendMemoryRevision(dir, { nodes: [{ id: 'newer', concept: 'newer source' }] }, {
+    lockRoot,
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+  });
+  let writes = 0;
+  const result = await compareAndSwapSourceRevision(dir, {
+    lockRoot,
+    expectedGeneration: pinned.manifest.generation,
+    expectedRevision: pinned.revision,
+    expectedDigest: sourceDescriptorDigest(pinned.descriptor),
+    commit: async () => { writes += 1; },
+  });
+  assert.equal(result.committed, false);
+  assert.equal(result.reason, 'source_changed');
+  assert.equal(writes, 0);
+  await pinned.close();
+});
+
+test('derived-state compare-and-swap accepts a public descriptor for a chain-backed manifest', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  await rewriteMemoryBase(dir, replacementCapturedView(), { lockRoot });
+  const manifest = await readManifest(dir);
+  assert.equal(typeof manifest.activeDelta.fileIdentity, 'object');
+  assert.equal(typeof manifest.activeDelta.chainDigest, 'string');
+
+  const source = await openMemorySource(dir);
+  const descriptor = source.descriptor;
+  assert.equal(Object.hasOwn(descriptor.activeDelta, 'fileIdentity'), false);
+  assert.equal(Object.hasOwn(descriptor.activeDelta, 'chainDigest'), false);
+  assert.notEqual(descriptor.activeBase, source.manifest.activeBase);
+  assert.notEqual(descriptor.summary, source.manifest.summary);
+  assert.equal(Object.isFrozen(descriptor.activeBase), true);
+  assert.equal(Object.isFrozen(descriptor.activeBase.nodes), true);
+  assert.equal(Object.isFrozen(descriptor.activeBase.edges), true);
+  assert.equal(Object.isFrozen(descriptor.summary), true);
+  assert.throws(() => { descriptor.activeBase.nodes.file = 'redirected.gz'; }, TypeError);
+  assert.throws(() => { descriptor.summary.nodeCount = 999; }, TypeError);
+  assert.equal(source.manifest.activeBase.nodes.file, manifest.activeBase.nodes.file);
+  assert.equal(source.manifest.summary.nodeCount, manifest.summary.nodeCount);
+  await source.close();
+
+  let writes = 0;
+  const result = await compareAndSwapSourceRevision(dir, {
+    lockRoot,
+    expectedGeneration: descriptor.generation,
+    expectedRevision: descriptor.cutoffRevision,
+    expectedDigest: sourceDescriptorDigest(descriptor),
+    commit: async () => { writes += 1; },
+  });
+
+  assert.equal(result.committed, true);
+  assert.equal(writes, 1);
+});
+
+test('derived-state CAS keeps a completed commit when cancellation arrives after callback entry', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const source = await openMemorySource(dir);
+  const descriptor = source.descriptor;
+  await source.close();
+  const derivedPath = path.join(dir, 'derived-state.txt');
+  const prior = 'prior-state\n';
+  await fsp.writeFile(derivedPath, prior);
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('cancelled-after-commit'), {
+    name: 'AbortError',
+    code: 'cancelled',
+  });
+  const result = await compareAndSwapSourceRevision(dir, {
+    lockRoot,
+    expectedGeneration: descriptor.generation,
+    expectedRevision: descriptor.cutoffRevision,
+    expectedDigest: sourceDescriptorDigest(descriptor),
+    signal: controller.signal,
+    async commit() {
+      await fsp.writeFile(derivedPath, 'prospective-state\n');
+      controller.abort(reason);
+      return { published: true };
+    },
+  });
+
+  assert.equal(result.committed, true);
+  assert.equal(await fsp.readFile(derivedPath, 'utf8'), 'prospective-state\n');
+});
+
+test('a source-lock release error cannot erase a completed CAS callback outcome', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const source = await openMemorySource(dir);
+  const descriptor = source.descriptor;
+  await source.close();
+  let releaseHookCalls = 0;
+  const result = await compareAndSwapSourceRevision(dir, {
+    lockRoot,
+    expectedGeneration: descriptor.generation,
+    expectedRevision: descriptor.cutoffRevision,
+    expectedDigest: sourceDescriptorDigest(descriptor),
+    async commit() {
+      return { published: true };
+    },
+    _testHooks: {
+      afterLockReleased() {
+        releaseHookCalls += 1;
+        throw new Error('injected release failure after cleanup');
+      },
+    },
+  });
+  assert.equal(releaseHookCalls, 1);
+  assert.deepEqual(result.value, { published: true });
+  assert.equal(result.committed, true);
+});
+
+test('a completed CAS callback cannot hide source-lock ownership loss before release', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const source = await openMemorySource(dir);
+  const descriptor = source.descriptor;
+  await source.close();
+  let callbackCompleted = false;
+
+  await assert.rejects(compareAndSwapSourceRevision(dir, {
+    lockRoot,
+    expectedGeneration: descriptor.generation,
+    expectedRevision: descriptor.cutoffRevision,
+    expectedDigest: sourceDescriptorDigest(descriptor),
+    async commit() {
+      const entries = await fsp.readdir(lockRoot, { withFileTypes: true });
+      const published = entries.filter((entry) => entry.isDirectory()
+        && !entry.name.includes('.candidate-') && !entry.name.includes('.release-'));
+      assert.equal(published.length, 1);
+      await fsp.rm(path.join(lockRoot, published[0].name), { recursive: true, force: false });
+      callbackCompleted = true;
+      return { published: true };
+    },
+  }), (error) => error?.code === 'invalid_memory_source'
+    && error?.sourceLockReleased !== true);
+  assert.equal(callbackCompleted, true);
+});
+
+test('retirement preserves files named by an active reader pin', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const home23Root = await tempDir('home23-memory-source-writer-home-');
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'ada' });
+  const operationId = 'brop_writer_pin';
+  const pinnedDescriptor = await provider.pin(dir, operationId);
+  const operationRoot = path.join(
+    home23Root, 'instances', 'ada', 'runtime', 'brain-operations', 'operations', operationId,
+  );
+  const scratchQuota = await createOperationScratchQuota({ operationRoot });
+  const pinned = await openPinnedSource(pinnedDescriptor.descriptor, {
+    expectedDigest: pinnedDescriptor.digest,
+    expectedCanonicalRoot: pinnedDescriptor.descriptor.canonicalRoot,
+    expectedRevision: pinnedDescriptor.descriptor.cutoffRevision,
+    operationId,
+    requesterAgent: 'ada',
+    operationRoot,
+    scratchQuota,
+  });
+  const oldNodeFile = pinned.manifest.activeBase.nodes.file;
+  await rewriteMemoryBase(dir, replacementCapturedView(), { lockRoot });
+  const protectedResult = await retireUnpinnedSources(dir, { home23Root, lockRoot });
+  assert.equal(protectedResult.retired.includes(oldNodeFile), false);
+  await pinned.release();
+  await releaseOperationSource({ home23Root, requesterAgent: 'ada', operationId });
+  const releasedResult = await retireUnpinnedSources(dir, { home23Root, lockRoot });
+  assert.equal(releasedResult.retired.includes(oldNodeFile), true);
+  scratchQuota.close();
+});
+
+test('retirement fails closed on an oversized discovered pin record', async (t) => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const home23Root = await tempDir('home23-memory-source-writer-oversized-pin-home-');
+  const staleFile = 'memory-nodes.base-stale.jsonl.gz';
+  const stalePath = path.join(dir, staleFile);
+  const operationRoot = path.join(
+    home23Root,
+    'instances',
+    'ada',
+    'runtime',
+    'brain-operations',
+    'operations',
+    'brop_oversized_retirement_pin',
+  );
+  const pinPath = path.join(operationRoot, 'coordinator-source-pin.json');
+  await fsp.mkdir(operationRoot, { recursive: true });
+  await fsp.writeFile(stalePath, 'stale generation canary\n');
+  await fsp.writeFile(pinPath, `${JSON.stringify({
+    canonicalRoot: await fsp.realpath(dir),
+    protectedFiles: [staleFile],
+    padding: 'x'.repeat((1024 * 1024) + 1),
+  })}\n`);
+  const before = await fsp.readFile(stalePath);
+  t.after(() => Promise.all([
+    fsp.rm(dir, { recursive: true, force: true }),
+    fsp.rm(home23Root, { recursive: true, force: true }),
+  ]));
+
+  await assert.rejects(
+    () => retireUnpinnedSources(dir, { home23Root, lockRoot }),
+    { code: 'result_too_large', retryable: false },
+  );
+  assert.deepEqual(await fsp.readFile(stalePath), before);
+});
+
+test('rewriteMemoryBase stamps baseWrittenAt and appends preserve it', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  await rewriteMemoryBase(dir, replacementCapturedView(), { lockRoot });
+  const rewritten = await readManifest(dir);
+  const stampMs = Date.parse(rewritten.baseWrittenAt);
+  assert.ok(Number.isFinite(stampMs), 'baseWrittenAt must be a parseable date');
+  assert.ok(Math.abs(Date.now() - stampMs) < 60_000, 'baseWrittenAt must be freshly stamped');
+  await appendMemoryRevision(dir, {
+    nodes: [{ id: 'after-stamp', concept: 'append preserves the stamp' }],
+  }, { lockRoot, summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 } });
+  const appended = await readManifest(dir);
+  assert.equal(appended.baseWrittenAt, rewritten.baseWrittenAt,
+    'delta appends must not reset the base age clock');
+});
+
+test('readManifest accepts a legacy manifest without baseWrittenAt', async () => {
+  const { dir } = await createCommittedFixture();
+  const manifest = await readManifest(dir);
+  assert.equal(manifest.baseWrittenAt, undefined);
+});
+
+test('readManifest rejects an unparseable baseWrittenAt', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  await rewriteMemoryBase(dir, replacementCapturedView(), { lockRoot });
+  const manifestPath = path.join(dir, 'memory-manifest.json');
+  const manifest = JSON.parse(await fsp.readFile(manifestPath, 'utf8'));
+  manifest.baseWrittenAt = 'not a date';
+  await fsp.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  await assert.rejects(() => readManifest(dir), /invalid base written at/);
+});

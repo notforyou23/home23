@@ -1,0 +1,127 @@
+{
+  "schema": "home23.embedder-stage5-host-receipt.v1",
+  "kind": "packaged-host-create",
+  "ok": true,
+  "sourceCommit": "d8f45ba3c4173a02d4a722a66732ac78ceaacc31",
+  "packageId": "b2bbac7377d83d1688466227fd7185aadb0b0e5a572a4bfd17d0d5057238a501",
+  "payloadPathKind": "sibling-worktree-payload",
+  "payloadLabel": "owned-embedder-stage5-host-payload",
+  "homeLabel": ".stage5-product-home",
+  "resident": "stage5host",
+  "node": {
+    "execPath": "bin/node",
+    "version": "v22.19.0",
+    "kind": "official-node-22-arm64-mach-o"
+  },
+  "hostState": {
+    "schema": "home23.host.v2",
+    "encoderRequired": true,
+    "phaseAfterCreate": "prepared",
+    "phaseAfterStop": "stopped"
+  },
+  "seed": {
+    "seedId": "seed_mtwbundv_e0c0a4b8",
+    "genesisHash": "e533195baf8c644ad2a8de9f2f746020d90701b23bdb082a86e22898c8c15109",
+    "modelInvocations": 0
+  },
+  "ports": {
+    "coordination": 32584,
+    "engine": 32585,
+    "dashboard": 32586,
+    "embedder": 32591
+  },
+  "commands": [
+    "scripts/product/package.mjs --source WORKTREE --commit HEAD --output sibling-payload --node nvm-v22.19.0 --npm nvm-npm --cache sibling-cache",
+    "worktree host.mjs install --home .stage5-product-home --payload sibling-payload",
+    "installed bin/node app/scripts/product/host.mjs create --home .stage5-product-home",
+    "installed host.mjs semantic-prepare --home .stage5-product-home",
+    "installed host.mjs start --home .stage5-product-home",
+    "private PM2 restart of ownedProcessNames(stage5host, encoderRequired) including home23-embedder",
+    "installed host.mjs stop --home .stage5-product-home"
+  ],
+  "processNames": [
+    "home23-coordination",
+    "home23-stage5host",
+    "home23-stage5host-dash",
+    "home23-stage5host-harness",
+    "home23-stage5host-seed",
+    "home23-stage5host-shipper",
+    "home23-seed-observatory",
+    "home23-evobrew",
+    "home23-embedder"
+  ],
+  "semanticPrepare": {
+    "handle": "f17e296e-4e37-4d1f-a35c-1389ebc3e1da",
+    "fetched": true,
+    "partObservedBytes": [216753231, 320598241, 402637167, 481104446],
+    "publishedOnnxBytes": 547310275,
+    "interrupted": false,
+    "workers": 1,
+    "workerExecPath": "bin/node",
+    "phase": "ready",
+    "artifactDigests": {
+      "config.json": "9ab00bd92cee80a569f708140b7b6c1661a65891ff3765b1519e181ba2f2c92b",
+      "onnx/model.onnx": "147d5aa88c2101237358e17796cf3a227cead1ec304ec34b465bb08e9d952965",
+      "tokenizer.json": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+      "tokenizer_config.json": "d7e0000bcc80134debd2222220427e6bf5fa20a669f40a0d0d1409cc18e0a9bc"
+    }
+  },
+  "ready": {
+    "warm": true,
+    "http": 200,
+    "recipeId": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+    "dimension": 768,
+    "profileId": "owned-nomic-v1.5-onnx-fp32-mean-noprefix",
+    "pidBeforeRestart": 70693,
+    "pidAfterRestart": 81012,
+    "execPath": "bin/node",
+    "afterStop": "connection-refused"
+  },
+  "ingest": {
+    "path": "product additionalWatchPaths / DocumentFeeder watch+initial-scan",
+    "maintenanceMode": false,
+    "importLabel": ".stage5-host-import",
+    "files": ["usgs-style-hydrologic-cycle.txt", "usgs-style-granite.txt"],
+    "manifest": { "fileCount": 2, "nodeCount": 2, "pendingCount": 0 }
+  },
+  "retrieve": {
+    "method": "live owned POST /v1/embeddings on packaged serve.mjs",
+    "dashboardMemorySearch": { "ok": false, "code": "target_not_available", "reason": "catalog lifecycle unavailable; no brain-state.json" },
+    "paraphrase": "How does sunshine lift moisture that later falls as weather and replenishes hidden reservoirs?",
+    "paraphraseVsHydrologic": 0.7111394501096473,
+    "paraphraseVsGranite": 0.5555436804523147,
+    "keywordVsHydrologic": 0.4816526605399806,
+    "keywordVsGranite": 0.7908452970619312,
+    "lexicalOverlapParaphraseHydrologic": ["that", "later"],
+    "afterRestartIdentical": true
+  },
+  "seedContact": {
+    "path": "coordination POST /api/v1/channels/:id/messages then conversation-shipper",
+    "semantic_recipe_id": "12e9f736ef4a7462e88cc228236d9e098d9dff7c30d178c7f9a3cb243d65efd9",
+    "semantic_encoder": "owned-nomic-v1.5-onnx-fp32-mean-noprefix",
+    "projectionDim": 16,
+    "preservedAfterRestart": true
+  },
+  "restart": {
+    "method": "home private PM2 restart --update-env of ownedProcessNames + home23-embedder",
+    "allOnline": true,
+    "readyWarm": true
+  },
+  "stop": {
+    "ok": true,
+    "status": "stopped",
+    "readyWarm": false,
+    "listener": "gone",
+    "verifierOwnedKill": false
+  },
+  "chat": {
+    "status": "blocked",
+    "missing": "No ollama-local chat model on this machine (only nomic-embed-text:latest). No provider API key was supplied. Did not scrape other homes."
+  },
+  "notClaimed": [
+    "product default flip",
+    "existing-home Stage 6",
+    "dashboard /api/memory/search NetworkMemory.query",
+    "chat e2e answer"
+  ]
+}

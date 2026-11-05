@@ -79,7 +79,8 @@ async function startModelFixture() {
       : request instanceof URL
         ? request.href
         : request.url;
-    if (url !== `${baseUrl}/chat/completions`) return originalFetch(request, init);
+    const ollamaRoot = baseUrl.replace(/\/+$/, "").replace(/\/(?:v1|api\/chat)$/, "");
+    if (url !== `${baseUrl}/chat/completions` && url !== `${ollamaRoot}/api/chat`) return originalFetch(request, init);
     assert.equal(init?.method, "POST");
     assert.equal(typeof init?.body, "string");
     const body = JSON.parse(init.body as string) as
@@ -94,7 +95,7 @@ async function startModelFixture() {
       const prompt = contentText(current?.content);
       const returnedArtifact = (body.messages ?? []).some((message) => message.role === "tool");
       if (prompt === ARTIFACT_PROMPT && !returnedArtifact) {
-        return new Response(JSON.stringify({ choices: [{ message: {
+        const message = {
           role: "assistant",
           content: null,
           tool_calls: [{
@@ -105,7 +106,8 @@ async function startModelFixture() {
               arguments: JSON.stringify({ path: ARTIFACT_RELATIVE_PATH }),
             },
           }],
-        } }] }), { status: 200, headers: { "content-type": "application/json" } });
+        };
+        return new Response(JSON.stringify({ message, choices: [{ message }] }), { status: 200, headers: { "content-type": "application/json" } });
       }
       const answer = prompt.startsWith(INPUT_ATTACHMENT_PROMPT)
         ? "Lens received the canonical attachments."
@@ -114,8 +116,10 @@ async function startModelFixture() {
         : prompt === ARTIFACT_PROMPT
           ? "Lens returned its note."
         : `Lens answer for: ${prompt}`;
+      const message = { role: "assistant", content: answer };
       return new Response(JSON.stringify({
-        choices: [{ message: { role: "assistant", content: answer } }],
+        message,
+        choices: [{ message }],
       }), { status: 200, headers: { "content-type": "application/json" } });
     } finally {
       activeRequests -= 1;

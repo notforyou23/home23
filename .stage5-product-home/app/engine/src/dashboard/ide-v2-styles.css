@@ -1,0 +1,777 @@
+/**
+ * COSMO IDE v2 - Clean, Modern Styles
+ * Dark theme, responsive, production-ready
+ */
+
+/* ============================================================================
+   VARIABLES
+   ============================================================================ */
+
+:root {
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #252526;
+    --bg-tertiary: #2d2d2d;
+    --bg-hover: #37373d;
+    
+    --text-primary: #cccccc;
+    --text-secondary: #969696;
+    --text-muted: #6a6a6a;
+    
+    --accent-primary: #007acc;
+    --accent-hover: #0098ff;
+    
+    --success: #4ec9b0;
+    --error: #f48771;
+    --warning: #dcdcaa;
+    
+    --border: #3e3e42;
+    
+    --font-main: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, monospace;
+}
+
+/* ============================================================================
+   BASE
+   ============================================================================ */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: var(--font-main);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    overflow: hidden;
+}
+
+/* ============================================================================
+   LAYOUT
+   ============================================================================ */
+
+.ide-container {
+    display: grid;
+    grid-template-columns: 250px 1fr 400px;
+    height: calc(100vh - 30px);
+}
+
+.sidebar {
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.main-content {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.ai-panel {
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* ============================================================================
+   SIDEBAR
+   ============================================================================ */
+
+.sidebar-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+.sidebar-header h2 {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+
+.file-tree {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+}
+
+.tree-item {
+    padding: 4px 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    transition: background 0.15s;
+}
+
+.tree-item:hover {
+    background: var(--bg-hover);
+}
+
+.tree-icon {
+    font-size: 14px;
+}
+
+.tree-name {
+    flex: 1;
+}
+
+.tree-children {
+    overflow: hidden;
+}
+
+.tree-children.hidden {
+    display: none;
+}
+
+/* ============================================================================
+   EDITOR AREA
+   ============================================================================ */
+
+.tab-bar {
+    display: flex;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    min-height: 35px;
+}
+
+.tab {
+    padding: 8px 16px;
+    background: var(--bg-tertiary);
+    border-right: 1px solid var(--border);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    transition: background 0.15s;
+    white-space: nowrap;
+}
+
+.tab:hover {
+    background: var(--bg-hover);
+}
+
+.tab.active {
+    background: var(--bg-primary);
+    border-bottom: 2px solid var(--accent-primary);
+}
+
+.tab-name {
+    flex: 1;
+}
+
+.tab-close {
+    opacity: 0.6;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.tab-close:hover {
+    opacity: 1;
+}
+
+.editor-container {
+    flex: 1;
+    overflow: hidden;
+}
+
+/* ============================================================================
+   AI PANEL
+   ============================================================================ */
+
+.ai-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.ai-header h2 {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+
+.model-select {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    padding: 4px 8px;
+    font-size: 12px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.welcome-message {
+    text-align: center;
+    color: var(--text-secondary);
+    padding: 32px 16px;
+}
+
+.welcome-message h3 {
+    font-size: 18px;
+    margin-bottom: 12px;
+}
+
+.welcome-message ul {
+    text-align: left;
+    list-style: none;
+    margin-top: 16px;
+}
+
+.welcome-message li {
+    padding: 4px 0;
+    color: var(--text-muted);
+}
+
+.chat-message {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px;
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+}
+
+.chat-message.user {
+    background: #0e4d6d;
+    align-self: flex-start;
+    max-width: 80%;
+}
+
+.chat-message.assistant {
+    background: var(--bg-tertiary);
+}
+
+.chat-message.system {
+    background: #3a3a2a;
+    font-size: 12px;
+    color: var(--warning);
+}
+
+.chat-message.error {
+    background: #4a2a2a;
+    color: var(--error);
+}
+
+.chat-message.temp {
+    opacity: 0.7;
+}
+
+.message-header {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+
+.message-content {
+    font-size: 14px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    font-family: var(--font-main);
+}
+
+/* Markdown rendering in assistant messages */
+.chat-message.assistant .message-content {
+    white-space: normal;
+}
+
+.chat-message.assistant .message-content h1,
+.chat-message.assistant .message-content h2,
+.chat-message.assistant .message-content h3,
+.chat-message.assistant .message-content h4 {
+    margin: 16px 0 8px 0;
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.chat-message.assistant .message-content h1 { font-size: 1.5em; }
+.chat-message.assistant .message-content h2 { font-size: 1.3em; }
+.chat-message.assistant .message-content h3 { font-size: 1.1em; }
+.chat-message.assistant .message-content h4 { font-size: 1em; }
+
+.chat-message.assistant .message-content p {
+    margin: 8px 0;
+}
+
+.chat-message.assistant .message-content ul,
+.chat-message.assistant .message-content ol {
+    margin: 8px 0;
+    padding-left: 24px;
+}
+
+.chat-message.assistant .message-content li {
+    margin: 4px 0;
+}
+
+.chat-message.assistant .message-content code {
+    background: rgba(0, 0, 0, 0.3);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+}
+
+.chat-message.assistant .message-content pre {
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px;
+    overflow-x: auto;
+    margin: 12px 0;
+}
+
+.chat-message.assistant .message-content pre code {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+}
+
+.chat-message.assistant .message-content blockquote {
+    border-left: 3px solid var(--accent-primary);
+    padding-left: 12px;
+    margin: 12px 0;
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.chat-message.assistant .message-content a {
+    color: var(--accent-primary);
+    text-decoration: none;
+}
+
+.chat-message.assistant .message-content a:hover {
+    text-decoration: underline;
+}
+
+.chat-message.assistant .message-content hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 16px 0;
+}
+
+.chat-message.assistant .message-content table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 12px 0;
+}
+
+.chat-message.assistant .message-content th,
+.chat-message.assistant .message-content td {
+    border: 1px solid var(--border);
+    padding: 8px;
+    text-align: left;
+}
+
+.chat-message.assistant .message-content th {
+    background: rgba(0, 0, 0, 0.3);
+    font-weight: 600;
+}
+
+.cursor {
+    animation: blink 1s infinite;
+}
+
+@keyframes blink {
+    0%, 49% { opacity: 1; }
+    50%, 100% { opacity: 0; }
+}
+
+.chat-input-container {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 8px;
+}
+
+.chat-input {
+    flex: 1;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    font-size: 13px;
+    font-family: var(--font-main);
+    border-radius: 4px;
+    resize: none;
+}
+
+.chat-input:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+
+/* ============================================================================
+   BUTTONS
+   ============================================================================ */
+
+.btn-primary {
+    background: var(--accent-primary);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    font-size: 13px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: background 0.15s;
+}
+
+.btn-primary:hover {
+    background: var(--accent-hover);
+}
+
+.btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btn-secondary {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    padding: 8px 16px;
+    font-size: 13px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.btn-secondary:hover {
+    background: var(--bg-hover);
+}
+
+.btn-close {
+    background: transparent;
+    color: var(--text-secondary);
+    border: none;
+    font-size: 24px;
+    cursor: pointer;
+    padding: 0;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+}
+
+.btn-close:hover {
+    background: var(--bg-hover);
+}
+
+/* ============================================================================
+   MODALS
+   ============================================================================ */
+
+.modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.modal.hidden {
+    display: none;
+}
+
+.modal-content {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    min-width: 600px;
+    max-width: 90vw;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.modal-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.modal-header h2 {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.modal-footer {
+    padding: 16px 20px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+}
+
+/* ============================================================================
+   EDIT QUEUE
+   ============================================================================ */
+
+.edit-queue-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 48px 16px;
+    color: var(--text-secondary);
+}
+
+.edit-item {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    margin-bottom: 12px;
+}
+
+.edit-header {
+    margin-bottom: 12px;
+}
+
+.edit-header strong {
+    display: block;
+    font-size: 14px;
+    margin-bottom: 4px;
+}
+
+.edit-instructions {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.edit-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.btn-accept {
+    background: var(--success);
+    color: #1e1e1e;
+    border: none;
+    padding: 6px 12px;
+    font-size: 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+.btn-accept:hover {
+    opacity: 0.8;
+}
+
+.btn-reject {
+    background: var(--error);
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    font-size: 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+.btn-reject:hover {
+    opacity: 0.8;
+}
+
+.btn-preview {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    padding: 6px 12px;
+    font-size: 12px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.btn-preview:hover {
+    background: var(--bg-tertiary);
+}
+
+/* ============================================================================
+   FOLDER BROWSER
+   ============================================================================ */
+
+.folder-browser {
+    padding: 16px;
+    overflow-y: auto;
+    max-height: 60vh;
+}
+
+.folder-path {
+    padding: 12px;
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+    margin-bottom: 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+}
+
+.select-folder-btn {
+    font-size: 12px;
+    padding: 6px 12px;
+}
+
+.folder-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.folder-item {
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    transition: background 0.15s;
+}
+
+.folder-item:hover {
+    background: var(--bg-hover);
+}
+
+.folder-icon {
+    font-size: 16px;
+}
+
+.folder-name {
+    flex: 1;
+}
+
+/* ============================================================================
+   STATUS BAR
+   ============================================================================ */
+
+.status-bar {
+    height: 30px;
+    background: var(--accent-primary);
+    color: white;
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 16px;
+    font-size: 12px;
+}
+
+.status-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.status-item.hidden {
+    display: none;
+}
+
+/* ============================================================================
+   SCROLLBARS
+   ============================================================================ */
+
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--bg-hover);
+    border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--border);
+}
+
+/* ============================================================================
+   RESPONSIVE
+   ============================================================================ */
+
+@media (max-width: 1024px) {
+    .ide-container {
+        grid-template-columns: 200px 1fr 350px;
+    }
+}
+
+@media (max-width: 768px) {
+    .ide-container {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr auto;
+    }
+    
+    .sidebar,
+    .ai-panel {
+        display: none; /* Can add toggle buttons */
+    }
+}
+
+/* ============================================================================
+   AI THINKING & TOOL VISIBILITY (Additive - v2.1)
+   ============================================================================ */
+
+/* AI thinking/reasoning messages */
+.chat-message.thinking-message {
+    background: rgba(138, 180, 248, 0.08);
+    border-left: 3px solid #8ab4f8;
+    font-style: italic;
+    opacity: 0.95;
+}
+
+/* Tool execution result messages */
+.chat-message.tool-result {
+    background: rgba(129, 201, 149, 0.08);
+    border-left: 3px solid #81c995;
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    padding: 8px 12px;
+}
+
+/* Persistent messages don't get removed during streaming */
+.chat-message.persistent {
+    opacity: 1 !important;
+}
+

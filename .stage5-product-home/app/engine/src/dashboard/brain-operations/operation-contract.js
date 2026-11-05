@@ -1,0 +1,922 @@
+'use strict';
+
+const crypto = require('node:crypto');
+const path = require('node:path');
+const {
+  canonicalJson,
+  canonicalSha256,
+} = require('../../../../shared/brain-operations/canonical-json.cjs');
+const {
+  validateVerifiedConversationContext,
+} = require('../../../../shared/query/verified-follow-up-context.cjs');
+const {
+  normalizeVerifiedFollowUpRequest,
+} = require('../query-notebook-follow-up.js');
+
+const EXECUTION_STATES = Object.freeze([
+  'queued',
+  'running',
+  'complete',
+  'partial',
+  'failed',
+  'cancelled',
+  'interrupted',
+]);
+const TERMINAL_STATES = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
+const ATTACHMENT_STATES = Object.freeze(['attached', 'detached', 'closed']);
+const INLINE_RESULT_LIMIT_BYTES = 64 * 1024;
+const OPERATION_EVENT_MAX_COUNT = 4096;
+const OPERATION_EVENT_MAX_BYTES = 8 * 1024 * 1024;
+const OPERATION_RESULT_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+const IDENTIFIER_MAX_LENGTH = 256;
+const IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$/;
+const OPERATION_ID_PATTERN = /^brop_[A-Za-z0-9_-]{32}$/;
+const RESULT_HANDLE_PATTERN = /^brres_[A-Za-z0-9_-]{32}$/;
+const PGS_SESSION_ID_PATTERN = /^pgss_[A-Za-z0-9_-]{32}$/;
+const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
+const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
+const TARGET_ACCESS_MODES = new Set(['own', 'read-only']);
+const BRAIN_KINDS = new Set(['resident', 'research']);
+const BRAIN_LIFECYCLES = new Set(['resident', 'completed']);
+const OWNED_RUN_STATES = new Set([
+  'starting', 'active', 'stopping', 'paused', 'failed', 'completed', 'stopped',
+]);
+const MUTATION_BOUNDARY_KINDS = Object.freeze([
+  'brain', 'run', 'pgs', 'session', 'cache', 'export', 'agency',
+]);
+const BOUNDED_JSON_OBJECT_MAX_BYTES = 64 * 1024;
+const ERROR_MESSAGE_MAX_LENGTH = 4096;
+const NOTEBOOK_RESULT_VERSION_PATTERN = /^qrv1_[A-Za-z0-9_-]{43}$/;
+const NOTEBOOK_COVERAGE_FIELDS = Object.freeze([
+  'coverageLevel', 'coverageFraction', 'successfulSweeps',
+  'selectedWorkUnits', 'pendingWorkUnits', 'reusedWorkUnits', 'newWorkUnits',
+  'scopeWorkUnits', 'scopeSuccessfulWorkUnits', 'scopePendingWorkUnits', 'scopeComplete',
+  'globalCoveredWorkUnits', 'globalPendingWorkUnits', 'fullCoverage',
+  'targetPartitionIds', 'retryablePartitions', 'retryablePartitionCount',
+]);
+const NOTEBOOK_COVERAGE_COUNTER_FIELDS = new Set([
+  'successfulSweeps', 'selectedWorkUnits', 'pendingWorkUnits', 'reusedWorkUnits',
+  'newWorkUnits', 'scopeWorkUnits', 'scopeSuccessfulWorkUnits',
+  'scopePendingWorkUnits', 'globalCoveredWorkUnits', 'globalPendingWorkUnits',
+  'retryablePartitionCount',
+]);
+const NOTEBOOK_PARTITION_ID_PATTERN = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
+const NOTEBOOK_RETRYABLE_PARTITION_ID_PATTERN = IDENTIFIER_PATTERN;
+const NOTEBOOK_PARTITION_ARRAY_LIMIT = 256;
+const QUERY_FOLLOW_UP_LINEAGE_FIELDS = Object.freeze([
+  'rootOperationId', 'parentOperationId', 'parentResultVersion', 'depth',
+  'availableExchangeCount', 'includedExchangeCount', 'contextTruncated',
+  'sourceAnswerTruncated',
+]);
+const QUERY_FOLLOW_UP_PRIVATE_FIELDS = Object.freeze([
+  'version', ...QUERY_FOLLOW_UP_LINEAGE_FIELDS, 'exchanges',
+]);
+const QUERY_FOLLOW_UP_EXCHANGE_FIELDS = Object.freeze([
+  'operationId', 'resultVersion', 'query', 'answer',
+]);
+const QUERY_FOLLOW_UP_DURABLE_PARAMETER_FORBIDDEN_FIELDS = Object.freeze([
+  'queryFollowUpLineage', '_queryFollowUpContext', 'verifiedConversationContext',
+]);
+const VERIFIED_CONTEXT_OMISSION_MARKER = '\n\n[... middle of immediate parent answer omitted by Home23 verified follow-up context budget ...]\n\n';
+
+const PUBLIC_RECORD_FIELDS = Object.freeze([
+  'operationId',
+  'requestId',
+  'operationType',
+  'requestParameters',
+  'parameters',
+  'pgsSession',
+  'canonicalEvidence',
+  'recordVersion',
+  'eventSequence',
+  'acceptedAt',
+  'requesterAgent',
+  'target',
+  'state',
+  'phase',
+  'startedAt',
+  'updatedAt',
+  'completedAt',
+  'lastProviderActivityAt',
+  'lastProgressAt',
+  'progressSnapshot',
+  'notebookResultSummary',
+  'result',
+  'resultHandle',
+  'resultArtifact',
+  'error',
+  'sourceEvidence',
+  'sourcePinDescriptor',
+  'sourcePinDigest',
+  'sourcePinReleasedAt',
+  'resultExpiresAt',
+  'resultExpiredAt',
+  'metadataExpiresAt',
+]);
+
+function operationError(code, cause) {
+  const error = new Error(code, cause ? { cause } : undefined);
+  error.code = code;
+  return error;
+}
+
+function assertIdentifier(value, name = 'identifier') {
+  if (typeof value !== 'string'
+      || value.length === 0
+      || value.length > IDENTIFIER_MAX_LENGTH
+      || !IDENTIFIER_PATTERN.test(value)
+      || value === '.'
+      || value === '..') {
+    throw operationError('identifier_invalid');
+  }
+  return value;
+}
+
+function assertOperationId(value) {
+  if (typeof value !== 'string' || !OPERATION_ID_PATTERN.test(value)) {
+    throw operationError('operation_id_invalid');
+  }
+  return value;
+}
+
+function assertResultHandle(value) {
+  if (typeof value !== 'string' || !RESULT_HANDLE_PATTERN.test(value)) {
+    throw operationError('result_handle_invalid');
+  }
+  return value;
+}
+
+function validatePgsSessionMetadata(value, code = 'pgs_session_invalid') {
+  const session = safeJsonClone(value, code);
+  if (!session || Array.isArray(session) || typeof session !== 'object') {
+    throw operationError(code);
+  }
+  const keys = Reflect.ownKeys(session);
+  const allowed = new Set(['sessionId', 'continuableUntil', 'sourceOperationId']);
+  if (keys.length !== allowed.size
+      || keys.some((key) => typeof key !== 'string' || !allowed.has(key))
+      || typeof session.sessionId !== 'string'
+      || !PGS_SESSION_ID_PATTERN.test(session.sessionId)
+      || typeof session.continuableUntil !== 'string'
+      || !Number.isFinite(Date.parse(session.continuableUntil))
+      || new Date(Date.parse(session.continuableUntil)).toISOString() !== session.continuableUntil
+      || !(session.sourceOperationId === null
+        || (typeof session.sourceOperationId === 'string'
+          && OPERATION_ID_PATTERN.test(session.sourceOperationId)))) {
+    throw operationError(code);
+  }
+  return session;
+}
+
+function assertExpectedVersion(value) {
+  if (!Number.isSafeInteger(value) || value < 1) throw operationError('version_invalid');
+  return value;
+}
+
+function safeJsonClone(value, code = 'json_invalid') {
+  try {
+    return JSON.parse(canonicalJson(value));
+  } catch (error) {
+    throw operationError(code, error);
+  }
+}
+
+function assertJsonObject(value, code) {
+  const copy = safeJsonClone(value, code);
+  if (!copy || Array.isArray(copy) || typeof copy !== 'object') throw operationError(code);
+  return copy;
+}
+
+function assertBoundedString(
+  value,
+  code,
+  { allowEmpty = false, maxLength = IDENTIFIER_MAX_LENGTH } = {},
+) {
+  if (typeof value !== 'string'
+      || (!allowEmpty && value.length === 0)
+      || value.length > maxLength
+      || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw operationError(code);
+  }
+  return value;
+}
+
+function assertAbsoluteCanonicalPath(value, code = 'target_invalid') {
+  if (typeof value !== 'string'
+      || !path.isAbsolute(value)
+      || value.length > 4096
+      || value.includes('\0')
+      || /[\u0000-\u001f\u007f]/.test(value)
+      || path.normalize(value) !== value) {
+    throw operationError(code);
+  }
+  return value;
+}
+
+function assertAbsoluteCanonicalRoot(value) {
+  return assertAbsoluteCanonicalPath(value, 'target_invalid');
+}
+
+function buildBrainOperationIdempotencyKey(requesterAgent, requestId, operationType) {
+  assertIdentifier(requesterAgent, 'requesterAgent');
+  assertIdentifier(requestId, 'requestId');
+  assertIdentifier(operationType, 'operationType');
+  const digest = crypto.createHash('sha256')
+    .update(requesterAgent, 'utf8')
+    .update('\0', 'utf8')
+    .update(requestId, 'utf8')
+    .update('\0', 'utf8')
+    .update(operationType, 'utf8')
+    .digest('hex');
+  return `sha256:${digest}`;
+}
+
+function validateMutationBoundaries(rawBoundaries, canonicalRoot) {
+  const code = 'target_invalid';
+  assertAbsoluteCanonicalRoot(canonicalRoot);
+  if (!Array.isArray(rawBoundaries) || rawBoundaries.length !== MUTATION_BOUNDARY_KINDS.length) {
+    throw operationError(code);
+  }
+  const byKind = new Map();
+  for (const boundary of rawBoundaries) {
+    assertExactKeys(boundary, ['kind', 'path'], code);
+    if (!MUTATION_BOUNDARY_KINDS.includes(boundary.kind) || byKind.has(boundary.kind)) {
+      throw operationError(code);
+    }
+    const boundaryPath = assertAbsoluteCanonicalPath(boundary.path, code);
+    byKind.set(boundary.kind, {
+      kind: boundary.kind,
+      path: boundaryPath,
+    });
+  }
+  if (byKind.size !== MUTATION_BOUNDARY_KINDS.length) throw operationError(code);
+  return MUTATION_BOUNDARY_KINDS.map((kind) => byKind.get(kind));
+}
+
+function validateTargetSnapshot(rawTarget, requesterAgent) {
+  const code = 'target_invalid';
+  try {
+    const target = assertJsonObject(rawTarget, code);
+    if (target.domain === 'brain') {
+      assertExactKeys(target, [
+        'domain', 'brainId', 'canonicalRoot', 'accessMode', 'ownerAgent', 'displayName',
+        'kind', 'lifecycle', 'catalogRevision', 'route', 'mutationBoundaries',
+      ], code);
+      assertIdentifier(target.brainId, 'brainId');
+      assertAbsoluteCanonicalRoot(target.canonicalRoot);
+      if (!TARGET_ACCESS_MODES.has(target.accessMode)) throw operationError(code);
+      if (target.ownerAgent !== null) assertIdentifier(target.ownerAgent, 'ownerAgent');
+      assertBoundedString(target.displayName, code);
+      if (!BRAIN_KINDS.has(target.kind) || !BRAIN_LIFECYCLES.has(target.lifecycle)) {
+        throw operationError(code);
+      }
+      assertBoundedString(target.catalogRevision, code);
+      assertAbsoluteCanonicalPath(target.route, code);
+      return {
+        domain: 'brain',
+        brainId: target.brainId,
+        canonicalRoot: target.canonicalRoot,
+        accessMode: target.accessMode,
+        ownerAgent: target.ownerAgent,
+        displayName: target.displayName,
+        kind: target.kind,
+        lifecycle: target.lifecycle,
+        catalogRevision: target.catalogRevision,
+        route: target.route,
+        mutationBoundaries: validateMutationBoundaries(
+          target.mutationBoundaries,
+          target.canonicalRoot,
+        ),
+      };
+    }
+    if (target.domain === 'owned-run') {
+      assertExactKeys(target, [
+        'domain', 'runId', 'canonicalRoot', 'ownerAgent', 'runState', 'catalogRevision',
+        'route', 'mutationBoundaries',
+      ], code);
+      assertIdentifier(target.runId, 'runId');
+      assertAbsoluteCanonicalRoot(target.canonicalRoot);
+      assertIdentifier(target.ownerAgent, 'ownerAgent');
+      if (!OWNED_RUN_STATES.has(target.runState)) throw operationError(code);
+      assertBoundedString(target.catalogRevision, code);
+      assertAbsoluteCanonicalPath(target.route, code);
+      return {
+        domain: 'owned-run',
+        runId: target.runId,
+        canonicalRoot: target.canonicalRoot,
+        ownerAgent: target.ownerAgent,
+        runState: target.runState,
+        catalogRevision: target.catalogRevision,
+        route: target.route,
+        mutationBoundaries: validateMutationBoundaries(
+          target.mutationBoundaries,
+          target.canonicalRoot,
+        ),
+      };
+    }
+    if (target.domain === 'requester') {
+      assertExactKeys(target, ['domain', 'requesterAgent'], code);
+      assertIdentifier(target.requesterAgent, 'requesterAgent');
+      if (target.requesterAgent !== requesterAgent) throw operationError(code);
+      return { domain: 'requester', requesterAgent: target.requesterAgent };
+    }
+    throw operationError(code);
+  } catch (error) {
+    if (error?.code === code) throw error;
+    throw operationError(code, error);
+  }
+}
+
+function stableTargetIdentity(rawTarget, requesterAgent) {
+  const target = validateTargetSnapshot(rawTarget, requesterAgent);
+  if (target.domain === 'brain') {
+    return {
+      domain: 'brain',
+      brainId: target.brainId,
+      canonicalRoot: target.canonicalRoot,
+      accessMode: target.accessMode,
+    };
+  }
+  if (target.domain === 'owned-run') {
+    return {
+      domain: 'owned-run',
+      runId: target.runId,
+      canonicalRoot: target.canonicalRoot,
+      ownerAgent: target.ownerAgent,
+    };
+  }
+  return { domain: 'requester', requesterAgent: target.requesterAgent };
+}
+
+function buildRequestFingerprint(target, requestParameters, requesterAgent) {
+  const stableTarget = stableTargetIdentity(target, requesterAgent);
+  const normalized = assertJsonObject(requestParameters, 'request_parameters_invalid');
+  try {
+    return canonicalSha256({ target: stableTarget, requestParameters: normalized });
+  } catch (error) {
+    throw operationError('request_parameters_invalid', error);
+  }
+}
+
+function assertExactKeys(value, expected, code) {
+  if (!value || Array.isArray(value) || typeof value !== 'object') throw operationError(code);
+  const keys = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  if (keys.length !== wanted.length || wanted.some((key, index) => keys[index] !== key)) {
+    throw operationError(code);
+  }
+}
+
+function validateBoundedJsonObject(value, code) {
+  const copy = assertJsonObject(value, code);
+  if (Buffer.byteLength(canonicalJson(copy), 'utf8') > BOUNDED_JSON_OBJECT_MAX_BYTES) {
+    throw operationError(code);
+  }
+  return copy;
+}
+
+function validateQueryFollowUpLineage(value, code = 'verified_follow_up_lineage_invalid') {
+  if (value === null) return null;
+  const lineage = assertJsonObject(value, code);
+  try {
+    assertExactKeys(lineage, QUERY_FOLLOW_UP_LINEAGE_FIELDS, code);
+    assertOperationId(lineage.rootOperationId);
+    assertOperationId(lineage.parentOperationId);
+  } catch (error) {
+    if (error?.code === code) throw error;
+    throw operationError(code, error);
+  }
+  if (typeof lineage.parentResultVersion !== 'string'
+      || !NOTEBOOK_RESULT_VERSION_PATTERN.test(lineage.parentResultVersion)
+      || !Number.isSafeInteger(lineage.depth) || lineage.depth < 1
+      || !Number.isSafeInteger(lineage.availableExchangeCount)
+      || lineage.availableExchangeCount !== lineage.depth
+      || !Number.isSafeInteger(lineage.includedExchangeCount)
+      || lineage.includedExchangeCount < 1
+      || lineage.includedExchangeCount > lineage.availableExchangeCount
+      || typeof lineage.contextTruncated !== 'boolean'
+      || lineage.contextTruncated !== (lineage.includedExchangeCount < lineage.availableExchangeCount)
+      || typeof lineage.sourceAnswerTruncated !== 'boolean') {
+    throw operationError(code);
+  }
+  return lineage;
+}
+
+function validateVerifiedFollowUpContext(value, code = 'verified_follow_up_context_invalid') {
+  if (value === null) return null;
+  const context = assertJsonObject(value, code);
+  assertExactKeys(context, QUERY_FOLLOW_UP_PRIVATE_FIELDS, code);
+  if (context.version !== 1 || !Array.isArray(context.exchanges)) throw operationError(code);
+  const lineage = validateQueryFollowUpLineage(Object.fromEntries(
+    QUERY_FOLLOW_UP_LINEAGE_FIELDS.map((field) => [field, context[field]]),
+  ), code);
+  const exchanges = context.exchanges.map((rawExchange) => {
+    const exchange = assertJsonObject(rawExchange, code);
+    assertExactKeys(exchange, QUERY_FOLLOW_UP_EXCHANGE_FIELDS, code);
+    try {
+      assertOperationId(exchange.operationId);
+    } catch (error) {
+      throw operationError(code, error);
+    }
+    if (typeof exchange.resultVersion !== 'string'
+        || !NOTEBOOK_RESULT_VERSION_PATTERN.test(exchange.resultVersion)
+        || typeof exchange.query !== 'string' || !exchange.query.trim()
+        || exchange.query.length > 12_000
+        || typeof exchange.answer !== 'string' || !exchange.answer.trim()) {
+      throw operationError(code);
+    }
+    return exchange;
+  });
+  if (exchanges.length !== lineage.includedExchangeCount
+      || new Set(exchanges.map(({ operationId }) => operationId)).size !== exchanges.length) {
+    throw operationError(code);
+  }
+  const newest = exchanges.at(-1);
+  if (!newest
+      || newest.operationId !== lineage.parentOperationId
+      || newest.resultVersion !== lineage.parentResultVersion
+      || (!lineage.contextTruncated && exchanges[0].operationId !== lineage.rootOperationId)
+      || (lineage.contextTruncated
+        && exchanges.some(({ operationId }) => operationId === lineage.rootOperationId))
+      || (lineage.sourceAnswerTruncated
+        && !newest.answer.includes(VERIFIED_CONTEXT_OMISSION_MARKER))) {
+    throw operationError(code);
+  }
+  try {
+    validateVerifiedConversationContext({
+      version: 1,
+      exchanges: exchanges.map(({ query, answer }) => ({ query, answer })),
+    });
+  } catch (error) {
+    throw operationError(code, error);
+  }
+  return { version: 1, ...lineage, exchanges };
+}
+
+function validateQueryFollowUpAuthority(
+  rawLineage,
+  rawPrivateContext,
+  { operationType, requestParameters, parameters, target } = {},
+  code = 'request_invalid',
+) {
+  if (!parameters || Array.isArray(parameters) || typeof parameters !== 'object') {
+    throw operationError(code);
+  }
+  for (const field of QUERY_FOLLOW_UP_DURABLE_PARAMETER_FORBIDDEN_FIELDS) {
+    if (Object.hasOwn(parameters, field)) throw operationError(code);
+  }
+  const hasLineage = rawLineage !== undefined && rawLineage !== null;
+  const hasPrivateContext = rawPrivateContext !== undefined && rawPrivateContext !== null;
+  const protectedRequest = requestParameters?.kind === 'verifiedFollowUp';
+  if (hasLineage !== hasPrivateContext || protectedRequest !== hasLineage) {
+    throw operationError(code);
+  }
+  if (!hasLineage) return { queryFollowUpLineage: null, privateContext: null };
+  let normalizedRequest;
+  try {
+    normalizedRequest = normalizeVerifiedFollowUpRequest(requestParameters);
+  } catch (error) {
+    throw operationError(code, error);
+  }
+  const lineage = validateQueryFollowUpLineage(rawLineage, code);
+  const privateContext = validateVerifiedFollowUpContext(rawPrivateContext, code);
+  if (operationType !== 'query' || target?.domain !== 'brain'
+      || normalizedRequest.followUpFrom.operationId !== lineage.parentOperationId
+      || normalizedRequest.followUpFrom.resultVersion !== lineage.parentResultVersion) {
+    throw operationError(code);
+  }
+  for (const field of QUERY_FOLLOW_UP_LINEAGE_FIELDS) {
+    if (lineage[field] !== privateContext[field]) throw operationError(code);
+  }
+  const ordinaryRequest = { ...normalizedRequest };
+  delete ordinaryRequest.kind;
+  delete ordinaryRequest.schemaVersion;
+  delete ordinaryRequest.followUpFrom;
+  const allowedParameterFields = new Set([...Object.keys(ordinaryRequest), 'operationControl']);
+  if (Object.keys(parameters).some((field) => !allowedParameterFields.has(field))) {
+    throw operationError(code);
+  }
+  for (const [field, expected] of Object.entries(ordinaryRequest)) {
+    if (!Object.hasOwn(parameters, field)) throw operationError(code);
+    try {
+      if (canonicalJson(parameters[field]) !== canonicalJson(expected)) throw operationError(code);
+    } catch (error) {
+      if (error?.code === code) throw error;
+      throw operationError(code, error);
+    }
+  }
+  return { queryFollowUpLineage: lineage, privateContext };
+}
+
+function validateResultObject(value) {
+  return assertJsonObject(value, 'result_invalid');
+}
+
+function validateNotebookCoverage(value, code = 'notebook_result_summary_invalid') {
+  if (value === null) return null;
+  const coverage = assertJsonObject(value, code);
+  if (Reflect.ownKeys(coverage).some((field) =>
+    typeof field !== 'string' || !NOTEBOOK_COVERAGE_FIELDS.includes(field))) {
+    throw operationError(code);
+  }
+  const projected = {};
+  for (const field of NOTEBOOK_COVERAGE_FIELDS) {
+    if (!Object.hasOwn(coverage, field)) continue;
+    const entry = coverage[field];
+    if (NOTEBOOK_COVERAGE_COUNTER_FIELDS.has(field)) {
+      assertSafeNonnegative(entry, code);
+      projected[field] = entry;
+    } else if (field === 'coverageLevel') {
+      if (!['skim', 'sample', 'deep', 'full'].includes(entry)) throw operationError(code);
+      projected[field] = entry;
+    } else if (field === 'coverageFraction') {
+      if (typeof entry !== 'number' || !Number.isFinite(entry) || entry < 0 || entry > 1) {
+        throw operationError(code);
+      }
+      projected[field] = entry;
+    } else if (field === 'scopeComplete' || field === 'fullCoverage') {
+      if (typeof entry !== 'boolean') throw operationError(code);
+      projected[field] = entry;
+    } else if (field === 'targetPartitionIds' || field === 'retryablePartitions') {
+      const pattern = field === 'targetPartitionIds'
+        ? NOTEBOOK_PARTITION_ID_PATTERN
+        : NOTEBOOK_RETRYABLE_PARTITION_ID_PATTERN;
+      if (!Array.isArray(entry) || entry.length > NOTEBOOK_PARTITION_ARRAY_LIMIT
+          || new Set(entry).size !== entry.length
+          || entry.some((partitionId) => typeof partitionId !== 'string'
+            || !pattern.test(partitionId)
+            || partitionId === '.' || partitionId === '..')) {
+        throw operationError(code);
+      }
+      projected[field] = [...entry];
+    }
+  }
+  const hasRetryablePartitions = Object.hasOwn(projected, 'retryablePartitions');
+  const hasRetryableCount = Object.hasOwn(projected, 'retryablePartitionCount');
+  if (hasRetryablePartitions !== hasRetryableCount
+      || (hasRetryablePartitions
+        && (projected.retryablePartitionCount < projected.retryablePartitions.length
+          || (projected.retryablePartitions.length < NOTEBOOK_PARTITION_ARRAY_LIMIT
+            && projected.retryablePartitionCount !== projected.retryablePartitions.length)))) {
+    throw operationError(code);
+  }
+  return projected;
+}
+
+function validateNotebookContinuation(value, code = 'notebook_result_summary_invalid') {
+  if (value === null) return null;
+  const continuation = assertJsonObject(value, code);
+  assertExactKeys(continuation, ['canContinue', 'continuableUntil', 'sourceOperationId'], code);
+  if (typeof continuation.canContinue !== 'boolean') throw operationError(code);
+  if (typeof continuation.continuableUntil !== 'string'
+      || !Number.isFinite(Date.parse(continuation.continuableUntil))
+      || new Date(Date.parse(continuation.continuableUntil)).toISOString()
+        !== continuation.continuableUntil) {
+    throw operationError(code);
+  }
+  if (continuation.sourceOperationId !== null) {
+    try { assertOperationId(continuation.sourceOperationId); } catch (error) {
+      throw operationError(code, error);
+    }
+  }
+  return continuation;
+}
+
+function validateNotebookResultSummary(value, code = 'notebook_result_summary_invalid') {
+  if (value === null) return null;
+  const summary = assertJsonObject(value, code);
+  assertExactKeys(summary, [
+    'version', 'resultVersion', 'answerAvailable', 'coverage', 'continuation',
+  ], code);
+  if (summary.version !== 1
+      || typeof summary.resultVersion !== 'string'
+      || !NOTEBOOK_RESULT_VERSION_PATTERN.test(summary.resultVersion)
+      || typeof summary.answerAvailable !== 'boolean') {
+    throw operationError(code);
+  }
+  const normalized = {
+    version: 1,
+    resultVersion: summary.resultVersion,
+    answerAvailable: summary.answerAvailable,
+    coverage: validateNotebookCoverage(summary.coverage, code),
+    continuation: validateNotebookContinuation(summary.continuation, code),
+  };
+  if (Buffer.byteLength(canonicalJson(normalized), 'utf8') > BOUNDED_JSON_OBJECT_MAX_BYTES) {
+    throw operationError(code);
+  }
+  return normalized;
+}
+
+function notebookCoverageFromResult(resultPgs) {
+  if (!resultPgs || Array.isArray(resultPgs) || typeof resultPgs !== 'object') return null;
+  const coverage = {};
+  for (const field of NOTEBOOK_COVERAGE_FIELDS) {
+    if (field === 'retryablePartitionCount') continue;
+    if (Object.hasOwn(resultPgs, field)) coverage[field] = resultPgs[field];
+  }
+  if (Object.hasOwn(coverage, 'targetPartitionIds')) {
+    coverage.targetPartitionIds = validateAndBoundPartitionIds(
+      coverage.targetPartitionIds,
+      NOTEBOOK_PARTITION_ID_PATTERN,
+      'result_invalid',
+    );
+  }
+  if (Object.hasOwn(coverage, 'retryablePartitions')) {
+    const retryablePartitionCount = Array.isArray(coverage.retryablePartitions)
+      ? coverage.retryablePartitions.length
+      : null;
+    const retryablePartitions = validateAndBoundPartitionIds(
+      coverage.retryablePartitions,
+      NOTEBOOK_RETRYABLE_PARTITION_ID_PATTERN,
+      'result_invalid',
+    );
+    coverage.retryablePartitionCount = retryablePartitionCount;
+    coverage.retryablePartitions = retryablePartitions;
+  }
+  if (Object.keys(coverage).length === 0) return null;
+  return validateNotebookCoverage(coverage, 'result_invalid');
+}
+
+function validateAndBoundPartitionIds(value, pattern, code) {
+  if (!Array.isArray(value)
+      || new Set(value).size !== value.length
+      || value.some((partitionId) => typeof partitionId !== 'string'
+        || !pattern.test(partitionId)
+        || partitionId === '.' || partitionId === '..')) {
+    throw operationError(code);
+  }
+  return value.slice(0, NOTEBOOK_PARTITION_ARRAY_LIMIT);
+}
+
+function notebookContinuationFromResult(record, resultPgs) {
+  if (record.operationType !== 'pgs' || record.pgsSession === null
+      || !resultPgs || Array.isArray(resultPgs) || typeof resultPgs !== 'object'
+      || !Object.hasOwn(resultPgs, 'canContinue')) return null;
+  const session = validatePgsSessionMetadata(record.pgsSession, 'result_invalid');
+  if (typeof resultPgs.canContinue !== 'boolean'
+      || resultPgs.sessionId !== session.sessionId
+      || resultPgs.continuableUntil !== session.continuableUntil
+      || (resultPgs.sourceOperationId ?? null) !== session.sourceOperationId) {
+    return null;
+  }
+  return {
+    canContinue: resultPgs.canContinue,
+    continuableUntil: session.continuableUntil,
+    sourceOperationId: session.sourceOperationId,
+  };
+}
+
+function deriveNotebookResultSummary(record, normalizedResult, serializedSha256) {
+  if (!record || Array.isArray(record) || typeof record !== 'object'
+      || !normalizedResult || Array.isArray(normalizedResult)
+      || typeof normalizedResult !== 'object') {
+    throw operationError('result_invalid');
+  }
+  if (record.operationType !== 'query' && record.operationType !== 'pgs') return null;
+  if (typeof serializedSha256 !== 'string' || !SHA256_HEX_PATTERN.test(serializedSha256)) {
+    throw operationError('result_invalid');
+  }
+  const digest = crypto.createHash('sha256')
+    .update('home23-query-result-v1\0', 'utf8')
+    .update(Buffer.from(serializedSha256, 'hex'))
+    .digest('base64url');
+  const resultPgs = normalizedResult.metadata?.pgs;
+  return validateNotebookResultSummary({
+    version: 1,
+    resultVersion: `qrv1_${digest}`,
+    answerAvailable: typeof normalizedResult.answer === 'string'
+      && normalizedResult.answer.length > 0,
+    coverage: record.operationType === 'pgs' ? notebookCoverageFromResult(resultPgs) : null,
+    continuation: notebookContinuationFromResult(record, resultPgs),
+  }, 'result_invalid');
+}
+
+function validateTransitionError(value, code = 'transition_invalid') {
+  if (value === null) return null;
+  try {
+    const error = validateBoundedJsonObject(value, code);
+    if (!Object.hasOwn(error, 'code')
+        || !Object.hasOwn(error, 'message')
+        || !Object.hasOwn(error, 'retryable')) {
+      throw operationError(code);
+    }
+    assertIdentifier(error.code, 'errorCode');
+    assertBoundedString(error.message, code, { maxLength: ERROR_MESSAGE_MAX_LENGTH });
+    if (typeof error.retryable !== 'boolean') throw operationError(code);
+    return error;
+  } catch (error) {
+    if (error?.code === code) throw error;
+    throw operationError(code, error);
+  }
+}
+
+function validateSourceEvidence(value, code = 'transition_invalid') {
+  if (value === null) return null;
+  return validateBoundedJsonObject(value, code);
+}
+
+function assertSafeNonnegative(value, code) {
+  if (!Number.isSafeInteger(value) || value < 0) throw operationError(code);
+}
+
+function assertSafePositive(value, code) {
+  if (!Number.isSafeInteger(value) || value <= 0) throw operationError(code);
+}
+
+function assertGeneratedBasename(value, code) {
+  assertBoundedString(value, code);
+  if (!IDENTIFIER_PATTERN.test(value)
+      || value === '.'
+      || value === '..'
+      || path.basename(value) !== value
+      || value.includes('/')
+      || value.includes('\\')) {
+    throw operationError(code);
+  }
+}
+
+function validateBaseFile(value, code) {
+  assertExactKeys(value, ['file', 'count', 'bytes'], code);
+  assertGeneratedBasename(value.file, code);
+  assertSafeNonnegative(value.count, code);
+  assertSafeNonnegative(value.bytes, code);
+}
+
+function validateSourcePinDescriptor(rawDescriptor, expectedCanonicalRoot) {
+  const code = 'source_pin_invalid';
+  const descriptor = assertJsonObject(rawDescriptor, code);
+  assertExactKeys(descriptor, [
+    'version', 'canonicalRoot', 'generation', 'baseRevision', 'cutoffRevision',
+    'activeBase', 'activeDelta', 'summary',
+  ], code);
+  if (descriptor.version !== 1) throw operationError(code);
+  assertBoundedString(descriptor.generation, code);
+  if (!IDENTIFIER_PATTERN.test(descriptor.generation)) throw operationError(code);
+  if (descriptor.canonicalRoot !== expectedCanonicalRoot) throw operationError(code);
+  assertSafeNonnegative(descriptor.baseRevision, code);
+  assertSafeNonnegative(descriptor.cutoffRevision, code);
+  if (descriptor.cutoffRevision < descriptor.baseRevision
+      || descriptor.baseRevision >= Number.MAX_SAFE_INTEGER) throw operationError(code);
+
+  assertExactKeys(descriptor.activeBase, ['nodes', 'edges'], code);
+  validateBaseFile(descriptor.activeBase.nodes, code);
+  validateBaseFile(descriptor.activeBase.edges, code);
+
+  assertExactKeys(descriptor.activeDelta, [
+    'epoch', 'file', 'fromRevision', 'toRevision', 'count', 'committedBytes',
+  ], code);
+  if (typeof descriptor.activeDelta.epoch !== 'string'
+      || !IDENTIFIER_PATTERN.test(descriptor.activeDelta.epoch)
+      || descriptor.activeDelta.epoch === '.'
+      || descriptor.activeDelta.epoch === '..') {
+    throw operationError(code);
+  }
+  assertGeneratedBasename(descriptor.activeDelta.file, code);
+  assertSafeNonnegative(descriptor.activeDelta.fromRevision, code);
+  assertSafeNonnegative(descriptor.activeDelta.toRevision, code);
+  assertSafeNonnegative(descriptor.activeDelta.count, code);
+  assertSafeNonnegative(descriptor.activeDelta.committedBytes, code);
+  if (descriptor.activeDelta.fromRevision !== descriptor.baseRevision + 1
+      || descriptor.activeDelta.toRevision !== descriptor.cutoffRevision
+      || descriptor.activeDelta.count !== descriptor.cutoffRevision - descriptor.baseRevision) {
+    throw operationError(code);
+  }
+
+  assertExactKeys(descriptor.summary, ['nodeCount', 'edgeCount', 'clusterCount'], code);
+  assertSafeNonnegative(descriptor.summary.nodeCount, code);
+  assertSafeNonnegative(descriptor.summary.edgeCount, code);
+  assertSafeNonnegative(descriptor.summary.clusterCount, code);
+  return descriptor;
+}
+
+function validateSourcePin(rawDescriptor, digest, expectedCanonicalRoot) {
+  const descriptor = validateSourcePinDescriptor(rawDescriptor, expectedCanonicalRoot);
+  if (typeof digest !== 'string' || !SHA256_PATTERN.test(digest)) {
+    throw operationError('source_pin_invalid');
+  }
+  let calculated;
+  try {
+    calculated = canonicalSha256(descriptor);
+  } catch (error) {
+    throw operationError('source_pin_invalid', error);
+  }
+  const suppliedBytes = Buffer.from(digest.slice('sha256:'.length), 'hex');
+  const calculatedBytes = Buffer.from(calculated.slice('sha256:'.length), 'hex');
+  if (suppliedBytes.length !== calculatedBytes.length
+      || !crypto.timingSafeEqual(suppliedBytes, calculatedBytes)) {
+    throw operationError('source_pin_invalid');
+  }
+  return descriptor;
+}
+
+function validateCreateInput(rawInput, expectedRequester) {
+  const input = assertJsonObject(rawInput, 'request_invalid');
+  const allowed = new Set([
+    'requestId', 'requesterAgent', 'target', 'operationType', 'requestParameters', 'parameters',
+    'sourcePinDescriptor', 'sourcePinDigest', 'canonicalEvidence',
+    'queryFollowUpLineage', '_queryFollowUpContext',
+  ]);
+  for (const key of Object.keys(input)) {
+    if (!allowed.has(key)) throw operationError('request_invalid');
+  }
+  assertIdentifier(input.requestId, 'requestId');
+  assertIdentifier(input.requesterAgent, 'requesterAgent');
+  assertIdentifier(input.operationType, 'operationType');
+  if (expectedRequester && input.requesterAgent !== expectedRequester) {
+    throw operationError('requester_mismatch');
+  }
+  if (input.sourcePinDescriptor != null || input.sourcePinDigest != null) {
+    throw operationError('source_pin_invalid');
+  }
+  const requestParameters = assertJsonObject(input.requestParameters, 'request_parameters_invalid');
+  const parameters = assertJsonObject(input.parameters, 'parameters_invalid');
+  const target = validateTargetSnapshot(input.target, input.requesterAgent);
+  const followUpAuthority = validateQueryFollowUpAuthority(
+    input.queryFollowUpLineage,
+    input._queryFollowUpContext,
+    { operationType: input.operationType, requestParameters, parameters, target },
+    'request_invalid',
+  );
+  if (input.canonicalEvidence !== undefined && typeof input.canonicalEvidence !== 'boolean') {
+    throw operationError('request_invalid');
+  }
+  const idempotencyKey = buildBrainOperationIdempotencyKey(
+    input.requesterAgent,
+    input.requestId,
+    input.operationType,
+  );
+  const requestFingerprint = buildRequestFingerprint(
+    target,
+    requestParameters,
+    input.requesterAgent,
+  );
+  return {
+    requestId: input.requestId,
+    requesterAgent: input.requesterAgent,
+    operationType: input.operationType,
+    target,
+    requestParameters,
+    parameters,
+    queryFollowUpLineage: followUpAuthority.queryFollowUpLineage,
+    privateContext: followUpAuthority.privateContext,
+    canonicalEvidence: input.canonicalEvidence !== false,
+    idempotencyKey,
+    requestFingerprint,
+  };
+}
+
+function assertTransition(from, to) {
+  if (!EXECUTION_STATES.includes(to)) throw operationError('transition_invalid');
+  if (TERMINAL_STATES.has(from)) throw operationError('operation_terminal');
+  const valid = from === 'queued'
+    ? to === 'running' || TERMINAL_STATES.has(to)
+    : from === 'running' && TERMINAL_STATES.has(to);
+  if (!valid) throw operationError('transition_invalid');
+}
+
+function projectPublicRecord(record) {
+  const output = {};
+  for (const field of PUBLIC_RECORD_FIELDS) output[field] = record[field] ?? null;
+  return safeJsonClone(output, 'operation_corrupt');
+}
+
+module.exports = {
+  ATTACHMENT_STATES,
+  EXECUTION_STATES,
+  IDENTIFIER_MAX_LENGTH,
+  INLINE_RESULT_LIMIT_BYTES,
+  OPERATION_EVENT_MAX_BYTES,
+  OPERATION_EVENT_MAX_COUNT,
+  OPERATION_ID_PATTERN,
+  OPERATION_RESULT_ARTIFACT_MAX_BYTES,
+  NOTEBOOK_RESULT_VERSION_PATTERN,
+  PUBLIC_RECORD_FIELDS,
+  RESULT_HANDLE_PATTERN,
+  PGS_SESSION_ID_PATTERN,
+  SHA256_HEX_PATTERN,
+  SHA256_PATTERN,
+  TERMINAL_STATES,
+  assertExpectedVersion,
+  assertIdentifier,
+  assertOperationId,
+  assertResultHandle,
+  assertTransition,
+  buildBrainOperationIdempotencyKey,
+  buildRequestFingerprint,
+  deriveNotebookResultSummary,
+  operationError,
+  projectPublicRecord,
+  safeJsonClone,
+  stableTargetIdentity,
+  validateResultObject,
+  validateQueryFollowUpAuthority,
+  validateQueryFollowUpLineage,
+  validateVerifiedFollowUpContext,
+  validateSourceEvidence,
+  validateTargetSnapshot,
+  validateTransitionError,
+  validateCreateInput,
+  validateSourcePin,
+  validatePgsSessionMetadata,
+  validateNotebookResultSummary,
+};

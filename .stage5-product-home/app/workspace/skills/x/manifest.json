@@ -1,0 +1,51 @@
+{
+  "id": "x",
+  "version": "1.0.1",
+  "name": "X",
+  "description": "Canonical Home23 skill for X/Twitter work through the logged-in bird browser session by default. Official X API access is explicit opt-in only. Use this instead of direct bird CLI for normal posting/replying.",
+  "layer": "skill",
+  "runtime": "nodejs",
+  "category": "social",
+  "author": "home23",
+  "entry": "index.js",
+  "keywords": [
+    "x",
+    "twitter",
+    "tweet",
+    "tweets",
+    "mention",
+    "mentions",
+    "timeline",
+    "reply",
+    "post"
+  ],
+  "triggers": [
+    "read this x link",
+    "search x for",
+    "check mentions",
+    "look at my timeline",
+    "reply on x"
+  ],
+  "requiresTools": [],
+  "dependsOn": [],
+  "composes": [
+    "source-validation"
+  ],
+  "sideEffects": true,
+  "hooks": {
+    "beforeRun": "hooks/before-run.js"
+  },
+  "actions": [
+    "timeline",
+    "read",
+    "search",
+    "mentions",
+    "mediaUploadTest",
+    "post",
+    "delete",
+    "reply"
+  ],
+  "compositionHints": [
+    "For generate-image-then-post workflows, run generate_image first, then call x.post/x.reply with generatedImage:'latest', requireMedia:true, and requireGeneratedImage:true so only the generated artifact can be attached."
+  ]
+}

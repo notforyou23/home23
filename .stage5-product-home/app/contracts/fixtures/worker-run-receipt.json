@@ -1,0 +1,49 @@
+{
+  "schema": "home23.worker.receipt.v1",
+  "runId": "run_1234567890",
+  "worker": "systems",
+  "ownerAgent": "jerry",
+  "requestedBy": "human",
+  "requester": "home23-mac",
+  "startedAt": "2026-06-28T10:00:00Z",
+  "finishedAt": "2026-06-28T10:02:00Z",
+  "status": "complete",
+  "verifierStatus": "passed",
+  "summary": "Dashboard and bridge responded.",
+  "actions": [
+    "checked dashboard health",
+    "checked bridge health"
+  ],
+  "evidence": [
+    {
+      "type": "route",
+      "detail": "GET /health",
+      "status": "ok"
+    },
+    {
+      "type": "route",
+      "detail": "GET /home23/api/workers",
+      "status": "ok"
+    }
+  ],
+  "artifacts": [
+    "/home/jtr/instances/jerry/workers/runs/run_1234567890/receipt.json",
+    "/home/jtr/instances/jerry/workers/runs/run_1234567890/log.txt"
+  ],
+  "memoryCandidates": [
+    {
+      "title": "worker roster proof",
+      "detail": "Worker roster and health endpoints responded cleanly.",
+      "content": null,
+      "type": "fact",
+      "status": "candidate"
+    },
+    {
+      "title": "receipt trail",
+      "detail": "Receipt captured verified health checks and artifacts.",
+      "content": null,
+      "type": "fact",
+      "status": "candidate"
+    }
+  ]
+}

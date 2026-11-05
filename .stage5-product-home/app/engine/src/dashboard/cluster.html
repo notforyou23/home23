@@ -1,0 +1,1341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🌐 COSMO Hive Mind Observatory</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-deep: #0a0a0f;
+            --bg-dark: #12121a;
+            --bg-card: #1a1a2e;
+            --accent-cyan: #00ffff;
+            --accent-purple: #9d4edd;
+            --accent-pink: #ff006e;
+            --accent-yellow: #ffbe0b;
+            --accent-green: #06ffa5;
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0b0;
+            --text-dim: #606070;
+            --glow-cyan: rgba(0, 255, 255, 0.3);
+            --glow-green: rgba(6, 255, 165, 0.3);
+        }
+
+        body {
+            font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+            background: linear-gradient(135deg, var(--bg-deep) 0%, var(--bg-dark) 100%);
+            color: var(--text-primary);
+            overflow-x: hidden;
+            min-height: 100vh;
+        }
+
+        .neural-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(circle at 20% 30%, rgba(0, 255, 255, 0.03) 0%, transparent 50%),
+                radial-gradient(circle at 80% 70%, rgba(157, 78, 221, 0.03) 0%, transparent 50%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .container {
+            position: relative;
+            z-index: 1;
+            max-width: 1800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: rgba(26, 26, 46, 0.6);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(0, 255, 255, 0.2);
+            border-radius: 20px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        .header-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+
+        .title {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .title h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status-badge {
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-healthy {
+            background: rgba(6, 255, 165, 0.2);
+            color: var(--accent-green);
+            border: 1px solid var(--accent-green);
+        }
+
+        .status-degraded {
+            background: rgba(255, 190, 11, 0.2);
+            color: var(--accent-yellow);
+            border: 1px solid var(--accent-yellow);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 15px;
+        }
+
+        .stat-card {
+            background: rgba(26, 26, 46, 0.4);
+            border: 1px solid rgba(0, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 15px;
+        }
+
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            margin-bottom: 8px;
+        }
+
+        .stat-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: var(--accent-cyan);
+        }
+
+        .section {
+            background: rgba(26, 26, 46, 0.6);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(0, 255, 255, 0.2);
+            border-radius: 16px;
+            padding: 25px;
+            margin-bottom: 20px;
+        }
+
+        .section-title {
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: var(--accent-purple);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .thought-card {
+            background: rgba(0, 0, 0, 0.3);
+            border-left: 3px solid var(--accent-cyan);
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 8px;
+        }
+
+        .thought-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .instance-badge {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            background: rgba(0, 255, 255, 0.2);
+            color: var(--accent-cyan);
+        }
+
+        .instance-badge.leader {
+            background: rgba(6, 255, 165, 0.2);
+            color: var(--accent-green);
+        }
+
+        .instance-badge.leader::before {
+            content: '👑 ';
+        }
+
+        .thought-text {
+            color: var(--text-primary);
+            line-height: 1.6;
+            margin-bottom: 8px;
+        }
+
+        .thought-meta {
+            color: var(--text-dim);
+            font-size: 0.85rem;
+        }
+
+        .goal-card {
+            background: rgba(0, 0, 0, 0.3);
+            border-left: 3px solid var(--accent-purple);
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .goal-text {
+            color: var(--text-primary);
+            flex: 1;
+        }
+
+        .goal-priority {
+            padding: 4px 8px;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            background: rgba(157, 78, 221, 0.2);
+            color: var(--accent-purple);
+            margin-left: 10px;
+        }
+
+        .instances-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 15px;
+        }
+
+        .instance-card {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(0, 255, 255, 0.2);
+            border-radius: 12px;
+            padding: 15px;
+        }
+
+        .instance-card.leader {
+            border-color: var(--accent-green);
+            box-shadow: 0 0 20px var(--glow-green);
+        }
+
+        .instance-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .instance-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--accent-cyan);
+        }
+
+        .instance-name.leader {
+            color: var(--accent-green);
+        }
+
+        .instance-name.leader::before {
+            content: '👑 ';
+        }
+
+        .instance-metrics {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+        }
+
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 6px;
+            font-size: 0.85rem;
+        }
+
+        .metric-label {
+            color: var(--text-secondary);
+        }
+
+        .metric-value {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .agent-card {
+            background: rgba(0, 0, 0, 0.3);
+            border-left: 3px solid var(--accent-yellow);
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+        }
+
+        .agent-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .agent-type {
+            color: var(--accent-yellow);
+            font-weight: 600;
+        }
+
+        .agent-goal {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-bottom: 5px;
+        }
+
+        .agent-progress {
+            width: 100%;
+            height: 6px;
+            background: rgba(0, 0, 0, 0.5);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .agent-progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-yellow), var(--accent-pink));
+            transition: width 0.3s ease;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-secondary);
+        }
+
+        .pulse {
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .refresh-info {
+            color: var(--text-dim);
+            font-size: 0.85rem;
+            text-align: right;
+        }
+
+        .link-button {
+            display: inline-block;
+            padding: 8px 16px;
+            background: rgba(0, 255, 255, 0.1);
+            border: 1px solid var(--accent-cyan);
+            border-radius: 8px;
+            color: var(--accent-cyan);
+            text-decoration: none;
+            font-size: 0.85rem;
+            margin-top: 10px;
+            transition: all 0.3s ease;
+        }
+
+        .link-button:hover {
+            background: rgba(0, 255, 255, 0.2);
+            box-shadow: 0 0 10px var(--glow-cyan);
+        }
+
+        .goal-summary {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            align-items: center;
+            margin-bottom: 15px;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .goal-summary strong {
+            color: var(--accent-cyan);
+        }
+
+        .barrier-content {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            align-items: center;
+        }
+
+        .barrier-pill {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 10px 16px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .barrier-pill strong {
+            color: var(--accent-purple);
+            margin-left: 6px;
+        }
+
+        .barrier-status-proceed {
+            color: var(--accent-green);
+            font-weight: 600;
+        }
+
+        .barrier-status-skip {
+            color: var(--accent-yellow);
+            font-weight: 600;
+        }
+
+        .barrier-status-error {
+            color: var(--accent-pink);
+            font-weight: 600;
+        }
+
+        .review-content {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .review-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 12px;
+        }
+
+        .review-pill {
+            background: rgba(0, 255, 255, 0.08);
+            border: 1px solid rgba(0, 255, 255, 0.18);
+            border-radius: 10px;
+            padding: 10px 12px;
+            font-size: 0.9rem;
+            color: var(--text-primary);
+        }
+
+        .review-pill strong {
+            display: block;
+            font-size: 1rem;
+            margin-top: 4px;
+            color: var(--accent-cyan);
+        }
+
+        .review-card {
+            background: rgba(0, 0, 0, 0.35);
+            border: 1px solid rgba(157, 78, 221, 0.25);
+            border-radius: 12px;
+            padding: 16px;
+        }
+
+        .review-card h4 {
+            font-size: 1rem;
+            color: var(--accent-purple);
+            margin-bottom: 12px;
+        }
+
+        .review-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .review-item {
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 8px;
+            padding: 10px 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.9rem;
+        }
+
+        .review-item span {
+            color: var(--text-secondary);
+        }
+
+        .review-empty {
+            color: var(--text-dim);
+            font-size: 0.9rem;
+        }
+
+        .allocator-summary {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+
+        .allocator-specialization {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+
+        .alignment-card {
+            background: rgba(0, 0, 0, 0.25);
+            border: 1px solid rgba(0, 255, 255, 0.15);
+            border-radius: 12px;
+            padding: 14px 16px;
+            min-width: 220px;
+        }
+
+        .alignment-card h4 {
+            margin: 0 0 8px 0;
+            font-size: 0.95rem;
+            color: var(--accent-yellow);
+        }
+
+        .alignment-score {
+            font-size: 0.9rem;
+            color: var(--accent-green);
+            margin-bottom: 6px;
+        }
+
+        .alignment-metric {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        .alignment-metric span.delta-positive {
+            color: var(--accent-green);
+        }
+
+        .alignment-metric span.delta-negative {
+            color: var(--accent-pink);
+        }
+
+        .alignment-routing-note {
+            font-size: 0.72rem;
+            color: var(--text-secondary);
+            margin-top: 6px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            padding-top: 6px;
+        }
+
+        .allocator-pill {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(0, 255, 255, 0.2);
+            border-radius: 12px;
+            padding: 12px 18px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .allocator-pill strong {
+            color: var(--accent-cyan);
+            margin-left: 8px;
+            font-size: 1rem;
+        }
+
+        .allocator-grid {
+            display: grid;
+            gap: 16px;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        }
+
+        .allocator-card {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(0, 255, 255, 0.15);
+            border-radius: 12px;
+            padding: 16px;
+        }
+
+        .allocator-card h4 {
+            margin: 0 0 12px 0;
+            font-size: 1rem;
+            color: var(--accent-purple);
+        }
+
+        .allocator-metric {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .allocator-metric span:last-child {
+            color: var(--accent-cyan);
+            font-weight: 600;
+        }
+
+        .allocator-empty {
+            color: var(--text-secondary);
+            padding: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="neural-bg"></div>
+    
+    <div class="container">
+        <div class="header">
+            <div class="header-top">
+                <div class="title">
+                    <span style="font-size: 2.5rem;">🌐</span>
+                    <div>
+                        <h1>COSMO Hive Mind Observatory</h1>
+                        <p class="refresh-info">Aggregating cognitive data • Auto-refresh every 5s</p>
+                    </div>
+                </div>
+                <div id="cluster-status" class="status-badge status-healthy">
+                    <span class="pulse">●</span> Loading...
+                </div>
+            </div>
+            
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Total Cycles</div>
+                    <div class="stat-value" id="total-cycles">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Active Goals</div>
+                    <div class="stat-value" id="total-goals">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Memory Nodes</div>
+                    <div class="stat-value" id="total-memory">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Active Agents</div>
+                    <div class="stat-value" id="total-agents">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Leader</div>
+                    <div class="stat-value" id="leader-name" style="font-size: 1.3rem;">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Sync Lag (ms)</div>
+                    <div class="stat-value" id="sync-lag">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Last Merge Δ</div>
+                    <div class="stat-value" id="sync-merge">-</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section" id="barrier-section">
+            <div class="section-title">🛡️ Review Barrier</div>
+            <div id="barrier-content" class="barrier-content">
+                <div class="loading">Gathering barrier metrics...</div>
+            </div>
+        </div>
+
+        <div class="section" id="review-section">
+            <div class="section-title">🧠 Review Pipeline</div>
+            <div id="review-content" class="review-content">
+                <div class="loading">Collecting review pipeline data...</div>
+            </div>
+        </div>
+
+        <div class="section" id="governance-section">
+            <div class="section-title">🛡️ Governance State</div>
+            <div id="governance-content" class="review-content">
+                <div class="loading">Collecting governance telemetry...</div>
+            </div>
+        </div>
+
+        <div class="section" id="allocator-section">
+            <div class="section-title">🤝 Goal Allocation Health</div>
+            <div id="allocator-summary" class="allocator-summary"></div>
+            <div id="allocator-specialization" class="allocator-specialization"></div>
+            <div id="allocator-instances" class="allocator-grid"></div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">💭 Recent Thoughts (Across Hive)</div>
+            <div id="thoughts-container">
+                <div class="loading">Loading thoughts...</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">🎯 Active Goals (Combined Portfolio)</div>
+            <div id="goals-container">
+                <div class="loading">Loading goals...</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">🤖 Agent Activity (Cluster-Wide)</div>
+            <div id="agents-container">
+                <div class="loading">Loading agents...</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">🧠 Instance Cognitive States</div>
+            <div id="instances-container" class="instances-grid">
+                <div class="loading">Loading instances...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let refreshTimer;
+        let leaderInstance = null;
+
+        async function fetchClusterData() {
+            try {
+                const [overview, thoughts, goals, agents] = await Promise.all([
+                    fetch('/api/cluster/overview').then(r => r.json()),
+                    fetch('/api/cluster/thoughts?limit=10').then(r => r.json()),
+                    fetch('/api/cluster/goals').then(r => r.json()),
+                    fetch('/api/cluster/agents').then(r => r.json())
+                ]);
+
+                leaderInstance = overview.leader;
+                
+                updateHeader(overview);
+                updateThoughts(thoughts);
+                updateGoals(goals);
+                updateAgents(agents);
+                updateInstances(overview.instances);
+                updateBarrier(overview.barrier);
+                updateReview(overview.review);
+                updateGovernance(overview.governance);
+                updateAllocator(overview.goalAllocator, overview.specialization);
+            } catch (error) {
+                console.error('Error fetching cluster data:', error);
+            }
+        }
+
+        function updateHeader(overview) {
+            const statusBadge = document.getElementById('cluster-status');
+            statusBadge.className = 'status-badge';
+            
+            if (overview.health === 'healthy') {
+                statusBadge.classList.add('status-healthy');
+                statusBadge.innerHTML = '<span class="pulse">●</span> Hive Mind Healthy';
+            } else {
+                statusBadge.classList.add('status-degraded');
+                statusBadge.innerHTML = '<span class="pulse">●</span> Degraded';
+            }
+
+            document.getElementById('total-cycles').textContent = overview.cognitive.totalCycles.toLocaleString();
+            document.getElementById('total-goals').textContent = overview.cognitive.totalGoals.toLocaleString();
+            document.getElementById('total-memory').textContent = overview.cognitive.totalMemoryNodes.toLocaleString();
+            document.getElementById('total-agents').textContent = overview.cognitive.totalActiveAgents.toLocaleString();
+            document.getElementById('leader-name').textContent = overview.leader || 'None';
+
+            const sync = overview.sync || {};
+            const syncLagEl = document.getElementById('sync-lag');
+            const syncMergeEl = document.getElementById('sync-merge');
+            if (syncLagEl) {
+                syncLagEl.textContent = Number.isFinite(sync.avgBarrierMs)
+                    ? sync.avgBarrierMs.toLocaleString()
+                    : '-';
+            }
+            if (syncMergeEl) {
+                syncMergeEl.textContent = Number.isFinite(sync.lastDiffCount)
+                    ? sync.lastDiffCount.toLocaleString()
+                    : '-';
+            }
+        }
+
+        function updateBarrier(barrier) {
+            const section = document.getElementById('barrier-section');
+            const container = document.getElementById('barrier-content');
+            if (!section || !container) return;
+
+            if (!barrier) {
+                container.innerHTML = '<div class="barrier-pill">No barrier telemetry yet.</div>';
+                return;
+            }
+
+            const decision = (barrier.decision || barrier.status || 'unknown').toLowerCase();
+            let statusClass = 'barrier-status-proceed';
+            if (decision === 'skip') statusClass = 'barrier-status-skip';
+            if (barrier.status === 'error') statusClass = 'barrier-status-error';
+
+            const readyInstances = (barrier.readyInstances || [])
+                .map(item => (item.instanceId || '').toUpperCase())
+                .filter(Boolean);
+
+            const readyList = readyInstances.length > 0
+                ? readyInstances.join(', ')
+                : '—';
+
+            const reason = barrier.reason || barrier.status || '—';
+
+            container.innerHTML = `
+                <div class="barrier-pill">Cycle <strong>${formatNumber(barrier.cycle ?? 0)}</strong></div>
+                <div class="barrier-pill">Decision <strong class="${statusClass}">${escapeHtml(decision.toUpperCase())}</strong></div>
+                <div class="barrier-pill">Quorum <strong>${formatNumber(barrier.quorum || 0)}</strong></div>
+                <div class="barrier-pill">Ready <strong>${formatNumber(barrier.readyCount || 0)}</strong></div>
+                <div class="barrier-pill">Wait <strong>${formatNumber(barrier.durationMs || 0)} ms</strong></div>
+                <div class="barrier-pill">Reason <strong>${escapeHtml(reason)}</strong></div>
+                <div class="barrier-pill" style="flex: 1 1 100%;">Ready Instances <strong>${escapeHtml(readyList)}</strong></div>
+            `;
+        }
+
+        function updateReview(review) {
+            const container = document.getElementById('review-content');
+            if (!container) return;
+
+            if (!review) {
+                container.innerHTML = '<div class="review-empty">No review cycle data available yet.</div>';
+                return;
+            }
+
+            const plan = review.plan || null;
+            const artifacts = review.artifacts || {};
+            const draftItems = artifacts.draft ? [artifacts.draft] : [];
+            const critiqueItems = Array.isArray(artifacts.critiques) ? artifacts.critiques : [];
+            const synthesisItems = Array.isArray(artifacts.synthesis) ? artifacts.synthesis : [];
+
+            const warnings = Array.isArray(plan?.warnings) && plan.warnings.length > 0
+                ? `<div class="review-pill">Warnings <strong>${escapeHtml(plan.warnings.join('; '))}</strong></div>`
+                : '';
+
+            const pipelineHtml = Array.isArray(plan?.pipeline) && plan.pipeline.length > 0
+                ? `<div class="review-card">
+                        <h4>Pipeline</h4>
+                        <div class="review-list">
+                            ${plan.pipeline.map(stage => `
+                                <div class="review-item">
+                                    <div><strong>${escapeHtml(stage.phase || 'phase')}</strong> → ${escapeHtml(stage.lead || '—')}</div>
+                                    <span>${escapeHtml(stage.expectedArtifact || 'artifact')} • ${stage.dueAfterMs ? `${formatNumber(stage.dueAfterMs)} ms SLA` : 'no SLA'}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>`
+                : '';
+
+            container.innerHTML = `
+                <div class="review-grid">
+                    <div class="review-pill">Cycle <strong>${formatNumber(review.cycle || 0)}</strong></div>
+                    <div class="review-pill">Plan <strong>${escapeHtml(plan?.planId || '—')}</strong></div>
+                    <div class="review-pill">Authors <strong>${escapeHtml((plan?.assignments?.authors || []).join(', ') || '—')}</strong></div>
+                    <div class="review-pill">Critics <strong>${escapeHtml((plan?.assignments?.critics || []).join(', ') || '—')}</strong></div>
+                    <div class="review-pill">Synthesizer <strong>${escapeHtml(plan?.assignments?.synthesizer || '—')}</strong></div>
+                    ${warnings}
+                </div>
+                ${pipelineHtml}
+                ${renderArtifactSection('Draft', draftItems)}
+                ${renderArtifactSection('Critiques', critiqueItems)}
+                ${renderArtifactSection('Synthesis', synthesisItems)}
+            `;
+        }
+
+        function updateGovernance(governance) {
+            const container = document.getElementById('governance-content');
+            if (!container) return;
+
+            if (
+                !governance ||
+                (
+                    !governance.summary &&
+                    !governance.override &&
+                    (!Array.isArray(governance.events) || governance.events.length === 0)
+                )
+            ) {
+                container.innerHTML = '<div class="review-empty">No governance interventions recorded.</div>';
+                return;
+            }
+
+            const summary = governance.summary || {};
+            const summaryDecision = summary.decision || summary.action || summary.state || '—';
+            const summaryReason = summary.reason || summary.overrideReason || summary.actionReason || '—';
+            const summaryCycle = summary.cycle || summary.barrier?.cycle || summary.snapshotCycle || 0;
+            const summaryTimestamp = summary.timestamp || summary.recordedAt || governance.snapshot?.timestamp || new Date().toISOString();
+
+            const health = summary.health || governance.snapshot?.health || {};
+            const unhealthy = Array.isArray(health.unhealthyInstances) ? health.unhealthyInstances : [];
+            const stale = Array.isArray(health.staleInstances) ? health.staleInstances : [];
+
+            const override = governance.override;
+            const events = Array.isArray(governance.events) ? governance.events : [];
+
+            const overrideHtml = override ? `
+                <div class="review-card">
+                    <h4>Override</h4>
+                    <div class="review-list">
+                        <div class="review-item">
+                            <div><strong>Mode</strong></div>
+                            <span>${escapeHtml((override.mode || 'manual').toUpperCase())}</span>
+                        </div>
+                        <div class="review-item">
+                            <div><strong>Reason</strong></div>
+                            <span>${escapeHtml(override.reason || '—')}</span>
+                        </div>
+                        <div class="review-item">
+                            <div><strong>Requested By</strong></div>
+                            <span>${escapeHtml(override.requestedBy || '—')}</span>
+                        </div>
+                        <div class="review-item">
+                            <div><strong>Requested At</strong></div>
+                            <span>${escapeHtml(formatTime(override.requestedAt || override.updatedAt || new Date()))}</span>
+                        </div>
+                        <div class="review-item">
+                            <div><strong>Expires</strong></div>
+                            <span>${override.expiresAt ? escapeHtml(formatTime(override.expiresAt)) : '—'}</span>
+                        </div>
+                    </div>
+                </div>
+            ` : '';
+
+            const eventsHtml = events.length > 0 ? `
+                <div class="review-card">
+                    <h4>Recent Governance Events</h4>
+                    <div class="review-list">
+                        ${events.slice().reverse().map(event => `
+                            <div class="review-item">
+                                <div>
+                                    <strong>${escapeHtml((event.event || 'event').toUpperCase())}</strong>
+                                    <span style="display:block;font-size:0.75rem;color:rgba(255,255,255,0.55);">
+                                        ${escapeHtml(formatTime(event.timestamp || new Date()))}
+                                    </span>
+                                </div>
+                                <span>${escapeHtml(event.reason || event.mode || event.detail || '—')}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            ` : '';
+
+            container.innerHTML = `
+                <div class="review-grid">
+                    <div class="review-pill">Decision <strong>${escapeHtml(summaryDecision.toUpperCase())}</strong></div>
+                    <div class="review-pill">Reason <strong>${escapeHtml(summaryReason || '—')}</strong></div>
+                    <div class="review-pill">Cycle <strong>${formatNumber(summaryCycle || 0)}</strong></div>
+                    <div class="review-pill">Timestamp <strong>${escapeHtml(formatTime(summaryTimestamp))}</strong></div>
+                </div>
+                <div class="review-card">
+                    <h4>Health Snapshot</h4>
+                    <div class="review-list">
+                        <div class="review-item"><div><strong>Unhealthy</strong></div><span>${escapeHtml(unhealthy.join(', ') || 'None')}</span></div>
+                        <div class="review-item"><div><strong>Stale</strong></div><span>${escapeHtml(stale.join(', ') || 'None')}</span></div>
+                    </div>
+                </div>
+                ${overrideHtml}
+                ${eventsHtml}
+            `;
+        }
+
+        function renderArtifactSection(title, items) {
+            if (!items || items.length === 0) {
+                return `
+                    <div class="review-card">
+                        <h4>${escapeHtml(title)}</h4>
+                        <div class="review-empty">No ${escapeHtml(title.toLowerCase())} artifacts yet.</div>
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="review-card">
+                    <h4>${escapeHtml(title)}</h4>
+                    <div class="review-list">
+                        ${items.map(renderArtifactItem).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderArtifactItem(artifact) {
+            const status = (artifact.status || 'unknown').toUpperCase();
+            const missionInfo = artifact.mission
+                ? `<span>${escapeHtml(artifact.mission.agentType || '')} · ${escapeHtml(artifact.mission.agentId || '')}</span>`
+                : '';
+
+            let summarySnippet = '';
+            if (artifact.summary) {
+                if (Array.isArray(artifact.summary.keyFindings) && artifact.summary.keyFindings.length > 0) {
+                    summarySnippet = artifact.summary.keyFindings.slice(0, 2).join('; ');
+                } else if (Array.isArray(artifact.summary.recommendations) && artifact.summary.recommendations.length > 0) {
+                    summarySnippet = artifact.summary.recommendations.slice(0, 2).join('; ');
+                } else if (typeof artifact.summary === 'string') {
+                    summarySnippet = artifact.summary.substring(0, 120);
+                }
+
+                if (!summarySnippet && artifact.summary.qa && artifact.summary.qa.confidence) {
+                    const confidence = Number(artifact.summary.qa.confidence);
+                    if (!Number.isNaN(confidence)) {
+                        summarySnippet = `QA confidence ${Math.round(confidence * 100)}%`;
+                    }
+                }
+
+                if (!summarySnippet && artifact.summary.metrics && typeof artifact.summary.metrics.totalResults === 'number') {
+                    summarySnippet = `Items reviewed: ${artifact.summary.metrics.totalResults}`;
+                }
+            }
+
+            if (!summarySnippet) {
+                summarySnippet = '—';
+            }
+
+            return `
+                <div class="review-item">
+                    <div>
+                        <strong>${escapeHtml((artifact.instanceId || '—').toUpperCase())}</strong>
+                        <span style="margin-left:8px;">${escapeHtml(status)}</span>
+                        ${missionInfo}
+                    </div>
+                    <span>${escapeHtml(summarySnippet)}</span>
+                </div>
+            `;
+        }
+
+        function updateThoughts(thoughts) {
+            const container = document.getElementById('thoughts-container');
+            
+            if (!thoughts || thoughts.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-secondary); padding: 20px;">No recent thoughts</p>';
+                return;
+            }
+
+            container.innerHTML = thoughts.map(thought => {
+                const isLeader = thought.instanceId === leaderInstance;
+                return `
+                    <div class="thought-card">
+                        <div class="thought-header">
+                            <span class="instance-badge ${isLeader ? 'leader' : ''}">${thought.instanceId}</span>
+                            <span class="thought-meta">${formatTime(thought.timestamp)}</span>
+                        </div>
+                        <div class="thought-text">${escapeHtml(thought.thought || thought.content || 'No content')}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateGoals(goals) {
+            const container = document.getElementById('goals-container');
+            const summary = goals.claimSummary || {};
+            const summaryHtml = `
+                <div class="goal-summary">
+                    <span>Total Active: <strong>${formatNumber(summary.totalActive || 0)}</strong></span>
+                    <span>Claimed: <strong>${formatNumber(summary.claimed || 0)}</strong></span>
+                    <span>Unclaimed: <strong>${formatNumber(summary.unclaimed || 0)}</strong></span>
+                </div>
+            `;
+            
+            if (!goals.active || goals.active.length === 0) {
+                container.innerHTML = summaryHtml + '<p style="color: var(--text-secondary); padding: 20px;">No active goals</p>';
+                return;
+            }
+
+            const listHtml = goals.active.slice(0, 15).map(goal => {
+                const isLeader = goal.instanceId === leaderInstance;
+                const claimedBy = goal.claimedBy || '—';
+                return `
+                    <div class="goal-card">
+                        <div class="goal-text">${escapeHtml(goal.description || goal.text || 'Unnamed goal')}</div>
+                        <span class="instance-badge ${isLeader ? 'leader' : ''}">${goal.instanceId}</span>
+                        ${goal.priority ? `<span class="goal-priority">${(goal.priority * 100).toFixed(0)}%</span>` : ''}
+                        <div style="color: var(--text-secondary); font-size: 0.75rem; margin-top: 6px;">
+                            Claimed by: <strong>${escapeHtml(claimedBy)}</strong>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            container.innerHTML = summaryHtml + listHtml;
+        }
+
+        function updateAgents(agents) {
+            const container = document.getElementById('agents-container');
+            
+            if (!agents.recentActivity || agents.recentActivity.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-secondary); padding: 20px;">No active agents</p>';
+                return;
+            }
+
+            container.innerHTML = agents.recentActivity.map(agent => {
+                const isLeader = agent.instanceId === leaderInstance;
+                const progress = agent.progress || 0;
+                return `
+                    <div class="agent-card">
+                        <div class="agent-header">
+                            <span class="agent-type">${agent.type || 'Agent'}</span>
+                            <span class="instance-badge ${isLeader ? 'leader' : ''}">${agent.instanceId}</span>
+                        </div>
+                        ${agent.goal ? `<div class="agent-goal">Goal: ${escapeHtml(agent.goal)}</div>` : ''}
+                        <div class="agent-progress">
+                            <div class="agent-progress-bar" style="width: ${progress}%"></div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateAllocator(summary, specialization) {
+            const section = document.getElementById('allocator-section');
+            if (!section) return;
+
+            if (!summary) {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = 'block';
+
+            const summaryEl = document.getElementById('allocator-summary');
+            const clusterSuccess = formatPercent(summary.successRate || 0);
+            const duplicateRate = formatPercent(summary.duplicateRate || 0);
+            summaryEl.innerHTML = `
+                <div class="allocator-pill">Total Attempts <strong>${formatNumber(summary.totalAttempts || 0)}</strong></div>
+                <div class="allocator-pill">Successful Claims <strong>${formatNumber(summary.totalClaims || 0)}</strong></div>
+                <div class="allocator-pill">Success Rate <strong>${clusterSuccess}</strong></div>
+                <div class="allocator-pill">Duplicate Rate <strong>${duplicateRate}</strong></div>
+                <div class="allocator-pill">Completions <strong>${formatNumber(summary.totalCompletions || 0)}</strong></div>
+                <div class="allocator-pill">Releases <strong>${formatNumber(summary.totalReleases || 0)}</strong></div>
+                <div class="allocator-pill">Steals <strong>${formatNumber(summary.totalSteals || 0)}</strong></div>
+            `;
+
+            const specializationEl = document.getElementById('allocator-specialization');
+            if (specializationEl) {
+                if (!specialization || !specialization.totalAnnotated) {
+                    specializationEl.innerHTML = '';
+                    specializationEl.style.display = 'none';
+                } else {
+                    specializationEl.style.display = 'flex';
+                    const alignmentScore = specialization.alignmentScore != null
+                        ? formatPercent(specialization.alignmentScore)
+                        : '—';
+                    const matchRate = specialization.matchRate != null
+                        ? formatPercent(specialization.matchRate)
+                        : '—';
+
+                    let html = `
+                        <div class="alignment-card">
+                            <h4>Cluster Alignment</h4>
+                            <div class="alignment-score">Score: ${alignmentScore}</div>
+                            <div class="alignment-metric"><span>Annotated Goals</span><span>${formatNumber(specialization.totalAnnotated)}</span></div>
+                            <div class="alignment-metric"><span>Match Rate</span><span>${matchRate}</span></div>
+                            <div class="alignment-metric"><span>Matches</span><span>${formatNumber(specialization.matches || 0)}</span></div>
+                            <div class="alignment-metric"><span>Mismatches</span><span>${formatNumber(specialization.mismatches || 0)}</span></div>
+                        </div>
+                    `;
+
+                    const expected = specialization.expectedDistribution || {};
+                    const claimDist = specialization.claimDistribution || {};
+                    const activeDist = specialization.activeClaimDistribution || {};
+                    const claimDelta = specialization.claimDelta || {};
+                    const activeDelta = specialization.activeClaimDelta || {};
+                    const routingSignals = specialization.routingSignals || {};
+                    const instances = new Set([
+                        ...Object.keys(expected),
+                        ...Object.keys(claimDist),
+                        ...Object.keys(activeDist)
+                    ]);
+
+                    instances.forEach(instanceId => {
+                        const label = instanceId.toUpperCase();
+                        const expectedVal = expected[instanceId] || 0;
+                        const claimedVal = claimDist[instanceId] || 0;
+                        const activeVal = activeDist[instanceId] || 0;
+                        const claimDeltaVal = claimDelta[instanceId];
+                        const activeDeltaVal = activeDelta[instanceId];
+                        const claimDeltaClass = claimDeltaVal != null
+                            ? (claimDeltaVal >= 0 ? 'delta-positive' : 'delta-negative')
+                            : '';
+                        const activeDeltaClass = activeDeltaVal != null
+                            ? (activeDeltaVal >= 0 ? 'delta-positive' : 'delta-negative')
+                            : '';
+                        const routing = routingSignals[instanceId] || null;
+                        const routingNote = routing ? `
+                            <div class="alignment-routing-note">
+                                Profile ${escapeHtml(routing.profileName || label)} → Boosted ${routing.boostedGoals || 0},
+                                Penalized ${routing.penalizedGoals || 0}${routing.averageWeight != null ? `, Avg Weight ${routing.averageWeight.toFixed(2)}` : ''}
+                            </div>
+                        ` : '';
+
+                        html += `
+                            <div class="alignment-card">
+                                <h4>${label}</h4>
+                                <div class="alignment-metric"><span>Expected</span><span>${formatPercent(expectedVal)}</span></div>
+                                <div class="alignment-metric"><span>Claim Wins</span><span>${formatPercent(claimedVal)}</span></div>
+                                <div class="alignment-metric"><span>Active Claims</span><span>${formatPercent(activeVal)}</span></div>
+                                <div class="alignment-metric"><span>Δ Claim Wins</span><span class="${claimDeltaClass}">${claimDeltaVal != null ? formatDelta(claimDeltaVal) : '—'}</span></div>
+                                <div class="alignment-metric"><span>Δ Active</span><span class="${activeDeltaClass}">${activeDeltaVal != null ? formatDelta(activeDeltaVal) : '—'}</span></div>
+                                ${routingNote}
+                            </div>
+                        `;
+                    });
+
+                    specializationEl.innerHTML = html;
+                }
+            }
+
+            const instancesEl = document.getElementById('allocator-instances');
+            if (!summary.instances || summary.instances.length === 0) {
+                instancesEl.innerHTML = '<div class="allocator-empty">Awaiting allocator telemetry...</div>';
+                return;
+            }
+
+            instancesEl.innerHTML = summary.instances.map(inst => {
+                const success = formatPercent(inst.successRate || 0);
+                return `
+                    <div class="allocator-card">
+                        <h4>${inst.instanceId}</h4>
+                        <div class="allocator-metric">
+                            <span>Success</span>
+                            <span>${success}</span>
+                        </div>
+                        <div class="allocator-metric">
+                            <span>Attempts</span>
+                            <span>${formatNumber(inst.claimAttempts || 0)}</span>
+                        </div>
+                        <div class="allocator-metric">
+                            <span>Wins</span>
+                            <span>${formatNumber(inst.claimSuccesses || 0)}</span>
+                        </div>
+                        <div class="allocator-metric">
+                            <span>Failures</span>
+                            <span>${formatNumber(inst.claimFailures || 0)}</span>
+                        </div>
+                        <div class="allocator-metric">
+                            <span>Duplicate Rate</span>
+                            <span>${formatPercent(inst.duplicateRate || 0)}</span>
+                        </div>
+                        <div class="allocator-metric">
+                            <span>Completions</span>
+                            <span>${formatNumber(inst.completions || 0)}</span>
+                        </div>
+                        <div class="allocator-metric">
+                            <span>Releases</span>
+                            <span>${formatNumber(inst.releases || 0)}</span>
+                        </div>
+                        <div class="allocator-metric">
+                            <span>Steals</span>
+                            <span>${formatNumber(inst.workSteals || 0)}</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateInstances(instances) {
+            const container = document.getElementById('instances-container');
+            
+            container.innerHTML = instances.map(inst => {
+                const isLeader = inst.instanceId === leaderInstance;
+                const isHealthy = inst.status === 'healthy';
+                const sync = inst.clusterSync || {};
+                const syncLag = sync.barrier && typeof sync.barrier.waitedMs === 'number'
+                    ? sync.barrier.waitedMs
+                    : null;
+                const syncRole = sync.lastRole ? sync.lastRole.toUpperCase() : '—';
+                const syncStatus = sync.success === false ? '⚠️' : syncRole;
+                
+                return `
+                    <div class="instance-card ${isLeader ? 'leader' : ''}">
+                        <div class="instance-header">
+                            <div class="instance-name ${isLeader ? 'leader' : ''}">${inst.instanceId}</div>
+                        </div>
+                        ${isHealthy ? `
+                            <div class="instance-metrics">
+                                <div class="metric">
+                                    <span class="metric-label">Cycles</span>
+                                    <span class="metric-value">${inst.cycles || 0}</span>
+                                </div>
+                                <div class="metric">
+                                    <span class="metric-label">Goals</span>
+                                    <span class="metric-value">${inst.goals || 0}</span>
+                                </div>
+                                <div class="metric">
+                                    <span class="metric-label">Memory</span>
+                                    <span class="metric-value">${inst.memory || 0}</span>
+                                </div>
+                                <div class="metric">
+                                    <span class="metric-label">Port</span>
+                                    <span class="metric-value">${inst.port}</span>
+                                </div>
+                                <div class="metric">
+                                    <span class="metric-label">Review Role</span>
+                                    <span class="metric-value">${escapeHtml((inst.reviewPlanRole || '—').toUpperCase())}</span>
+                                </div>
+                                <div class="metric">
+                                    <span class="metric-label">Sync Lag</span>
+                                    <span class="metric-value">${syncLag != null ? formatNumber(syncLag) + ' ms' : '—'}</span>
+                                </div>
+                                <div class="metric">
+                                    <span class="metric-label">Sync Role</span>
+                                    <span class="metric-value">${syncStatus}</span>
+                                </div>
+                            </div>
+                            <a href="http://localhost:${inst.port}" target="_blank" class="link-button">
+                                Open Full Observatory →
+                            </a>
+                        ` : `
+                            <p style="color: var(--text-secondary); margin-top: 10px;">
+                                Status: ${inst.status}
+                            </p>
+                        `}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function formatTime(timestamp) {
+            if (!timestamp) return 'Unknown';
+            const date = new Date(timestamp);
+            return date.toLocaleTimeString();
+        }
+
+        function formatNumber(value) {
+            if (value == null || Number.isNaN(value)) return '—';
+            return Math.round(value).toLocaleString();
+        }
+
+        function formatPercent(value) {
+            if (value == null || Number.isNaN(value)) return '0%';
+            return `${(value * 100).toFixed(1)}%`;
+        }
+
+        function formatDelta(value) {
+            if (value == null || Number.isNaN(value)) return '0%';
+            const percent = (value * 100).toFixed(1);
+            const sign = value > 0 ? '+' : value < 0 ? '' : '';
+            return `${sign}${percent}%`;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function startAutoRefresh() {
+            fetchClusterData();
+            refreshTimer = setInterval(fetchClusterData, 5000);
+        }
+
+        // Start monitoring
+        startAutoRefresh();
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (refreshTimer) clearInterval(refreshTimer);
+        });
+    </script>
+</body>
+</html>

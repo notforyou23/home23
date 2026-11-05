@@ -1,0 +1,28 @@
+{
+  "runs": [
+    {
+      "runId": "run_1234567890",
+      "worker": "systems",
+      "ownerAgent": "jerry",
+      "status": "complete",
+      "verifierStatus": "passed",
+      "startedAt": "2026-06-28T10:00:00Z",
+      "finishedAt": "2026-06-28T10:02:00Z",
+      "summary": "Dashboard and bridge responded.",
+      "runPath": "/home/jtr/instances/jerry/workers/runs/run_1234567890",
+      "receiptPath": "/home/jtr/instances/jerry/workers/runs/run_1234567890/receipt.json"
+    },
+    {
+      "runId": "run_1234567891",
+      "worker": "memory",
+      "ownerAgent": "jerry",
+      "status": "running",
+      "verifierStatus": "pending",
+      "startedAt": "2026-06-28T10:05:00Z",
+      "finishedAt": null,
+      "summary": "Scanning recent notes for receipt candidates.",
+      "runPath": "/home/jtr/instances/jerry/workers/runs/run_1234567891",
+      "receiptPath": "/home/jtr/instances/jerry/workers/runs/run_1234567891/receipt.json"
+    }
+  ]
+}

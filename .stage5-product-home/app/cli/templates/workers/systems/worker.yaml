@@ -1,0 +1,25 @@
+kind: worker
+name: systems
+displayName: Systems
+ownerAgent: primary
+class: ops
+purpose: Diagnose Home23 host, PM2, ports, logs, and scoped service issues without destructive global operations.
+tools:
+  shell: true
+  files: true
+  cron: true
+  brain: true
+  web: false
+safetyPolicy:
+  pm2Scope: home23-only
+  forbidGlobalPm2: true
+  forbidForcePush: true
+  requireVerifierBeforeSuccess: true
+feedsBrains:
+  - primary
+visibleTo:
+  - primary
+limits:
+  maxRuntimeMinutes: 45
+  maxToolCalls: 80
+  maxTokens: 120000
