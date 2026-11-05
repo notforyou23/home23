@@ -1,0 +1,44 @@
+✔ category mapping: corrections, consequences, interpretations, observations (0.473625ms)
+✔ adapter pulls, maps, and NEVER writes the source (1.367458ms)
+✔ cursor advances only on commit, persists across adapter instances (1.007541ms)
+✔ torn tail is never consumed; completing the line delivers it (0.7875ms)
+✔ fromEnd skips history; only NEW events arrive (0.580167ms)
+✔ RUNNER: live-shaped flow — transitions, workspace, lobe, checkpoint, stop, exact resume (146.201875ms)
+✔ REVIEW FIX: oversized line larger than the read window is delivered, not a silent stall (1.06725ms)
+✔ REVIEW FIX: line beyond the hard cap is SKIPPED durably with a count — never an infinite stall (0.993167ms)
+✔ REVIEW FIX: a window of pure garbage lines advances the cursor instead of stalling (1.055875ms)
+✔ REVIEW FIX: getState() dispositions are copy-on-read — no unreceipted mutation path into D (18.434583ms)
+✔ relationship mapper: corrections are corrections, threads are observations (0.813834ms)
+✔ worker-runs mapper: failures/blocked teach, verified successes corroborate (0.786208ms)
+✔ worker-runs mapper speaks the LIVE stream vocabulary: fixed/no_change with verification corroborate, failed/blocked teach (0.68375ms)
+✔ MULTI-SOURCE: streams merge in event-time order, cursors stay independent, and a relationship correction TEACHES (59.230958ms)
+✔ MECHANICAL FORK GUARD: a second runner on the same stateDir refuses; stale locks are taken over (37.460833ms)
+✔ conversation mapper: both voices observed, words + meaning ride the event (0.892625ms)
+✔ house mapper: home transitions arrive as observed contact with words (0.731708ms)
+✔ dream mapper: the individual's own dreams enter the diet at birth — head + T1 content hash (0.764625ms)
+✔ the machine's heartbeat is not diet: event_ledger.heartbeat lines are filtered (0.632333ms)
+✔ complete owner meaning survives stream, cell, checkpoint and session context (47.760333ms)
+✔ conversation mapper: unstamped history stays unknown and event ids stay line-stable (1.081083ms)
+✔ conversation mapper: new optional provenance parses through without inventing a vector (0.608209ms)
+✔ conversation mapper: writer hash stamps parse through; unstamped sibling stays unknown (0.603083ms)
+✔ write and restore: exact state hash, ledgerSeq, ledgerCursor match (2.939792ms)
+✔ exact Float32Array bytes survive checkpoint round-trip (1.002333ms)
+✔ corrupt checkpoint is quarantined; fallback to previous valid one (5.848167ms)
+✔ restore by specific checkpointId (1.205042ms)
+✔ no valid checkpoint throws (0.595083ms)
+✔ count tracks number of written checkpoints (1.244292ms)
+✔ symbolic cell state is covered by the checkpoint hash (tamper refused) (1.278917ms)
+✔ event-time state is inside the hash (Cut 2 semantics) (0.106083ms)
+✔ lost index does not orphan checkpoints: restore falls back to a directory scan (11.556542ms)
+✔ FIELD TRIP: a traveled stateDir (foreign absolute index paths, flattened mtimes) restores the NEWEST life (1.732667ms)
+✔ new indexes store relative paths (machine-portable by construction) (0.818417ms)
+✔ lossless tail recovery preserves receipts and makes restart idempotent (stop boundary: false) (418.166792ms)
+✔ lossless tail recovery preserves receipts and makes restart idempotent (stop boundary: true) (564.939833ms)
+ℹ tests 36
+ℹ suites 0
+ℹ pass 36
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1778.759416

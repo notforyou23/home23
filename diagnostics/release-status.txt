@@ -1,0 +1,5 @@
+
+> home23@1.0.0 release:status
+> node scripts/release/status.mjs /Users/jtr/Library/Application Support/Home23 Host/Home/app
+
+Release inspection failed; inspect pointer, launcher files and PM2 locally. No deployment changes made.

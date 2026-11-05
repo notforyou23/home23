@@ -1,0 +1,16 @@
+src/substrate/seed-context.ts(41,34): error TS6059: File '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/src/substrate/embed-at-contact.ts' is not under 'rootDir' '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/substrate'. 'rootDir' is expected to contain all source files.
+  The file is in the program because:
+    Imported via './embed-at-contact.js' from file '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/src/substrate/seed-context.ts'
+    Imported via './embed-at-contact.js' from file '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/src/substrate/semantic-match.ts'
+  File is ECMAScript module because '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/package.json' has field "type" with value "module"
+src/substrate/seed-context.ts(42,40): error TS6059: File '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/src/substrate/semantic-match.ts' is not under 'rootDir' '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/substrate'. 'rootDir' is expected to contain all source files.
+  File is ECMAScript module because '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/package.json' has field "type" with value "module"
+src/substrate/seed-now.ts(19,56): error TS6059: File '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/src/substrate/seed-context.ts' is not under 'rootDir' '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/substrate'. 'rootDir' is expected to contain all source files.
+  File is ECMAScript module because '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/package.json' has field "type" with value "module"
+src/substrate/semantic-match.ts(25,8): error TS6059: File '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/src/substrate/encoder-attention-policy.ts' is not under 'rootDir' '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/substrate'. 'rootDir' is expected to contain all source files.
+  The file is in the program because:
+    Imported via './encoder-attention-policy.js' from file '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/src/substrate/semantic-match.ts'
+    Imported via './encoder-attention-policy.js' from file '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/src/substrate/seed-context.ts'
+  File is ECMAScript module because '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/package.json' has field "type" with value "module"
+substrate/tests/adapter-runner.test.ts(490,43): error TS6059: File '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/src/substrate/seed-now.ts' is not under 'rootDir' '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/substrate'. 'rootDir' is expected to contain all source files.
+  File is ECMAScript module because '/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/package.json' has field "type" with value "module"

@@ -1,0 +1,11 @@
+{
+  "stateDir": "/Users/jtr/Library/Application Support/Home23 Host/Home/app/instances/forrest/substrate/seed-01",
+  "checkpointId": "ckpt_mvjk0qs3_8d2780ec",
+  "checkpointSeq": 57349,
+  "headSeq": 57383,
+  "tailReceipts": 33,
+  "headCursor": "733fecea12799f426ff497efe2b3de6fe02076d28ccd0de9cbc83e0d9d410c7c",
+  "stateHash": "a17143c9aac9ce30512f24bf8782aa8e19c08ff8d22ce3884c537e352a3eb36d",
+  "replayVerified": true,
+  "apply": true
+}

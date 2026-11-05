@@ -1,0 +1,332 @@
+{
+  "at": "2026-10-23T08:52:36.565Z",
+  "pid": 43626,
+  "status": "online",
+  "restarts": 4297,
+  "headSeq": 57991,
+  "cycles": [
+    {
+      "seq": 57393,
+      "category": "workspace",
+      "asOf": "2026-10-22T13:52:05.485Z"
+    },
+    {
+      "seq": 57403,
+      "category": "workspace",
+      "asOf": "2026-10-22T14:22:57.948Z"
+    },
+    {
+      "seq": 57412,
+      "category": "workspace",
+      "asOf": "2026-10-22T14:30:12.765Z"
+    },
+    {
+      "seq": 57421,
+      "category": "silence",
+      "asOf": "2026-10-22T14:51:32.405Z"
+    },
+    {
+      "seq": 57432,
+      "category": "workspace",
+      "asOf": "2026-10-22T15:06:33.424Z"
+    },
+    {
+      "seq": 57441,
+      "category": "workspace",
+      "asOf": "2026-10-22T15:36:29.096Z"
+    },
+    {
+      "seq": 57450,
+      "category": "workspace",
+      "asOf": "2026-10-22T15:51:54.003Z"
+    },
+    {
+      "seq": 57459,
+      "category": "workspace",
+      "asOf": "2026-10-22T16:02:22.008Z"
+    },
+    {
+      "seq": 57469,
+      "category": "silence",
+      "asOf": "2026-10-22T16:06:29.595Z"
+    },
+    {
+      "seq": 57478,
+      "category": "workspace",
+      "asOf": "2026-10-22T16:21:45.830Z"
+    },
+    {
+      "seq": 57487,
+      "category": "workspace",
+      "asOf": "2026-10-22T16:51:29.556Z"
+    },
+    {
+      "seq": 57498,
+      "category": "workspace",
+      "asOf": "2026-10-22T16:51:36.458Z"
+    },
+    {
+      "seq": 57509,
+      "category": "workspace",
+      "asOf": "2026-10-22T17:21:31.271Z"
+    },
+    {
+      "seq": 57518,
+      "category": "workspace",
+      "asOf": "2026-10-22T17:36:43.861Z"
+    },
+    {
+      "seq": 57527,
+      "category": "workspace",
+      "asOf": "2026-10-22T18:06:32.398Z"
+    },
+    {
+      "seq": 57536,
+      "category": "workspace",
+      "asOf": "2026-10-22T18:36:30.129Z"
+    },
+    {
+      "seq": 57546,
+      "category": "workspace",
+      "asOf": "2026-10-22T18:51:33.947Z"
+    },
+    {
+      "seq": 57555,
+      "category": "silence",
+      "asOf": "2026-10-22T19:00:25.880Z"
+    },
+    {
+      "seq": 57564,
+      "category": "silence",
+      "asOf": "2026-10-22T19:06:38.604Z"
+    },
+    {
+      "seq": 57573,
+      "category": "workspace",
+      "asOf": "2026-10-22T19:30:00.696Z"
+    },
+    {
+      "seq": 57583,
+      "category": "workspace",
+      "asOf": "2026-10-22T19:51:28.974Z"
+    },
+    {
+      "seq": 57592,
+      "category": "workspace",
+      "asOf": "2026-10-22T20:21:29.076Z"
+    },
+    {
+      "seq": 57601,
+      "category": "workspace",
+      "asOf": "2026-10-22T20:36:34.587Z"
+    },
+    {
+      "seq": 57610,
+      "category": "workspace",
+      "asOf": "2026-10-22T20:51:34.356Z"
+    },
+    {
+      "seq": 57620,
+      "category": "workspace",
+      "asOf": "2026-10-22T21:21:44.561Z"
+    },
+    {
+      "seq": 57629,
+      "category": "workspace",
+      "asOf": "2026-10-22T21:43:29.162Z"
+    },
+    {
+      "seq": 57638,
+      "category": "workspace",
+      "asOf": "2026-10-22T22:02:33.726Z"
+    },
+    {
+      "seq": 57648,
+      "category": "silence",
+      "asOf": "2026-10-22T22:02:35.978Z"
+    },
+    {
+      "seq": 57659,
+      "category": "silence",
+      "asOf": "2026-10-22T22:21:28.917Z"
+    },
+    {
+      "seq": 57668,
+      "category": "workspace",
+      "asOf": "2026-10-22T22:36:33.838Z"
+    },
+    {
+      "seq": 57677,
+      "category": "workspace",
+      "asOf": "2026-10-22T23:06:29.165Z"
+    },
+    {
+      "seq": 57686,
+      "category": "workspace",
+      "asOf": "2026-10-22T23:21:31.882Z"
+    },
+    {
+      "seq": 57696,
+      "category": "workspace",
+      "asOf": "2026-10-22T23:51:33.503Z"
+    },
+    {
+      "seq": 57707,
+      "category": "workspace",
+      "asOf": "2026-10-23T00:06:32.866Z"
+    },
+    {
+      "seq": 57716,
+      "category": "workspace",
+      "asOf": "2026-10-23T00:36:29.888Z"
+    },
+    {
+      "seq": 57725,
+      "category": "workspace",
+      "asOf": "2026-10-23T00:51:30.812Z"
+    },
+    {
+      "seq": 57736,
+      "category": "workspace",
+      "asOf": "2026-10-23T01:00:18.861Z"
+    },
+    {
+      "seq": 57745,
+      "category": "silence",
+      "asOf": "2026-10-23T01:06:33.872Z"
+    },
+    {
+      "seq": 57754,
+      "category": "workspace",
+      "asOf": "2026-10-23T01:36:28.597Z"
+    },
+    {
+      "seq": 57763,
+      "category": "workspace",
+      "asOf": "2026-10-23T01:36:45.431Z"
+    },
+    {
+      "seq": 57773,
+      "category": "silence",
+      "asOf": "2026-10-23T01:36:45.444Z"
+    },
+    {
+      "seq": 57782,
+      "category": "workspace",
+      "asOf": "2026-10-23T02:06:29.428Z"
+    },
+    {
+      "seq": 57791,
+      "category": "workspace",
+      "asOf": "2026-10-23T02:21:33.242Z"
+    },
+    {
+      "seq": 57800,
+      "category": "workspace",
+      "asOf": "2026-10-23T02:51:29.709Z"
+    },
+    {
+      "seq": 57810,
+      "category": "workspace",
+      "asOf": "2026-10-23T03:06:33.633Z"
+    },
+    {
+      "seq": 57819,
+      "category": "workspace",
+      "asOf": "2026-10-23T03:36:29.542Z"
+    },
+    {
+      "seq": 57828,
+      "category": "workspace",
+      "asOf": "2026-10-23T03:51:33.705Z"
+    },
+    {
+      "seq": 57837,
+      "category": "workspace",
+      "asOf": "2026-10-23T04:02:21.677Z"
+    },
+    {
+      "seq": 57847,
+      "category": "silence",
+      "asOf": "2026-10-23T04:06:34.403Z"
+    },
+    {
+      "seq": 57856,
+      "category": "workspace",
+      "asOf": "2026-10-23T04:36:30.057Z"
+    },
+    {
+      "seq": 57865,
+      "category": "workspace",
+      "asOf": "2026-10-23T04:51:32.136Z"
+    },
+    {
+      "seq": 57874,
+      "category": "workspace",
+      "asOf": "2026-10-23T05:21:29.399Z"
+    },
+    {
+      "seq": 57885,
+      "category": "silence",
+      "asOf": "2026-10-23T05:36:43.567Z"
+    },
+    {
+      "seq": 57894,
+      "category": "workspace",
+      "asOf": "2026-10-23T06:06:30.207Z"
+    },
+    {
+      "seq": 57903,
+      "category": "workspace",
+      "asOf": "2026-10-23T06:21:31.597Z"
+    },
+    {
+      "seq": 57912,
+      "category": "workspace",
+      "asOf": "2026-10-23T06:36:36.677Z"
+    },
+    {
+      "seq": 57922,
+      "category": "workspace",
+      "asOf": "2026-10-23T07:00:23.625Z"
+    },
+    {
+      "seq": 57931,
+      "category": "silence",
+      "asOf": "2026-10-23T07:00:23.632Z"
+    },
+    {
+      "seq": 57940,
+      "category": "workspace",
+      "asOf": "2026-10-23T07:21:47.777Z"
+    },
+    {
+      "seq": 57949,
+      "category": "workspace",
+      "asOf": "2026-10-23T07:51:28.699Z"
+    },
+    {
+      "seq": 57959,
+      "category": "workspace",
+      "asOf": "2026-10-23T08:06:35.591Z"
+    },
+    {
+      "seq": 57968,
+      "category": "workspace",
+      "asOf": "2026-10-23T08:36:31.548Z"
+    },
+    {
+      "seq": 57977,
+      "category": "workspace",
+      "asOf": "2026-10-23T08:36:40.477Z"
+    },
+    {
+      "seq": 57986,
+      "category": "silence",
+      "asOf": "2026-10-23T08:51:29.608Z"
+    }
+  ],
+  "elapsedSeconds": 114.985,
+  "headAdvance": 7,
+  "cyclesSinceFirst": 1
+}

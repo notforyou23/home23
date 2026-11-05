@@ -1,0 +1,10 @@
+✔ lossless tail recovery preserves receipts and makes restart idempotent (stop boundary: false) (521.253541ms)
+✔ lossless tail recovery preserves receipts and makes restart idempotent (stop boundary: true) (644.277834ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1381.867583

@@ -1,0 +1,124 @@
+{
+  "at": "2026-10-23T08:50:41.580Z",
+  "pid": 43626,
+  "status": "online",
+  "restarts": 4297,
+  "head": {
+    "schema": "home23.seed.ledger.v1",
+    "seq": 57984,
+    "prevHash": "67db0df82fbff4dd792c21bfdf4d87c497d2180110980a71c82e15ae20963192",
+    "recordId": "2cf61799-a21a-4970-8812-d943aaee1525",
+    "category": "transition",
+    "sourceAuthority": "home23.event-ledger",
+    "sourceRef": "TurnContextPrepared:subagent:diagnose:agenda_ag-mvkpuh42-63bb16:9d6be4e0ba5dd2a5c0d3d588adcebaf5",
+    "payload": {
+      "eventId": "aafa5da5-b7fd-4e61-871c-2a58730e4c53",
+      "targetCellId": "body.jtr",
+      "producedAt": "2026-10-23T08:49:11.688Z",
+      "originalCategory": "observation",
+      "dtSeconds": 444.734,
+      "readouts": {
+        "salience": 0.004620659970405101,
+        "novelty": 0.6790032568163151,
+        "arousal": 0.2863354708388215
+      }
+    },
+    "stateHashBefore": "923938ed159b0200f37f4d05c42e49b9ceb76e3a1749e0fe74dd976364934cdb",
+    "stateHashAfter": "02127f1b18201be98e38e816fd5257aad0f4e7e1f3106adac748ce798ef651e5",
+    "issuedAt": "2026-10-23T08:50:28.437Z"
+  },
+  "recent": [
+    {
+      "seq": 57973,
+      "category": "transition"
+    },
+    {
+      "seq": 57974,
+      "category": "transition"
+    },
+    {
+      "seq": 57975,
+      "category": "transition"
+    },
+    {
+      "seq": 57976,
+      "category": "transition"
+    },
+    {
+      "seq": 57977,
+      "category": "workspace",
+      "payload": {
+        "asOf": "2026-10-23T08:36:40.477Z",
+        "admittedCellIds": [
+          "contact.jtr-forrest"
+        ],
+        "uncertainty": 0.8112683458955267,
+        "scores": [
+          {
+            "cellId": "contact.jtr-forrest",
+            "score": 0.43595324473628516,
+            "admitted": true
+          },
+          {
+            "cellId": "body.jtr",
+            "score": 0.11315718629522765,
+            "admitted": false
+          },
+          {
+            "cellId": "contact.owner.voice",
+            "score": 0,
+            "admitted": false
+          },
+          {
+            "cellId": "periphery.open-field",
+            "score": 0,
+            "admitted": false
+          },
+          {
+            "cellId": "practice.rebuild",
+            "score": 0,
+            "admitted": false
+          },
+          {
+            "cellId": "work.corrections",
+            "score": 0,
+            "admitted": false
+          },
+          {
+            "cellId": "work.health-system",
+            "score": 0,
+            "admitted": false
+          }
+        ]
+      }
+    },
+    {
+      "seq": 57978,
+      "category": "transition"
+    },
+    {
+      "seq": 57979,
+      "category": "transition"
+    },
+    {
+      "seq": 57980,
+      "category": "transition"
+    },
+    {
+      "seq": 57981,
+      "category": "transition"
+    },
+    {
+      "seq": 57982,
+      "category": "transition"
+    },
+    {
+      "seq": 57983,
+      "category": "transition"
+    },
+    {
+      "seq": 57984,
+      "category": "transition"
+    }
+  ]
+}

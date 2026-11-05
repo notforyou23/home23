@@ -133,15 +133,23 @@ async function main(): Promise<void> {
     }, null, 2));
     // Preserve the checkpoint receipt so replayed sequence-dependent IDs and
     // hashes occupy the exact resident sequence numbers.
-    writeFileSync(join(scratch, 'seed-ledger.jsonl'), `${lines.slice(0, latest.ledgerSeq + 1).join('\n')}\n`);
+    // A clean stop is administrative evidence, not a fresh stop() operation:
+    // stop() would create an extra checkpoint and shift every subsequent seq.
+    // Retain it verbatim at the boundary and let strict restore validate its
+    // authority, payload and checkpoint binding and account for both receipts.
+    const stoppedBoundary = life[0]?.category === 'stop';
+    const boundaryLength = latest.ledgerSeq + 1 + (stoppedBoundary ? 1 : 0);
+    writeFileSync(join(scratch, 'seed-ledger.jsonl'), `${lines.slice(0, boundaryLength).join('\n')}\n`);
 
     const events = collectEvents(options.sources, scratchRoot, wanted);
     const missing = [...wanted].filter((id) => !events.has(id));
     if (missing.length) die(`source evidence missing for ${missing.length} transition(s): ${missing.slice(0, 5).join(', ')}`);
 
-    const seed = SeedProcess.restore(scratch, undefined, { budget: RESIDENT_RESOURCE_BUDGET });
+    const seed = SeedProcess.restore(scratch, undefined, {
+      budget: RESIDENT_RESOURCE_BUDGET, requireCheckpointCoversTail: true,
+    });
     let packet: WorkspacePacket | undefined;
-    for (const record of life) {
+    for (const record of life.slice(stoppedBoundary ? 1 : 0)) {
       if (record.category === 'transition') seed.transition(events.get(String(record.payload['eventId']))!);
       else if (record.category === 'workspace' || record.category === 'silence') {
         const outcome = seed.workspaceCycle(String(record.payload['asOf']));
@@ -154,6 +162,8 @@ async function main(): Promise<void> {
           invoke: async () => lobeResult(record),
         };
         await seed.recruitLobe(adapter, packet, String(p['asOf']));
+      } else {
+        die(`unsupported recovery receipt ${record.category} at resident seq ${record.seq}`);
       }
     }
     const replayed = new SeedLedger(scratch).readFrom(latest.ledgerSeq + 2);

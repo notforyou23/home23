@@ -1,0 +1,27 @@
+{
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    "/Users/jtr/_JTR23_/development/.worktrees/forrest-stop-tail-recovery/substrate/bin/.seed-recover-tail-baseline.ts",
+    "/Users/jtr/Library/Application Support/Home23 Host/Home/app/instances/forrest/substrate/seed-01",
+    "--source",
+    "harness-ledger:/Users/jtr/Library/Application Support/Home23 Host/Home/app/instances/forrest/brain/event-ledger.jsonl",
+    "--source",
+    "relationship-ledger:/Users/jtr/Library/Application Support/Home23 Host/Home/app/instances/forrest/brain/relationship-ledger.events.jsonl",
+    "--source",
+    "worker-runs:/Users/jtr/Library/Application Support/Home23 Host/Home/app/instances/forrest/brain/worker-runs.jsonl",
+    "--source",
+    "conversation-stream:/Users/jtr/Library/Application Support/Home23 Host/Home/app/instances/forrest/substrate/conversation-stream.jsonl",
+    "--source",
+    "house-stream:/Users/jtr/Library/Application Support/Home23 Host/Home/app/instances/forrest/substrate/house-stream.jsonl",
+    "--source",
+    "relationship-ledger:/Users/jtr/Library/Application Support/Home23 Host/Home/app/instances/forrest/brain/memory-objects.events.jsonl",
+    "--source",
+    "dream-stream:/Users/jtr/Library/Application Support/Home23 Host/Home/app/instances/forrest/substrate/dream-events.jsonl"
+  ],
+  "baselineRef": "cf50c4f275a27f1f0f111543ef50e898bc0684c8",
+  "exitCode": 1,
+  "stdout": "",
+  "stderr": "replay receipt count mismatch: expected 33, got 32\n"
+}
