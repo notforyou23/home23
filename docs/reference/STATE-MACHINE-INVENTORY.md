@@ -4,7 +4,7 @@ A survey of every record in Home23 that moves through named states, taken on 202
 
 A state machine is *explicit* when its states and legal moves are written down as data and the writer refuses anything else. It is *implicit* when the states exist only as string literals spread across the code that happens to compare or assign them. Implicit machines are where records get stuck, where two screens disagree about whether something is finished, and where a new state silently falls through every `if`.
 
-How this was produced: a scan of `src/`, `engine/src/`, `substrate/src/`, `cli/`, `shared/` and `scripts/` for string literals compared with or assigned to a `status`, `state`, `phase`, `stage`, `mode`, `outcome` or `verdict` field, followed by reading the writers of the lifecycles in section 1 and 2. For section 3 the state lists come from the scan, not from reading every writer, so treat them as the vocabulary in use rather than a verified transition table.
+How this was produced: a scan of `src/`, `engine/src/`, `substrate/src/`, `cli/`, `shared/` and `scripts/`, and of the Swift sources in the separate Apple repository, for string literals compared with or assigned to a `status`, `state`, `phase`, `stage`, `mode`, `outcome` or `verdict` field, followed by reading the writers of the lifecycles in section 1 and 2. For section 3 the state lists come from the scan, not from reading every writer, so treat them as the vocabulary in use rather than a verified transition table.
 
 ## 1. Explicit and enforced
 
@@ -108,6 +108,31 @@ These decide whether a home starts after an update. Each persists a phase to dis
 | Commitment | `substrate/src/concern.ts` | `open`, `satisfied`, `contradicted`, `expired`, `abandoned` | Typed union; replay-determined |
 
 The substrate lifecycles are deliberately driven by replay of the hash chain. Any table for them belongs in `substrate/` under the substrate law and must not introduce a second writer.
+
+### Apple clients (`notforyou23/home23-ios`)
+
+Surveyed at `home23-ios` commit `fe18630`. The apps are consumers: they do not write the lifecycles above, they decode them. Statuses mostly arrive as plain strings and each screen decides for itself which ones mean finished.
+
+| Lifecycle | Where | States in use | Guard |
+| --- | --- | --- | --- |
+| Chat turn (client reading) | `Home23Shared/.../Models/TurnDisplayFormatter.swift`, `StaleActiveTurnReconciliation.swift`, `Console/ConsoleTranscript.swift`, `ProductContracts/ConnectedAgentsTurnEvidenceProjection.swift`, `Home23/.../ProductTurnInspectorView.swift` | The harness `chat-turn` states and views, plus aliases `completed`, `timed_out`, `canceled`, `failed`, `interrupted`, `expired`, `succeeded` | None. No enum; six hand-written lists containing `orphaned`, and they disagree |
+| Brain operation | `Models/BrainToolEventMetadata.swift` (`BrainOperationState`), `Models/QueryNotebookContracts.swift` (`QueryExecutionState`) | `queued`, `running`, `complete`, `partial`, `failed`, `cancelled`, `interrupted` | Two separate `Codable` enums with the same cases; only one has `isTerminal` |
+| Response work | `Presentation/TurnPulseModel.swift` (`TurnPulseWorkState`), `Home23/.../ConnectedProductModels.swift` (`ProductResponseWorkState`) | `queued`, `running`, `stopping`, `succeeded`, `failed`, `cancelled`, `expired` | Two enums with identical cases, mapped by hand at the boundary |
+| Console source | `Console/ConsoleContract.swift` | `completed`, `failed`, `cancelled`, `interrupted` treated as final | Inline list |
+| Durable query | `Models/DurableQueryLifecycle.swift` | `idle`, `preparing`, `starting`, `attached`, `detached`, `recovering`, `cancelling`, `terminal`, `failed` | Enum; moves decided in the view model |
+| Trusted chat | `Models/TrustedChatLifecycle.swift`, `Persistence/TrustedChatConversationCache.swift` | Two `Phase` enums (lifecycle and journal) | Enum; moves decided by callers |
+| Home update (client reading) | `ProductContracts/HomeUpdateStatus.swift`, `Home23/.../HomeUpdatePanel.swift`, `Home23Host/Home23HostApp.swift` | Phase strings from `cli/lib/product-home-update.js`; `completed`, `failed`, `interrupted` treated as final | Inline lists, repeated in three files |
+| Host update | `Home23Host/HostModel.swift` (`HostUpdatePhase`) | `notConfigured`, `checking`, `available`, `copying`, `resuming`, `staged`, `installing`, `committed`, `recovering`, `current`, `unavailable` | Enum; moves decided in the model |
+| Host semantic memory | `Home23Host/HostModel.swift`, `Home23HostApp.swift` | `downloading`, `verifying`, `warming`, `interrupted`, `failed` as raw strings | Four inline lists |
+| Agent / service status | `Models/Home23StatusVocabulary.swift` | Nine kinds normalized from about 25 server spellings | One mapping function. This is the pattern the other client readings should follow |
+| Bot lifecycle | `ProductContracts/ConnectedAgentsResources.swift`, `Home23/.../BotLifecycleDomain.swift` | Mirrors the coordination registry's `botLifecycle` | `Codable` enums, declared in both the shared package and the app target |
+
+Found there:
+
+- **A timed-out turn can leave a conversation locked as active.** `StaleActiveTurnReconciliation` clears a cached "Active turn" flag only on a status in its own terminal list, and that list omits `timeout`. The harness reports `timeout` as a terminal turn status. When the app did not witness the turn ending, the flag stays, which is the stuck state that file was written to prevent. Its unit test repeats the same incomplete list, so it passes.
+- **The attention list for turn evidence omits `timeout` and `stopped`** (`ConnectedAgentsTurnEvidenceProjection`), while the display formatter three files away treats both as abnormal endings.
+
+The apps cannot `require` the catalog, but `node cli/home23.js lifecycles --json` is a stable export. A generated Swift file, or a `Home23Shared` test that compares the client lists with that export, would have caught both findings.
 
 ## 4. Recurring patterns worth fixing as these are adopted
 
