@@ -1,3 +1,4 @@
+import { terminalStates } from '../../shared/lifecycles.cjs';
 import {
   chmodSync,
   closeSync,
@@ -42,9 +43,7 @@ const CREDENTIAL_ID_PATTERN = /^qncred_[A-Za-z0-9_-]{32}$/;
 const OPERATION_ID_PATTERN = /^brop_[A-Za-z0-9_-]{32}$/;
 const ROUTE_ID_PATTERN = /^qroute_[A-Za-z0-9_-]{32}$/;
 const ERROR_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,127}$/;
-const TERMINAL_STATES = new Set<QueryTerminalState>([
-  'complete', 'partial', 'failed', 'cancelled', 'interrupted',
-]);
+const TERMINAL_STATES = new Set<QueryTerminalState>(terminalStates('brain-operation'));
 const DELIVERY_STATES = new Set(['pending', 'failed', 'delivered']);
 const CREDENTIAL_KEYS = new Set([
   'installation_id',

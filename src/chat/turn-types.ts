@@ -7,20 +7,22 @@
  */
 
 import type { ReasoningEffort } from '../agent/reasoning-effort.js';
+import type {
+  ChatTurnStatus,
+  ChatTurnStoredStatus,
+  ChatTurnTerminalStatus,
+} from '../../shared/lifecycles.cjs';
 
-export type TurnStatus =
-  | 'pending'
-  | 'accepted'
-  | 'running'
-  | 'awaiting_model'
-  | 'streaming'
-  | 'tool_running'
-  | 'stopping'
-  | 'stopped'
-  | 'complete'
-  | 'error'
-  | 'timeout'
-  | 'orphaned';
+/**
+ * Declared in shared/lifecycles.cjs ("chat-turn"). The journal stores only
+ * `pending` and one terminal status; the rest are read-time views of a turn
+ * that is still pending.
+ */
+export type TurnStatus = ChatTurnStatus;
+/** The statuses a turn's end record may carry. */
+export type TurnTerminalStatus = ChatTurnTerminalStatus;
+/** The statuses that are ever written to the journal. */
+export type TurnStoredStatus = ChatTurnStoredStatus;
 
 export interface TurnEnvelope {
   type: 'turn';

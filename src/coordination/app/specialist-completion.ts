@@ -1,3 +1,4 @@
+import { isTerminal } from "../../../shared/lifecycles.cjs";
 import { createHash } from "node:crypto";
 
 import type { MediaAttachment } from "../../types.js";
@@ -193,7 +194,7 @@ export function parseCoordinationCompletionCommit(
     invalid("childResultHandle chatId is outside the parent Work");
   }
   const status = value.status;
-  if (!["completed", "failed", "cancelled", "interrupted"].includes(String(status))) {
+  if (!isTerminal("async-work", status)) {
     invalid("status is invalid");
   }
   const terminalText = nullableText(value.terminalText);

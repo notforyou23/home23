@@ -93,6 +93,14 @@ node cli/home23.js start <name>
 
 The generated `instances/`, local `config/*.yaml`/`*.json`, and `ecosystem.config.cjs` files are installation state. They must remain ignored by Git.
 
+## Record lifecycles
+
+A record that moves through named states (a turn, async work, a coding job, a brain operation) has its states and legal moves declared once in `shared/lifecycles.cjs`. Run `node cli/home23.js lifecycles` for the current table, or add `--json` for a machine-readable copy; [LIFECYCLES.md](docs/reference/LIFECYCLES.md) is the generated reference.
+
+- Ask the catalog (`isTerminal`, `terminalStates`, `assertTransition`) instead of writing out a list of status strings.
+- Change a lifecycle by editing its table and the matching type in `shared/lifecycles.d.cts`, then regenerate the reference. Stored and wire values are a data contract; do not rename them in passing.
+- Lifecycles not yet in the catalog, and the order to adopt them, are listed in [STATE-MACHINE-INVENTORY.md](docs/reference/STATE-MACHINE-INVENTORY.md).
+
 ## Hard Rules
 
 - Do not run broad destructive PM2 commands such as `pm2 stop all` or `pm2 delete all`.

@@ -65,6 +65,7 @@ import { requestAsyncWorkCancel } from './work/cancel.js';
 import { handleWorkCompletion, type CompletionDeps } from './work/completion.js';
 import type { ReceiptSinks } from './work/receipt-delivery.js';
 import type { AsyncWorkRecord } from './work/types.js';
+import { isTerminal } from '../shared/lifecycles.cjs';
 import { finishCronAgentTurn, startCronAgentTurn } from './work/cron-work.js';
 import { createAsyncWorkRouter } from './routes/async-work.js';
 import { AttentionGate, type OutboundSignal } from './agent/attention/attention-gate.js';
@@ -1287,6 +1288,12 @@ async function main(): Promise<void> {
       // Step 31 (no work record) get one backfilled here from requestedBy.
       const { job, receipt } = event;
       console.log(`[coding] job ${job.id} ${job.status} (${job.backend}, ${Math.round(receipt.durationMs / 1000)}s)`);
+      // A finished coding job and finished work share their four terminal names.
+      const finishedStatus = job.status;
+      if (!isTerminal('coding-job', finishedStatus)) {
+        console.error(`[coding] job ${job.id} reported finished while "${finishedStatus}"; leaving its work record open`);
+        return;
+      }
       const work = workRegistry.findByJobId(job.id)
         ?? workRegistry.create({
           kind: 'coding',
@@ -1298,10 +1305,10 @@ async function main(): Promise<void> {
         // A coding job inside a canonical Working Thread is a hidden execution
         // hand. Its events stay under the root and it never posts an
         // intermediate assistant Message into the originating conversation.
-        workRegistry.completeInline(work.workId, job.status as AsyncWorkRecord['status'], job.error);
+        workRegistry.completeInline(work.workId, finishedStatus, job.error);
         return;
       }
-      const done = workRegistry.complete(work.workId, job.status as AsyncWorkRecord['status'], job.error);
+      const done = workRegistry.complete(work.workId, finishedStatus, job.error);
       void handleWorkCompletion(done, codingReceiptText(done, job, receipt), completionDeps());
     });
     try {

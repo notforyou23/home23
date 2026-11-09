@@ -37,6 +37,8 @@ Commands:
   worker list             List reusable workers
   worker run <name> "..." Run a reusable worker through the bridge connector
   trust explain <claim>   Explain whether a claim is safe to inherit
+  lifecycles [name] [--json|--markdown]
+                          Show record lifecycles: states, final states, legal moves
   brain-operations prepare [--dry-run]
                           Prepare the signed internal brain-operation boundary
   brain-operations list --state nonterminal --all-requesters
@@ -83,6 +85,9 @@ Commands:
   } else if (command === 'trust') {
     const { handleTrustCommand } = await import('./lib/trust-commands.js');
     await handleTrustCommand(args.slice(1), HOME23_ROOT);
+  } else if (command === 'lifecycles') {
+    const { runLifecyclesCommand } = await import('./lib/lifecycles-command.js');
+    process.stdout.write(runLifecyclesCommand(args.slice(1)));
   } else if (command === 'brain' && subcommand === 're-embed') {
     const { runBrainReembedCommand } = await import('./lib/brain-reembed.js');
     await runBrainReembedCommand(HOME23_ROOT, args.slice(2));

@@ -7,18 +7,27 @@
  * coding_* agent tools.
  */
 
+import {
+  terminalStates,
+  type CodingJobLifecycleStatus,
+  type CodingJobTerminalStatus,
+} from '../../shared/lifecycles.cjs';
+
 // ─── Job lifecycle ───────────────────────────────────────────
 
-export type CodingJobStatus =
-  | 'starting'     // job dir created, child not yet confirmed spawned
-  | 'running'      // child alive (or believed alive) and streaming
-  | 'completed'    // terminal event seen, exit 0 semantics
-  | 'failed'       // terminal event with error, nonzero exit, or spawn failure
-  | 'cancelled'    // cancelJob() was called and the child was stopped
-  | 'interrupted'; // child died without a terminal event (e.g. host reboot)
+/**
+ * Declared in shared/lifecycles.cjs ("coding-job"):
+ *   starting     job dir created, child not yet confirmed spawned
+ *   running      child alive (or believed alive) and streaming
+ *   completed    terminal event seen, exit 0 semantics
+ *   failed       terminal event with error, nonzero exit, or spawn failure
+ *   cancelled    cancelJob() was called and the child was stopped
+ *   interrupted  child died without a terminal event (e.g. host reboot)
+ */
+export type CodingJobStatus = CodingJobLifecycleStatus;
+export type { CodingJobTerminalStatus };
 
-export const TERMINAL_JOB_STATUSES: readonly CodingJobStatus[] =
-  ['completed', 'failed', 'cancelled', 'interrupted'];
+export const TERMINAL_JOB_STATUSES: readonly CodingJobStatus[] = terminalStates('coding-job');
 
 export type CodingIsolation = 'worktree' | 'checkpoint' | 'none';
 

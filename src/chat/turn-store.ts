@@ -5,11 +5,13 @@ import {
   type TurnStatusOptions,
   type TurnStatusResponse,
   type TurnStatus,
+  type TurnTerminalStatus,
   isTurnEnvelope,
   isTurnEvent,
 } from './turn-types.js';
 import { enrichTerminalEnvelope } from './history-projection.js';
 import type { ReasoningEffort } from '../agent/reasoning-effort.js';
+import { assertTerminal, isReportedState } from '../../shared/lifecycles.cjs';
 
 /**
  * Turn lifecycle on top of the conversation JSONL.
@@ -73,7 +75,8 @@ export class TurnStore {
     ) as TurnEnvelope | undefined ?? null;
   }
 
-  writeEnd(chatId: string, turn_id: string, status: Exclude<TurnStatus, 'pending'>, extras: {
+  /** Append the turn's end record. Only a terminal status can end a turn. */
+  writeEnd(chatId: string, turn_id: string, status: TurnTerminalStatus, extras: {
     last_seq: number;
     execution_output_capture?: TurnEnvelope['execution_output_capture'];
     stop_reason?: string;
@@ -85,6 +88,7 @@ export class TurnStore {
     hard_deadline_at?: string;
     first_token_deadline_at?: string;
   }): TurnEnvelope {
+    assertTerminal('chat-turn', status);
     const env: TurnEnvelope = {
       type: 'turn',
       turn_id,
@@ -234,7 +238,7 @@ export class TurnStore {
       if (isTurnEnvelope(record)) {
         if (!scalar(record.turn_id, 256) || !scalar(record.chat_id, 512)
           || record.chat_id.replace(/[^a-zA-Z0-9_-]/g, '_') !== chatId.replace(/[^a-zA-Z0-9_-]/g, '_')
-          || !['pending', 'accepted', 'running', 'awaiting_model', 'streaming', 'tool_running', 'stopping', 'stopped', 'complete', 'error', 'timeout', 'orphaned'].includes(record.status)) throw new Error('invalid_turn_metadata');
+          || !isReportedState('chat-turn', record.status)) throw new Error('invalid_turn_metadata');
         if (record.status === 'pending') {
           if (!scalar(record.started_at, 64) || !Number.isFinite(Date.parse(record.started_at))) throw new Error('invalid_turn_metadata');
           retainedBytes -= metadataBytes(turns.get(record.turn_id));

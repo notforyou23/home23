@@ -1,6 +1,7 @@
 import { lstat, opendir } from 'node:fs/promises';
 import path from 'node:path';
 import type { AsyncWorkRecord } from '../../work/types.js';
+import { terminalStates } from '../../../shared/lifecycles.cjs';
 import type { CodingJobRecord } from '../../acp/types.js';
 import { consoleSourceId, decodeConsoleCursor, encodeConsoleCursor } from './cursor.js';
 import { consoleFileInfo, consoleRecordMetadata, openConsoleFile } from './reader.js';
@@ -20,7 +21,7 @@ const VALID_JOB = /^cj_[A-Za-z0-9_-]+$/;
 const VALID_WORK = /^aw_[A-Za-z0-9_-]+$/;
 const VALID_TURN = /^t_[A-Za-z0-9_-]+$/;
 const STATES = new Set(['queued', 'starting', 'running', 'blocked', 'stopping', 'completed', 'failed', 'cancelled', 'interrupted']);
-const TERMINAL_TURNS = new Set(['complete', 'error', 'timeout', 'orphaned', 'stopped']);
+const TERMINAL_TURNS: ReadonlySet<string> = new Set(terminalStates('chat-turn'));
 
 export function consoleHistoryPath(root: ConsoleRoot, chatId: string): string {
   const sanitize = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '_');
