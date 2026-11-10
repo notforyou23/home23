@@ -1,9 +1,10 @@
+import type { BrainOperationLifecycleState } from '../../../shared/lifecycles.cjs';
+
 export type BrainTargetSelector = { agent?: string; brainId?: string };
 export type OwnedRunTargetSelector = { runId: string };
 
-export type BrainOperationState =
-  | 'queued' | 'running' | 'complete' | 'partial'
-  | 'failed' | 'cancelled' | 'interrupted';
+/** Declared in shared/lifecycles.cjs ("brain-operation"); the engine operation store is the writer. */
+export type BrainOperationState = BrainOperationLifecycleState;
 
 export type AttachmentState = 'attached' | 'detached' | 'closed';
 

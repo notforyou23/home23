@@ -12,14 +12,15 @@ import {
   resolveRootChatId,
   type AsyncWorkKind,
   type AsyncWorkRecord,
-  type AsyncWorkStatus,
   type AsyncWorkTerminalResult,
+  type AsyncWorkTerminalStatus,
   type CoordinationWorkDestination,
   type WorkOffice,
   type WorkResultHandle,
 } from './types.js';
 import type { WorkStore } from './work-store.js';
 import { workBus } from './work-bus.js';
+import { assertTerminal, assertTransition, isState, isTerminal } from '../../shared/lifecycles.cjs';
 
 const PROGRESS_THROTTLE_MS = 15_000;
 
@@ -52,8 +53,6 @@ export interface ReconcileResult {
   interrupted: AsyncWorkRecord[];
   backfilled: AsyncWorkRecord[];
 }
-
-const CODING_TERMINAL = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 
 export class WorkRegistry {
   private readonly store: WorkStore;
@@ -109,7 +108,19 @@ export class WorkRegistry {
     return this.store.list().find(r => r.resultHandle.type === 'coding_job' && r.resultHandle.jobId === jobId);
   }
 
+  /**
+   * Patch non-lifecycle fields. A status in the patch must be a legal move:
+   * finishing work goes through complete()/completeInline(), and finished
+   * work cannot be reopened.
+   */
   update(workId: string, patch: Partial<AsyncWorkRecord>): AsyncWorkRecord | undefined {
+    if (patch.status !== undefined) {
+      const current = this.store.read(workId);
+      // A record stored with a status this build does not know stays patchable.
+      if (current) {
+        assertTransition('async-work', isState('async-work', current.status) ? current.status : patch.status, patch.status);
+      }
+    }
     const next = this.store.update(workId, patch);
     if (next) this.notify(next, 'updated');
     return next;
@@ -138,7 +149,7 @@ export class WorkRegistry {
    */
   complete(
     workId: string,
-    status: AsyncWorkStatus,
+    status: AsyncWorkTerminalStatus,
     error?: string,
     terminalResult?: AsyncWorkTerminalResult,
   ): AsyncWorkRecord {
@@ -150,21 +161,22 @@ export class WorkRegistry {
    * store write. Boot reconciliation must never replay this result through the
    * detached completion pipeline.
    */
-  completeInline(workId: string, status: AsyncWorkStatus, error?: string): AsyncWorkRecord {
+  completeInline(workId: string, status: AsyncWorkTerminalStatus, error?: string): AsyncWorkRecord {
     return this.completeTerminal(workId, status, error, true);
   }
 
   private completeTerminal(
     workId: string,
-    status: AsyncWorkStatus,
+    status: AsyncWorkTerminalStatus,
     error: string | undefined,
     deliveredInline: boolean,
     terminalResult?: AsyncWorkTerminalResult,
   ): AsyncWorkRecord {
+    assertTerminal('async-work', status);
     const current = this.store.read(workId);
     if (!current) throw new Error(`unknown work id: ${workId}`);
     if (TERMINAL_WORK_STATUSES.has(current.status)) return current;
-    const mapped: AsyncWorkStatus =
+    const mapped: AsyncWorkTerminalStatus =
       status === 'failed' && this.cancelRequested.has(workId) ? 'cancelled' : status;
     this.cancelRequested.delete(workId);
     const finishedAt = new Date().toISOString();
@@ -263,14 +275,15 @@ export class WorkRegistry {
         interrupted.push(this.complete(rec.workId, 'interrupted', 'coding job record missing after restart'));
         continue;
       }
-      if (CODING_TERMINAL.has(job.status)) {
-        this.complete(rec.workId, job.status as AsyncWorkStatus);
+      // A finished coding job and finished work share their four terminal names.
+      if (isTerminal('coding-job', job.status)) {
+        this.complete(rec.workId, job.status);
       }
       // else: still running (bridge resumed its tailer) — leave as-is
     }
 
     for (const job of input.jobs) {
-      if (CODING_TERMINAL.has(job.status)) continue;
+      if (isTerminal('coding-job', job.status)) continue;
       if (this.findByJobId(job.id)) continue;
       backfilled.push(this.create({
         kind: 'coding',

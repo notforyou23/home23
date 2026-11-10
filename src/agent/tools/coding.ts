@@ -14,6 +14,7 @@ import { formatDependencyProvisioning } from '../../acp/worktrees.js';
 import { mustDetachLongTool } from '../../work/detach.js';
 import { TERMINAL_JOB_STATUSES } from '../../acp/types.js';
 import { isSelectableBackendId, listSelectableBackendIds } from '../../acp/backends.js';
+import { LIFECYCLES } from '../../../shared/lifecycles.cjs';
 
 const MAX_WAIT_SECONDS = 600;
 const RESULT_TAIL_RUN_MAX = 4000;
@@ -396,7 +397,7 @@ export const codingJobsTool: ToolDefinition = {
   input_schema: {
     type: 'object',
     properties: {
-      status: { type: 'string', enum: ['starting', 'running', 'completed', 'failed', 'cancelled', 'interrupted'], description: 'Only list jobs with this status' },
+      status: { type: 'string', enum: [...LIFECYCLES['coding-job'].states], description: 'Only list jobs with this status' },
       limit: { type: 'number', description: 'Maximum jobs to list (default 10)' },
     },
     additionalProperties: false,

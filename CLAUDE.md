@@ -42,6 +42,7 @@ node cli/home23.js start <name>
 - `engine/src/` - engine, dashboard, cognition, memory, live-problem, and sensor modules.
 - `engine/src/substrate/` - engine-side Seed readers (cognition grounding, dream day-residue).
 - `cli/` - installer, PM2 management, agent creation, updates, and templates.
+- `shared/lifecycles.cjs` - the one declaration of each record lifecycle's states and legal moves; see `docs/reference/LIFECYCLES.md`.
 - Cosmo is a standalone research application reached through its configured API; it is no longer a vendored `cosmo23/` source tree. Read `docs/reference/COSMO-SEPARATION.md` for ownership and cross-product test prerequisites.
 - `evobrew/` - optional standalone application retained in source. Consumer Host packages omit it; Home23's chat/device/agency bridge remains in `src/routes/evobrew-bridge.ts`, and saved home state is preserved.
 - `config/*.example` - public config seeds.

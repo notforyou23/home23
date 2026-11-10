@@ -1,3 +1,5 @@
+import type { BrainOperationTerminalState } from '../../shared/lifecycles.cjs';
+
 /** Per-device APNs registration. One row per (agent, device_token) pair. */
 export interface DeviceRegistration {
   device_token: string;      // APNs hex token from UIApplication.registerForRemoteNotifications
@@ -52,7 +54,8 @@ export interface QueryCredentialRegistration {
   revoked_at: string | null;
 }
 
-export type QueryTerminalState = 'complete' | 'partial' | 'failed' | 'cancelled' | 'interrupted';
+/** The terminal states of the "brain-operation" lifecycle (shared/lifecycles.cjs). */
+export type QueryTerminalState = BrainOperationTerminalState;
 
 export interface QueryNotificationDeliveryReceipt {
   route_id: string;

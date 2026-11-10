@@ -1,3 +1,4 @@
+import { terminalStates } from '../../../shared/lifecycles.cjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { isEventGap, parseOperationEvents, validateEventGap } from './sse.js';
@@ -34,9 +35,7 @@ import type {
   SynthesisStateResponse,
 } from './types.js';
 
-const TERMINAL = new Set<BrainOperationState>([
-  'complete', 'partial', 'failed', 'cancelled', 'interrupted',
-]);
+const TERMINAL = new Set<BrainOperationState>(terminalStates('brain-operation'));
 
 const DURABLE_OPERATION_TYPES = new Set([
   'query', 'pgs', 'synthesis', 'research_compile', 'research_stop',

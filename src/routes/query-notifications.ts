@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import { json, type NextFunction, type Request, type RequestHandler, type Response } from 'express';
+import { terminalStates } from '../../shared/lifecycles.cjs';
 import type {
   QueryTerminalNotificationInput,
   QueryTerminalNotificationReceipt,
@@ -10,7 +11,7 @@ const OPERATION_ID_PATTERN = /^brop_[A-Za-z0-9_-]{32}$/;
 const ROUTE_ID_PATTERN = /^qroute_[A-Za-z0-9_-]{32}$/;
 const INSTALLATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/;
 const AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,127}$/;
-const TERMINAL_STATES = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
+const TERMINAL_STATES: ReadonlySet<string> = new Set(terminalStates('brain-operation'));
 
 interface QueryNotificationPusher {
   notifyQueryTerminal(input: QueryTerminalNotificationInput): Promise<QueryTerminalNotificationReceipt>;

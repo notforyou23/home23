@@ -3,6 +3,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { enrichTerminalEnvelope } from '../../chat/history-projection.js';
 import { isTurnEnvelope, type TurnEnvelope } from '../../chat/turn-types.js';
+import { isTerminal } from '../../../shared/lifecycles.cjs';
 import { createVerifiedOnlineBackup, type VerifiedBackupReceipt } from '../db/backup.js';
 import { openCoordinationDatabase, type SqliteValue } from '../db/index.js';
 import { inspectCoordinationSchema } from '../db/migration-engine.js';
@@ -99,7 +100,7 @@ function journalReceipt(row: WorkRow, binding: Execution, journals: readonly Jou
     const endings = journal.records.filter(record => isTurnEnvelope(record) && record.turn_id === turnId && record.status !== 'pending') as TurnEnvelope[];
     // Terminal history is evidence, not a mutable status field. A second,
     // contradictory ending must be investigated instead of winning by order.
-    const terminalEndings = endings.filter(ending => ['complete', 'stopped', 'error', 'timeout', 'orphaned'].includes(ending.status));
+    const terminalEndings = endings.filter(ending => isTerminal('chat-turn', ending.status));
     if (new Set(terminalEndings.map(ending => canonicalJson(ending))).size !== 1) continue;
     const last = endings.at(-1);
     if (!last || last.chat_id !== chatId || !canonicalTime(last.ended_at)) continue;

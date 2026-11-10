@@ -1,3 +1,4 @@
+import { LIFECYCLES, terminalStates } from '../../../shared/lifecycles.cjs';
 import type {
   BrainOperationEvent,
   BrainOperationEventGap,
@@ -57,13 +58,9 @@ const NOTIFICATION_TYPES = new Set<BrainOperationNotificationType>([
   'worker_assigned',
 ]);
 
-const OPERATION_STATES = new Set<BrainOperationState>([
-  'queued', 'running', 'complete', 'partial', 'failed', 'cancelled', 'interrupted',
-]);
+const OPERATION_STATES = new Set<BrainOperationState>(LIFECYCLES['brain-operation'].states);
 
-const TERMINAL_STATES = new Set<BrainOperationState>([
-  'complete', 'partial', 'failed', 'cancelled', 'interrupted',
-]);
+const TERMINAL_STATES = new Set<BrainOperationState>(terminalStates('brain-operation'));
 
 function validateNotification(
   operationId: string,

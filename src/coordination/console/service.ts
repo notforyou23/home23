@@ -2,7 +2,7 @@ import type { MessagingActorContext } from '../channels/types.js';
 import { CoordinationHttpError } from '../http/errors.js';
 import { ConsoleCatalog } from './catalog.js';
 import { openConsoleRaw, readConsoleAfter, readConsoleHistory } from './reader.js';
-import type { ConsoleSource, ResolvedConsoleSource } from './types.js';
+import { CONSOLE_TERMINAL_STATES, type ConsoleSource, type ResolvedConsoleSource } from './types.js';
 import type { ExecutionControlRequest, ExecutionControlReceipt } from '../../agent/execution-control.js';
 
 export interface ConsoleControlPort {
@@ -18,7 +18,7 @@ export interface ConsoleServiceOptions {
 export interface ConsoleSelection { sourceIds?: string[]; scope?: 'active'; after?: string }
 export interface ConsoleFrame { event: 'source' | 'record' | 'checkpoint' | 'gap' | 'end'; data: unknown; id?: string }
 interface Checkpoint { v: 1; mode: 'active' | 'selected'; positions: Record<string, string> }
-const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
+const TERMINAL = CONSOLE_TERMINAL_STATES;
 const MAX_SOURCES = 32;
 function invalid(message: string): never { throw new CoordinationHttpError('request_invalid', 400, false, {}, message); }
 function encodeCheckpoint(value: Checkpoint): string {

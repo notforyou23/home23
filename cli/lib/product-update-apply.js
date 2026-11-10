@@ -1,4 +1,5 @@
 /** One home-scoped schema-preserving update. The journal and recovery Node live outside app/. */
+import { UPDATE_LIFECYCLES, guardUpdateMove, guardUpdateStart, isFinalUpdateState } from './product-update-lifecycles.js';
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, constants, copyFileSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statfsSync, unlinkSync, utimesSync, writeSync } from 'node:fs';
@@ -18,7 +19,14 @@ const SCHEMA = 'home23.product-update.v1';
 const INSTALL_SCHEMA = 'home23.product-install.v1';
 const BUSY = new Set(['online', 'launching', 'errored', 'stopping']);
 const RANK = { claimed: 0, quiesced: 1, checkpointed: 2, retained: 3, applying: 4, selected: 5, verifying: 6, writers_admitted: 7, accepted: 8, committed: 9, aborted: 9, rolled_back: 9, recovery_required: 9 };
-const LIB_FILES = ['product-environment.js', 'product-payload.js', 'product-update-preview.js', 'product-update-plan.js', 'product-update-inventory.js', 'product-user-pm2.js', 'product-update-stage.js', 'product-update-apply.js', 'product-update-recover.mjs', 'product-supervisor-admission.js'];
+// The phases and their legal moves are declared in ./product-update-lifecycles.js.
+// RANK only orders them; it must rank exactly the declared phases.
+if (Object.keys(RANK).sort().join() !== [...UPDATE_LIFECYCLES['update-journal'].states].sort().join()) {
+  throw new Error('The update journal phase ranks do not match its declared lifecycle.');
+}
+/** The journal reached one of its final phases; nothing is left to resume. */
+const journalClosed = journal => isFinalUpdateState('update-journal', journal?.phase);
+const LIB_FILES = ['product-environment.js', 'product-payload.js', 'product-update-preview.js', 'product-update-plan.js', 'product-update-inventory.js', 'product-user-pm2.js', 'product-update-stage.js', 'product-update-apply.js', 'product-update-lifecycles.js', 'product-update-recover.mjs', 'product-supervisor-admission.js'];
 const DATABASE = 'app/instances/.house/coordination/home23-coordination.sqlite3';
 const CHECKPOINT_COPIES = 4;
 // A cold candidate can outlive Start's own readiness wait while it catches up.
@@ -101,7 +109,7 @@ export function readUpdateJournal(homeRoot) {
 }
 /** Normal Start must wait. The update owner may start only after selection, with the journal token. */
 export function updateBlocksStart(journal, token) {
-  if (!journal || ['committed', 'rolled_back', 'aborted'].includes(journal.phase)) return false;
+  if (!journal || journalClosed(journal)) return false;
   return !(token && token === journal.ownerToken && ['selected', 'verifying', 'writers_admitted', 'accepted', 'recovery_required'].includes(journal.phase));
 }
 function publicResult(journal, extras = {}) {
@@ -148,8 +156,15 @@ function settledJournal(journal) {
   }
   return settled;
 }
-async function commitPhase(file, journal, dependencies) {
-  const settled = ['committed', 'rolled_back', 'aborted'].includes(journal.phase) ? settledJournal(journal) : journal;
+/**
+ * The one durable write of the journal. `from` is the phase the journal held
+ * before this write, or null when the journal is being created; every caller
+ * passes it so the write is checked against the declared update-journal moves.
+ */
+async function commitPhase(file, journal, dependencies, from) {
+  if (from === null) guardUpdateStart('update-journal', journal.phase);
+  else guardUpdateMove('update-journal', from, journal.phase);
+  const settled = journalClosed(journal) ? settledJournal(journal) : journal;
   const next = { ...settled, updatedAt: new Date().toISOString() };
   delete next.startResult;
   durableJSON(file, next);
@@ -809,10 +824,10 @@ async function mutate(journal, dependencies, verify) {
     if (journal.stoppedForUpdate && journal.desiredRunning) {
       // Start needs the Host lifecycle lock held by runTransaction. Fence the
       // journal now, then restore after that lock is released.
-      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), reasons }, dependencies);
+      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), reasons }, dependencies, journal.phase);
       return { restore: journal };
     } else {
-      journal = await commitPhase(file, { ...journal, phase: 'aborted', reasons }, dependencies);
+      journal = await commitPhase(file, { ...journal, phase: 'aborted', reasons }, dependencies, journal.phase);
     }
     return { done: publicResult(journal) };
   }
@@ -832,13 +847,13 @@ async function mutate(journal, dependencies, verify) {
     if (classified.unknown.length) return { done: deferred(home, 'unknown_writer', 'An unexpected process is using this home. Wait for it to exit before updating.', journal) };
     if (!Object.hasOwn(journal, 'supervisorAdmission')) {
       const supervisorAdmission = await (dependencies.captureSupervisor || captureSupervisorForUpdate)(home, journal.stagedPayload);
-      journal = await commitPhase(file, { ...journal, supervisorAdmission }, dependencies);
+      journal = await commitPhase(file, { ...journal, supervisorAdmission }, dependencies, journal.phase);
     }
     if (classified.busy.length) {
       if (!journal.admit) return { done: deferred(home, 'busy', 'This home is still working. Retry when it is quiet, or explicitly admit maintenance. Nothing was forced to stop.', journal) };
       // Durable before the first stop: a controller killed mid-stop resumes
       // knowing this update stopped the home and must restart it on abort.
-      if (!journal.stoppedForUpdate) journal = await commitPhase(file, { ...journal, stoppedForUpdate: true }, dependencies);
+      if (!journal.stoppedForUpdate) journal = await commitPhase(file, { ...journal, stoppedForUpdate: true }, dependencies, journal.phase);
       const stopped = await quiesce(home, names, dependencies);
       processes = stopped.processes;
       // Writers restarted during the stop and stopped again, kept for diagnosis.
@@ -849,7 +864,7 @@ async function mutate(journal, dependencies, verify) {
           { writers: classified.busy.map(row => row.name) });
       }
     }
-    journal = await commitPhase(file, { ...journal, phase: 'quiesced' }, dependencies);
+    journal = await commitPhase(file, { ...journal, phase: 'quiesced' }, dependencies, journal.phase);
   }
   if (rank() < RANK.checkpointed) {
     const database = exists(join(home, DATABASE)) ? await inspectCoordinationDatabase(join(home, DATABASE)) : { present: false, compatible: true };
@@ -870,17 +885,17 @@ async function mutate(journal, dependencies, verify) {
     }
     if (expectedSchemaVersion === null) {
       expectedSchemaVersion = database.version;
-      journal = await commitPhase(file, { ...journal, coordinationSchemaVersion: expectedSchemaVersion }, dependencies);
+      journal = await commitPhase(file, { ...journal, coordinationSchemaVersion: expectedSchemaVersion }, dependencies, journal.phase);
     }
     const checkpoint = await (dependencies.writeCheckpoint || writeCheckpoint)(home, updateDirectoryFor(home), journal.id,
       { beforeCopy: dependencies.checkpointBeforeCopy, expectedSchemaVersion });
     journal = await commitPhase(file, { ...journal, phase: 'checkpointed', identity: checkpoint.hashes, identityMetadata: checkpoint.identityMetadata, canonical: canonicalFrom(checkpoint.hashes), hostIdentity: hostIdentity(home), checkpointDatabase: checkpoint.database,
-      stateRetention: checkpoint.stateRetention || 'copied', substratePrefixes: checkpoint.substratePrefixes || {} }, dependencies);
+      stateRetention: checkpoint.stateRetention || 'copied', substratePrefixes: checkpoint.substratePrefixes || {} }, dependencies, journal.phase);
   }
   if (rank() < RANK.retained) {
     const installed = readProductManifest(home);
     if (installed.packageId !== journal.fromPackageId) {
-      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), reasons: [{ code: 'baseline_changed', message: 'The installed package changed before selection. Automatic recovery stopped.' }] }, dependencies);
+      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), reasons: [{ code: 'baseline_changed', message: 'The installed package changed before selection. Automatic recovery stopped.' }] }, dependencies, journal.phase);
       return { done: publicResult(journal) };
     }
     // A normal Host install already has a verified stage and a bound installed
@@ -891,7 +906,7 @@ async function mutate(journal, dependencies, verify) {
       throw new Error('Installed software does not match its manifest. Nothing was moved.');
     }
     await (dependencies.retainPrevious || retainPrevious)(home, updateDirectoryFor(home), installed);
-    journal = await commitPhase(file, { ...journal, phase: 'retained', retention: 'switch' }, dependencies);
+    journal = await commitPhase(file, { ...journal, phase: 'retained', retention: 'switch' }, dependencies, journal.phase);
   }
   if (rank() < RANK.selected && journal.retention !== 'switch') {
     // A copy-based journal from an earlier updater keeps its own retained controller.
@@ -906,11 +921,11 @@ async function mutate(journal, dependencies, verify) {
     }
     // Record state nested in the installed software so resume can confirm it returned.
     journal = await commitPhase(file, { ...journal, phase: 'applying', stagedManifestSha256: hashFile(join(journal.stagedPayload, 'manifest.json')),
-      nestedState: softwareUnits(previousManifest(home)).flatMap(unit => nestedStatePaths(home, unit)) }, dependencies);
+      nestedState: softwareUnits(previousManifest(home)).flatMap(unit => nestedStatePaths(home, unit)) }, dependencies, journal.phase);
   }
   if (rank() < RANK.selected) {
     applyPackage(home, journal.stagedPayload, previousManifest(home), candidateManifest(journal), journal.nestedState);
-    journal = await commitPhase(file, { ...journal, phase: 'selected', acceptedWork: false }, dependencies);
+    journal = await commitPhase(file, { ...journal, phase: 'selected', acceptedWork: false }, dependencies, journal.phase);
   }
   return { journal };
 }
@@ -925,15 +940,15 @@ async function restorePreSwitch(journal, dependencies) {
     const started = await (dependencies.start || defaultStart)(home, journal);
     if (!startObservation(started).startOk) throw new Error('The previous home did not become ready.');
   } catch (error) {
-    journal = await commitPhase(file, { ...journal, reasons: [...journal.reasons, { code: 'running_restore_failed', message: `The previous home could not be restored to its running state (${error.message}).` }] }, dependencies);
+    journal = await commitPhase(file, { ...journal, reasons: [...journal.reasons, { code: 'running_restore_failed', message: `The previous home could not be restored to its running state (${error.message}).` }] }, dependencies, journal.phase);
     return publicResult(journal);
   }
-  journal = await commitPhase(file, { ...journal, phase: 'aborted', runningRestored: true }, dependencies);
+  journal = await commitPhase(file, { ...journal, phase: 'aborted', runningRestored: true }, dependencies, journal.phase);
   return publicResult(journal);
 }
 async function finish(journal, dependencies, verify) {
   const file = journalPath(journal.homeRoot), home = journal.homeRoot;
-  if (['committed', 'rolled_back', 'aborted'].includes(journal.phase)) return publicResult(journal, { replayed: true });
+  if (journalClosed(journal)) return publicResult(journal, { replayed: true });
   if (journal.phase === 'recovery_required' && !journal.writersAdmitted) return publicResult(journal, { replayed: true });
   const list = dependencies.listProcesses || defaultListProcesses;
   const busy = async () => classifyProcesses(await list(home), journal.writerNames || []).busy.length > 0;
@@ -946,20 +961,20 @@ async function finish(journal, dependencies, verify) {
     if (journal.supervisorRecoveryAttempts >= 1) throw Object.assign(new Error('The resident recovery attempt is already recorded.'), {
       code: journal.supervisorRecoveryErrorCode || 'host_supervisor_exited',
     });
-    journal = await commitPhase(file, { ...journal, supervisorRecoveryAttempts: 1 }, dependencies);
+    journal = await commitPhase(file, { ...journal, supervisorRecoveryAttempts: 1 }, dependencies, journal.phase);
     let migration;
     try { migration = await (dependencies.recoverSupervisor || recoverSupervisorForUpdate)(home, journal); }
     catch (error) {
       const code = /^[a-z_]{1,80}$/.test(error.code || '') ? error.code : 'host_supervisor_exited';
-      journal = await commitPhase(file, { ...journal, supervisorRecoveryErrorCode: code }, dependencies);
+      journal = await commitPhase(file, { ...journal, supervisorRecoveryErrorCode: code }, dependencies, journal.phase);
       throw error;
     }
-    journal = await commitPhase(file, { ...journal, supervisorMigration: migration, supervisorRecoveryErrorCode: null }, dependencies);
+    journal = await commitPhase(file, { ...journal, supervisorMigration: migration, supervisorRecoveryErrorCode: null }, dependencies, journal.phase);
     let started = null, startError = null;
     try { started = await (dependencies.start || defaultStart)(home, journal); }
     catch (error) { startError = error; }
     journal = await commitPhase(file, { ...journal, candidateStarted: true,
-      ...startObservation(started, startError), phase: 'writers_admitted' }, dependencies);
+      ...startObservation(started, startError), phase: 'writers_admitted' }, dependencies, journal.phase);
   };
   const readinessDeferral = observation => observation.kind === 'supervisor_exited'
     ? deferred(home, observation.errorCode, 'The resident supervisor exited. Its recovery could not safely restart writers; the update remains admitted for a later resume.', journal)
@@ -970,7 +985,7 @@ async function finish(journal, dependencies, verify) {
         : 'This home is still starting. Its services remain running; resume the update after it becomes ready.', journal);
   async function rollback(reason) {
     if (journal.writersAdmitted || journal.acceptedWork || !(await fence())) {
-      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), reasons: [{ code: 'recovery_required', message: 'Software was not restored because writers were admitted or could not be fenced. The data snapshot was not restored.' }] }, dependencies);
+      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), reasons: [{ code: 'recovery_required', message: 'Software was not restored because writers were admitted or could not be fenced. The data snapshot was not restored.' }] }, dependencies, journal.phase);
       return publicResult(journal);
     }
     try {
@@ -978,7 +993,7 @@ async function finish(journal, dependencies, verify) {
       else restorePrevious(home, updateDirectoryFor(home), previousManifest(home), candidateManifest(journal), verify, join(updateDirectoryFor(home), `discarded-candidate-${journal.id}`));
     }
     catch (error) {
-      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), reasons: [{ code: 'recovery_required', message: `No safe automatic rollback is available (${error.message}). Home state was not replaced from the checkpoint.` }] }, dependencies);
+      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), reasons: [{ code: 'recovery_required', message: `No safe automatic rollback is available (${error.message}). Home state was not replaced from the checkpoint.` }] }, dependencies, journal.phase);
       return publicResult(journal);
     }
     const preserved = await sameIdentity(home, journal.identity, journal.identityMetadata);
@@ -987,11 +1002,11 @@ async function finish(journal, dependencies, verify) {
       try { restoredRunning = (await (dependencies.start || defaultStart)(home, journal))?.ok !== false; }
       catch { restoredRunning = false; }
       if (!restoredRunning) {
-        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), identityPreserved: preserved, softwareRestored: true, reasons: [{ code: 'recovery_required', message: 'Previous software was restored, but the home did not return to its desired running state.' }] }, dependencies);
+        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), identityPreserved: preserved, softwareRestored: true, reasons: [{ code: 'recovery_required', message: 'Previous software was restored, but the home did not return to its desired running state.' }] }, dependencies, journal.phase);
         return publicResult(journal);
       }
     }
-    journal = await commitPhase(file, { ...journal, phase: 'rolled_back', identityPreserved: preserved, runningRestored: restoredRunning, reasons: [{ code: 'candidate_unhealthy', message: reason }] }, dependencies);
+    journal = await commitPhase(file, { ...journal, phase: 'rolled_back', identityPreserved: preserved, runningRestored: restoredRunning, reasons: [{ code: 'candidate_unhealthy', message: reason }] }, dependencies, journal.phase);
     releaseDiscarded(updateDirectoryFor(home), dependencies);
     return publicResult(journal);
   }
@@ -1001,11 +1016,11 @@ async function finish(journal, dependencies, verify) {
     let rollbackReason = null;
     try {
       if (await busy()) {
-        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), reasons: [{ code: 'recovery_required', message: 'Writers are active before the candidate was admitted. They were not replaced or force-killed.' }] }, dependencies);
+        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), reasons: [{ code: 'recovery_required', message: 'Writers are active before the candidate was admitted. They were not replaced or force-killed.' }] }, dependencies, journal.phase);
         return publicResult(journal);
       }
       if (!(await sameIdentity(home, journal.identity, journal.identityMetadata))) {
-        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), identityPreserved: false, reasons: [{ code: 'recovery_required', message: 'Quiesced home identity changed before writers were admitted. Software and the data snapshot were not restored.' }] }, dependencies);
+        journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), identityPreserved: false, reasons: [{ code: 'recovery_required', message: 'Quiesced home identity changed before writers were admitted. Software and the data snapshot were not restored.' }] }, dependencies, journal.phase);
         return publicResult(journal);
       }
       let packageOk = true;
@@ -1019,9 +1034,9 @@ async function finish(journal, dependencies, verify) {
       else {
         if (!journal.supervisorMigration) {
           const supervisorMigration = await (dependencies.adoptSupervisor || adoptSupervisorForUpdate)(home, journal);
-          journal = await commitPhase(file, { ...journal, supervisorMigration }, dependencies);
+          journal = await commitPhase(file, { ...journal, supervisorMigration }, dependencies, journal.phase);
         }
-        if (journal.desiredRunning) journal = await commitPhase(file, { ...journal, writersAdmitted: true, acceptedWork: true, phase: 'writers_admitted' }, dependencies);
+        if (journal.desiredRunning) journal = await commitPhase(file, { ...journal, writersAdmitted: true, acceptedWork: true, phase: 'writers_admitted' }, dependencies, journal.phase);
       }
     } finally { if (release) await release(); }
     if (rollbackReason) return rollback(rollbackReason);
@@ -1035,18 +1050,18 @@ async function finish(journal, dependencies, verify) {
       const observation = await awaitCandidateReadiness(home, journal, dependencies, { busy, list, recover });
       if (observation.kind !== 'ready') return readinessDeferral(observation);
       candidateBusy = true;
-      journal = await commitPhase(file, { ...journal, startOk: true, startStatus: 'ready', startErrorCode: null }, dependencies);
+      journal = await commitPhase(file, { ...journal, startOk: true, startStatus: 'ready', startErrorCode: null }, dependencies, journal.phase);
     }
   }
   if (journal.desiredRunning && !candidateBusy) {
     // The installed Host allows this owner token only for an admitted phase.
     // Persist that phase before Start so the gate and the journal agree.
-    journal = await commitPhase(file, { ...journal, writersAdmitted: true, acceptedWork: true, phase: 'writers_admitted' }, dependencies);
+    journal = await commitPhase(file, { ...journal, writersAdmitted: true, acceptedWork: true, phase: 'writers_admitted' }, dependencies, journal.phase);
     let started = null, startError = null;
     try { started = await (dependencies.start || defaultStart)(home, journal); }
     catch (error) { startError = error; }
     journal = await commitPhase(file, { ...journal, candidateStarted: true,
-      ...startObservation(started, startError), phase: 'writers_admitted' }, dependencies);
+      ...startObservation(started, startError), phase: 'writers_admitted' }, dependencies, journal.phase);
   }
   let identityPreserved = journal.writersAdmitted ? await sameCanonical(home, journal) : await sameIdentity(home, journal.identity, journal.identityMetadata);
   if (journal.writersAdmitted && !identityPreserved) {
@@ -1057,7 +1072,7 @@ async function finish(journal, dependencies, verify) {
       try { started = await (dependencies.start || defaultStart)(home, journal); }
       catch (error) { startError = error; }
       journal = await commitPhase(file, { ...journal, candidateStarted: true,
-        ...startObservation(started, startError), phase: 'writers_admitted' }, dependencies);
+        ...startObservation(started, startError), phase: 'writers_admitted' }, dependencies, journal.phase);
     }
   }
   let behavior = dependencies.verifyBehavior ? await dependencies.verifyBehavior({ home, journal, identityPreserved }) : defaultBehavior({ home, journal, identityPreserved, verify });
@@ -1072,7 +1087,7 @@ async function finish(journal, dependencies, verify) {
       const observation = await awaitCandidateReadiness(home, journal, dependencies, { busy, list, recover });
       const { kind, waiting } = observation;
       if (kind === 'ready') {
-        journal = await commitPhase(file, { ...journal, startOk: true, startStatus: 'ready', startErrorCode: null }, dependencies);
+        journal = await commitPhase(file, { ...journal, startOk: true, startStatus: 'ready', startErrorCode: null }, dependencies, journal.phase);
         behavior = withoutStartFailure;
       } else if (kind === 'supervisor_exited' || observation.inventoryUnavailable) {
         return readinessDeferral(observation);
@@ -1089,18 +1104,18 @@ async function finish(journal, dependencies, verify) {
   if (!behavior.ok || !identityPreserved) {
     if (journal.writersAdmitted || journal.acceptedWork) {
       const fenced = await fence();
-      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), identityPreserved, reasons: [{ code: 'recovery_required', message: fenced ? 'The candidate started and a later check failed. Writers were fenced. Previous software and the data snapshot were not restored.' : 'The candidate started and writers could not be fenced. Previous software and the data snapshot were not restored.' }] }, dependencies);
+      journal = await commitPhase(file, { ...journal, phase: 'recovery_required', recoveryFrom: failedFrom(journal), identityPreserved, reasons: [{ code: 'recovery_required', message: fenced ? 'The candidate started and a later check failed. Writers were fenced. Previous software and the data snapshot were not restored.' : 'The candidate started and writers could not be fenced. Previous software and the data snapshot were not restored.' }] }, dependencies, journal.phase);
       return publicResult(journal);
     }
     return rollback(behavior.issues?.[0] || 'The candidate did not become healthy. Previous software was restored and home state was left in place.');
   }
-  if (RANK[journal.phase] < RANK.accepted) journal = await commitPhase(file, { ...journal, phase: 'accepted', acceptedWork: true, identityPreserved }, dependencies);
-  journal = await commitPhase(file, { ...journal, phase: 'committed', acceptedWork: true, writersAdmitted: journal.writersAdmitted === true, identityPreserved }, dependencies);
+  if (RANK[journal.phase] < RANK.accepted) journal = await commitPhase(file, { ...journal, phase: 'accepted', acceptedWork: true, identityPreserved }, dependencies, journal.phase);
+  journal = await commitPhase(file, { ...journal, phase: 'committed', acceptedWork: true, writersAdmitted: journal.writersAdmitted === true, identityPreserved }, dependencies, journal.phase);
   releaseDiscarded(updateDirectoryFor(home), dependencies);
   return publicResult(journal);
 }
 async function runTransaction(journal, dependencies, verify) {
-  if (['committed', 'rolled_back', 'aborted'].includes(journal.phase)) return publicResult(journal, { replayed: true });
+  if (journalClosed(journal)) return publicResult(journal, { replayed: true });
   if (journal.phase === 'recovery_required' && !journal.writersAdmitted) return publicResult(journal, { replayed: true });
   let releaseHost = async () => {};
   if (RANK[journal.phase] < RANK.verifying) {
@@ -1175,7 +1190,7 @@ async function openTransaction({ home, candidate, staging, admit, reuseVerifiedS
       toSourceCommit: candidateManifest.sourceCommit, desiredRunning: inventory.desiredRunning, admit: admit === true,
       writerNames: inventory.writers, coordinationSchemaVersion: inventory.databaseInspection.version,
       ownerToken: randomUUID(), phase: 'claimed', acceptedWork: false, candidateStarted: false,
-      networkInstall: false, reuseVerifiedStage: reuseVerifiedStage === true, createdAt: new Date().toISOString() }, dependencies);
+      networkInstall: false, reuseVerifiedStage: reuseVerifiedStage === true, createdAt: new Date().toISOString() }, dependencies, null);
     return await runTransaction(journal, dependencies, verify);
   } finally {
     if (releaseStage) releaseStage();
@@ -1304,7 +1319,7 @@ export async function resumeProductUpdate({ homeRoot } = {}, dependencies = {}) 
         recoveryReopens: (journal.recoveryReopens || 0) + 1, recoveryFrom: undefined,
         stoppedForUpdate: journal.stoppedForUpdate === true || journal.desiredRunning === true };
       return withReusedStageLock(reopened, verify, async () =>
-        runTransaction(await commitPhase(journalPath(home), reopened, dependencies), dependencies, verify));
+        runTransaction(await commitPhase(journalPath(home), reopened, dependencies, journal.phase), dependencies, verify));
     }
     return withReusedStageLock(journal, verify, () => runTransaction(journal, dependencies, verify));
   });
@@ -1381,7 +1396,7 @@ export async function reconcileQuiescedWorkspaceChanges({ homeRoot, journalId, p
         originalCheckpointFullyUnchanged: false, workspaceFilesRetained: true, files: accepted,
         previousRecovery: { phase: journal.phase, from: journal.recoveryFrom, reasons: journal.reasons || [] } };
       const next = await commitPhase(file, { ...journal, phase: journal.recoveryFrom, identity, identityMetadata: metadata,
-        ownerWorkspaceReconciliation: reconciliation, identityPreserved: undefined, recoveryFrom: undefined, reasons: [] }, dependencies);
+        ownerWorkspaceReconciliation: reconciliation, identityPreserved: undefined, recoveryFrom: undefined, reasons: [] }, dependencies, journal.phase);
       return { status: 'workspace_reconciled', journalId: next.id, packageId, originalCheckpointFullyUnchanged: false,
         originalJournalBackup: backupName, workspaceFilesRetained: true, acceptedFiles: accepted.length,
         writersAdmitted: false, candidateStarted: false };
@@ -1419,11 +1434,11 @@ export async function recoverProductUpdate({ homeRoot } = {}, dependencies = {})
         // No Start is needed, so close in one durable write. An interrupted
         // abort must not leave an intermediate journal that asks to restart online roles.
         journal = await commitPhase(file, { ...journal, phase: 'aborted', reasons: recoveryReasons,
-          ...(runningUntouched ? { runningRestored: true } : {}) }, dependencies);
+          ...(runningUntouched ? { runningRestored: true } : {}) }, dependencies, journal.phase);
       } else if (journal.phase === 'claimed' || recoveryReasons !== reasons) {
         journal = await commitPhase(file, { ...journal,
           ...(journal.phase === 'claimed' ? { phase: 'recovery_required', recoveryFrom: 'claimed' } : {}),
-          reasons: recoveryReasons }, dependencies);
+          reasons: recoveryReasons }, dependencies, journal.phase);
       }
     } finally { await release(); }
     // Start takes the Host lifecycle lock itself.
@@ -1461,7 +1476,7 @@ export async function applyProductUpdate({ homeRoot, candidatePayload, staging, 
       if (error.code === 'candidate_node_unsupported') return refuse(home, [{ code: error.code, message: error.message }]);
       return refuse(home, [{ code: 'candidate_integrity_failed', message: 'The candidate package failed its integrity checks.' }]);
     }
-    if (existing && !['committed', 'rolled_back', 'aborted'].includes(existing.phase)) {
+    if (existing && !journalClosed(existing)) {
       const newAdmission = admit === true && existing.admit !== true;
       const abortClaim = (existing.toPackageId !== candidateId || newAdmission)
         && untouchedClaim(existing) && productRecovery(existing, home).restore;

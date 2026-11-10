@@ -13,6 +13,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { assertTransition, isState } from '../../shared/lifecycles.cjs';
 import {
   closeSync,
   existsSync,
@@ -82,6 +83,12 @@ export class CodingJobStore {
   updateJob(id: string, patch: Partial<CodingJobRecord>): CodingJobRecord {
     const current = this.getJob(id);
     if (!current) throw new Error(`Unknown coding job: ${id}`);
+    // A finished job stays finished; a running job never returns to starting.
+    // A record stored with a status this build does not know is left patchable
+    // so it can be moved to a known one.
+    if (patch.status !== undefined) {
+      assertTransition('coding-job', isState('coding-job', current.status) ? current.status : patch.status, patch.status);
+    }
     const next = { ...current, ...patch, id: current.id } as CodingJobRecord;
     writeJsonAtomic(this.jobJsonPath(id), next);
     return next;

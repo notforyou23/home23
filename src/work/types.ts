@@ -9,18 +9,24 @@
  */
 import { randomBytes } from 'node:crypto';
 import type { MediaAttachment } from '../types.js';
+import {
+  terminalStates,
+  type AsyncWorkLifecycleStatus,
+  type AsyncWorkTerminalStatus,
+  type WorkVerificationLifecycleStatus,
+} from '../../shared/lifecycles.cjs';
 
 export type AsyncWorkKind = 'coding' | 'subagent' | 'cron';
 
 /** Which hand executes a detached Attempt. Both return as one Jerry Message. */
 export type WorkOffice = 'resident' | 'delegated';
 
-export type AsyncWorkStatus =
-  | 'queued' | 'running' | 'blocked'
-  | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+/** Declared in shared/lifecycles.cjs ("async-work"). */
+export type AsyncWorkStatus = AsyncWorkLifecycleStatus;
+export type { AsyncWorkTerminalStatus };
 
 export const TERMINAL_WORK_STATUSES: ReadonlySet<AsyncWorkStatus> =
-  new Set(['completed', 'failed', 'cancelled', 'interrupted']);
+  new Set(terminalStates('async-work'));
 
 /**
  * Honest values only (anti-theater): the harness can attest that a review
@@ -29,7 +35,7 @@ export const TERMINAL_WORK_STATUSES: ReadonlySet<AsyncWorkStatus> =
  * could not run (busy origin, review turn error); 'none' means review was not
  * applicable (failures, review disabled for the kind, non-human origin).
  */
-export type VerificationStatus = 'none' | 'pending' | 'reviewed' | 'skipped';
+export type VerificationStatus = WorkVerificationLifecycleStatus;
 
 export type WorkResultHandle =
   | { type: 'coding_job'; jobId: string }

@@ -8,10 +8,21 @@ import { absoluteHome, ownerAccountHome, privateDirectory, readPrivateJSON, prod
 import { launchIndependentUpdateWorker } from './product-home-update-launcher.mjs';
 import { verifySupervisorBeforeApplication } from './product-supervisor-admission.js';
 import { promisify } from 'node:util';
+import { UPDATE_LIFECYCLES, guardUpdateMove, guardUpdateStart, isFinalUpdateState } from './product-update-lifecycles.js';
 
 const SCHEMA = 'home23.home-update.v1';
 const ACTIONS = new Set(['check', 'update', 'resume', 'recover']);
-const TERMINAL = new Set(['completed', 'failed', 'interrupted']);
+// Declared in ./product-update-lifecycles.js ("home-update"). Settled means no
+// worker is running: the operation completed, or it rests until the owner resumes it.
+const TERMINAL = new Set(UPDATE_LIFECYCLES['home-update'].settled);
+const RESUMABLE = UPDATE_LIFECYCLES['home-update'].resting;
+/** The update journal reached one of its final phases; nothing is left to resume. */
+const journalClosed = journal => isFinalUpdateState('update-journal', journal?.phase);
+/** Every write of an operation's phase goes through the declared moves. */
+function checkedOperation(previousPhase, operation) {
+  guardUpdateMove('home-update', previousPhase, operation.phase);
+  return operation;
+}
 const PROGRESS_PERSIST_INTERVAL_MS = 2_000;
 // A candidate the updater defers as still starting keeps its services running.
 // The executor resumes that journal itself this long before asking the owner.
@@ -119,13 +130,13 @@ function publicOperation(operation) {
     reasonCodes: operation.phase === 'failed' ? operation.reasonCodes ?? [] : [],
     startedAt: operation.startedAt, updatedAt: operation.updatedAt,
     canResume: (operation.requiresLocalRecovery ? operation.retryable === true : true) && !operation.requiresNewRelease
-      && (interrupted || ['failed', 'interrupted'].includes(operation.phase)) };
+      && (interrupted || RESUMABLE.includes(operation.phase)) };
 }
 function releaseView(release) {
   return release ? { version: release.version ?? 'Home23', build: release.appBuild ?? release.build ?? null, packageId: release.packageId ?? null } : null;
 }
 function committedMacFailure(home, operation) {
-  return operation?.action === 'update' && ['failed', 'interrupted'].includes(operation.phase)
+  return operation?.action === 'update' && RESUMABLE.includes(operation.phase)
     && operation.runtimeCompleted === true && operation.applicationCompleted !== true
     && !operation.requiresLocalRecovery && !operation.requiresNewRelease && !alive(operation.pid)
     && typeof operation.prepared?.packageId === 'string' && home.receipt.packageId === operation.prepared.packageId;
@@ -217,7 +228,7 @@ export async function reconcileAbortedHomeUpdate({ homeRoot, operationId, client
       reasonCodes: [...new Set([...safeReasonCodes(journal.reasons), 'recovered_by_owner'])],
       requiresLocalRecovery: false, recoverable: false, retryable: false, requiresNewRelease: true, blockedPackageId: journal.toPackageId,
       message: `${journal.runningRestored ? 'Your home is running again' : 'Your home remains stopped'} on its current Home23 version. Check for a newer Home23 release.` };
-    save(join(home.directory, `${operation.id}.json`), recovered);
+    save(join(home.directory, `${operation.id}.json`), checkedOperation(operation.phase, recovered));
     return { reconciled: true, operationId, status: projectStatus(home, recovered, clientBuild) };
   });
 }
@@ -230,7 +241,7 @@ export async function abandonHomeUpdateDownload({ homeRoot, operationId, clientB
     const { readUpdateJournal } = await import('./product-update-apply.js');
     const { readProductManifest } = await import('./product-payload.js');
     if (latestOperation(home)?.id !== operation.id || operation.action !== 'update' || alive(operation.pid)
-        || !['failed', 'interrupted'].includes(publicOperation(operation).phase)
+        || !RESUMABLE.includes(publicOperation(operation).phase)
         || operation.prepared != null || operation.runtimeCompleted || operation.applicationCompleted || operation.requiresLocalRecovery
         || readUpdateJournal(home.root) !== null || readProductManifest(home.root).packageId !== home.receipt.packageId
         || typeof operation.release?.packageId !== 'string' || !operation.release.packageId || operation.release.packageId === home.receipt.packageId) {
@@ -242,7 +253,7 @@ export async function abandonHomeUpdateDownload({ homeRoot, operationId, clientB
     const abandoned = { ...operation, phase: 'failed', pid: null, updatedAt: now(), errorCode: 'update_abandoned', reasonCodes: ['abandoned_by_owner'],
       requiresNewRelease: true, blockedPackageId: operation.release.packageId,
       message: 'The previous download was stopped before changing your home. Check for a newer Home23 release.' };
-    save(join(home.directory, `${operation.id}.json`), abandoned);
+    save(join(home.directory, `${operation.id}.json`), checkedOperation(operation.phase, abandoned));
     return { abandoned: true, operationId, status: projectStatus(home, abandoned, clientBuild) };
   });
 }
@@ -415,7 +426,7 @@ export async function requestHomeUpdate({ homeRoot, action, idempotencyKey, prin
       // The earlier failure's error fields must not describe this new attempt.
       const previous = { ...operation };
       delete previous.errorCode; delete previous.reasonCodes;
-      operation = { ...previous, runAction: action, clientBuild: clientBuild ?? operation.clientBuild, attempt: operation.attempt + 1, phase: 'queued', pid: null, updatedAt: now(), message: 'Resuming Home23 update.' };
+      operation = checkedOperation(operation.phase, { ...previous, runAction: action, clientBuild: clientBuild ?? operation.clientBuild, attempt: operation.attempt + 1, phase: 'queued', pid: null, updatedAt: now(), message: 'Resuming Home23 update.' });
     } else {
       const unfinishedMacOperationId = action === 'check' ? unfinishedMacUpdate(home, operation)?.id : null;
       operation = { schema: SCHEMA, id: randomUUID(), homeRoot: home.root, action, runAction: action, attempt: 1,
@@ -424,6 +435,7 @@ export async function requestHomeUpdate({ homeRoot, action, idempotencyKey, prin
         blockedPackageId: operation?.blockedPackageId ?? null,
         ...(unfinishedMacOperationId ? { unfinishedMacOperationId } : {}),
         release: action === 'update' ? operation?.release : null };
+      guardUpdateStart('home-update', operation.phase);
     }
     save(join(home.directory, `${operation.id}.json`), operation);
     save(join(home.directory, 'latest.json'), { id: operation.id });
@@ -437,8 +449,9 @@ export async function requestHomeUpdate({ homeRoot, action, idempotencyKey, prin
         save(join(home.directory, `${operation.id}.json`), { ...latest, pid, executor });
       }
     } catch (error) {
-      operation = { ...loadOperation(home, operation.id), phase: 'failed', updatedAt: now(), message: 'The update could not start. Resume to try again.',
-        errorCode: error.code ?? 'launch_failed', reasonCodes: Array.isArray(error.reasonCodes) ? error.reasonCodes : [] };
+      const unstarted = loadOperation(home, operation.id);
+      operation = checkedOperation(unstarted.phase, { ...unstarted, phase: 'failed', updatedAt: now(), message: 'The update could not start. Resume to try again.',
+        errorCode: error.code ?? 'launch_failed', reasonCodes: Array.isArray(error.reasonCodes) ? error.reasonCodes : [] });
       save(join(home.directory, `${operation.id}.json`), operation);
     }
     return projectStatus(home, loadOperation(home, operation.id), clientBuild);
@@ -461,6 +474,7 @@ export async function runHomeUpdateOperation({ homeRoot, operationId, requireWor
   const registered = registration(home);
   if (!registered) throw fail('application_unavailable', 'Home23 application registration is missing.');
   const persist = patch => {
+    if (patch.phase !== undefined) guardUpdateMove('home-update', operation.phase, patch.phase);
     operation = { ...operation, ...patch, updatedAt: now(), pid: process.pid };
     // Only the failed path writes errorCode/reasonCodes, so a resumed run that
     // reaches any other phase would otherwise keep the refusal it recovered
@@ -513,7 +527,7 @@ export async function runHomeUpdateOperation({ homeRoot, operationId, requireWor
         // unfinished journal may still own an older stage, so keep them all then.
         try {
           const journal = updater.readUpdateJournal?.(home.root);
-          if (!journal || ['committed', 'rolled_back', 'aborted'].includes(journal.phase)) {
+          if (!journal || journalClosed(journal)) {
             pruneUpdateDelivery(home.root, { keepIds: [operation.id], ...dependencies.delivery }, dependencies);
           }
         } catch { /* Housekeeping never blocks a download. */ }
@@ -549,7 +563,7 @@ export async function runHomeUpdateOperation({ homeRoot, operationId, requireWor
       let result;
       try {
         const journal = updater.readUpdateJournal(home.root);
-        result = journal && !['committed', 'rolled_back', 'aborted'].includes(journal.phase)
+        result = journal && !journalClosed(journal)
           ? await updater.resumeProductUpdate({ homeRoot: home.root })
           : readPrivateJSON(join(home.root, '.home23-install.json'))?.packageId === prepared.packageId
             ? { ok: true, status: 'committed' }
