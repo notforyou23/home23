@@ -1,6 +1,6 @@
 /**
  * Types for the lifecycle catalog. The unions here must list exactly the
- * states in shared/lifecycles.cjs; tests/shared/lifecycles.test.ts fails when
+ * states in shared/lifecycles.cjs; tests/shared/lifecycles.test.cjs fails when
  * the two disagree.
  */
 
