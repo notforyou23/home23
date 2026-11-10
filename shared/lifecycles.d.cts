@@ -24,6 +24,21 @@ export type WorkVerificationLifecycleStatus = 'none' | 'pending' | WorkVerificat
 export type BrainOperationTerminalState = 'complete' | 'partial' | 'failed' | 'cancelled' | 'interrupted';
 export type BrainOperationLifecycleState = 'queued' | 'running' | BrainOperationTerminalState;
 
+export type HomeUpdateTerminalPhase = 'completed';
+/** What an update operation record stores. */
+export type HomeUpdateStoredPhase =
+  | 'queued' | 'checking' | 'downloading' | 'preparing' | 'updating' | 'reconnecting' | 'failed'
+  | HomeUpdateTerminalPhase;
+/** Reported for a working record whose worker is gone. Never stored. */
+export type HomeUpdateViewPhase = 'interrupted';
+export type HomeUpdatePhase = HomeUpdateStoredPhase | HomeUpdateViewPhase;
+
+export type UpdateJournalTerminalPhase = 'committed' | 'rolled_back' | 'aborted';
+export type UpdateJournalPhase =
+  | 'claimed' | 'quiesced' | 'checkpointed' | 'retained' | 'applying'
+  | 'selected' | 'verifying' | 'writers_admitted' | 'accepted' | 'recovery_required'
+  | UpdateJournalTerminalPhase;
+
 export interface LifecycleStates {
   'chat-turn': { state: ChatTurnStoredStatus; terminal: ChatTurnTerminalStatus; view: ChatTurnViewStatus };
   'async-work': { state: AsyncWorkLifecycleStatus; terminal: AsyncWorkTerminalStatus; view: never };
@@ -32,6 +47,8 @@ export interface LifecycleStates {
     state: WorkVerificationLifecycleStatus; terminal: WorkVerificationTerminalStatus; view: never;
   };
   'brain-operation': { state: BrainOperationLifecycleState; terminal: BrainOperationTerminalState; view: never };
+  'home-update': { state: HomeUpdateStoredPhase; terminal: HomeUpdateTerminalPhase; view: HomeUpdateViewPhase };
+  'update-journal': { state: UpdateJournalPhase; terminal: UpdateJournalTerminalPhase; view: never };
 }
 
 export type LifecycleName = keyof LifecycleStates;
@@ -50,6 +67,10 @@ export interface Lifecycle<N extends LifecycleName = LifecycleName> {
   readonly active: readonly Exclude<LifecycleState<N>, LifecycleTerminalState<N>>[];
   readonly reserved: readonly LifecycleState<N>[];
   readonly views: readonly LifecycleViewState<N>[];
+  /** States or views in which nothing is running and the record waits to be resumed. */
+  readonly resting: readonly (LifecycleState<N> | LifecycleViewState<N>)[];
+  /** Terminal and resting together: no work is in flight. */
+  readonly settled: readonly (LifecycleState<N> | LifecycleViewState<N>)[];
   readonly transitions: readonly (readonly [LifecycleState<N>, LifecycleState<N>])[];
   readonly labels: Readonly<Record<string, string>>;
   readonly notes: readonly string[];
@@ -65,6 +86,7 @@ export interface LifecycleSpec {
   terminal: readonly string[];
   reserved?: readonly string[];
   views?: readonly string[];
+  resting?: readonly string[];
   transitions: readonly (readonly [string, string])[];
   labels?: Readonly<Record<string, string>>;
   notes?: readonly string[];
@@ -78,8 +100,10 @@ export interface LifecycleDescription {
     record: string;
     authority: string;
     initial: string;
-    states: Array<{ state: string; label: string; terminal: boolean; reserved: boolean; next: string[] }>;
-    views: Array<{ state: string; label: string }>;
+    states: Array<{
+      state: string; label: string; terminal: boolean; resting: boolean; reserved: boolean; next: string[];
+    }>;
+    views: Array<{ state: string; label: string; resting: boolean }>;
     notes: string[];
   }>;
 }
@@ -108,6 +132,16 @@ export function isTerminal<N extends LifecycleName>(name: N, state: unknown): st
 export function isActive<N extends LifecycleName>(
   name: N, state: unknown,
 ): state is Exclude<LifecycleState<N>, LifecycleTerminalState<N>>;
+export function isSettled(name: LifecycleName, state: unknown): boolean;
+export function strictTransitions(env?: Record<string, string | undefined>): boolean;
+/**
+ * For crash-resumable procedures only. Throws for an undeclared state or a
+ * move out of a final state; reports any other unlisted move unless strict.
+ */
+export function guardTransition(
+  name: LifecycleName, from: unknown, to: unknown,
+  options?: { strict?: boolean; report?: (error: LifecycleError) => void },
+): boolean;
 export function terminalStates<N extends LifecycleName>(name: N): readonly LifecycleTerminalState<N>[];
 export function canTransition(name: LifecycleName, from: unknown, to: unknown): boolean;
 export function assertTransition(name: LifecycleName, from: unknown, to: unknown): void;

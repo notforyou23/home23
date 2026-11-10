@@ -11,6 +11,7 @@ How this was produced: a scan of `src/`, `engine/src/`, `substrate/src/`, `cli/`
 | Lifecycle | Declared in | Enforced by |
 | --- | --- | --- |
 | `chat-turn`, `async-work`, `coding-job`, `work-verification`, `brain-operation` | `shared/lifecycles.cjs` ([reference](LIFECYCLES.md)) | `TurnStore.writeEnd`, `WorkRegistry`, `CodingJobStore.updateJob`; the engine operation store for `brain-operation` |
+| `home-update`, `update-journal` | `shared/lifecycles.cjs`, with the updater's own identical copy in `cli/lib/product-update-lifecycles.js` | Every phase write in `cli/lib/product-home-update.js`; `commitPhase` in `cli/lib/product-update-apply.js` |
 | Connected Agents: `round`, `work`, `attempt`, `lease`, `outbox`, `delivery`, `attachment`, `botLifecycle`, `botAvailability`, `channel`, `messageVisibility`, `clientSession`, `pairingSession`, `importItem`, `turnProjection`, `activity`, `authorityEpoch` | `src/coordination/contracts/v1/registry.json` | `src/coordination/schema/contract-registry.ts` and SQLite `CHECK` constraints in the schema deltas |
 | Brain operation execution and attachment | `engine/src/dashboard/brain-operations/operation-contract.js` | `operation-store.js` (`assertTransition`, versioned writes) |
 
@@ -31,6 +32,16 @@ Found while making them explicit:
 
 No stored value, wire value or type name changed.
 
+### The update lifecycles
+
+Adopted second, because they persist a phase and resume from it after a crash.
+
+- **"Terminal" meant two different things.** The home update code called `completed`, `failed` and `interrupted` terminal, but a failed operation is resumed in place: the same record goes back to `queued`. Only `completed` is final. The catalog now distinguishes final states from *resting* ones (nothing is running, the record waits to be resumed), and `interrupted` is recorded as a view: it is reported when a worker has died and is never stored.
+- **The journal's final phases were written out eight times** across the two files. They now come from one table.
+- **The journal has a phase nothing writes.** `verifying` is ranked and accepted from older journals, but the current updater never commits it. It is marked reserved.
+- **The updater cannot import shared code.** The update worker and the recovery controller each run from a retained copy of `cli/lib`: one follows `./` imports, the other copies an explicit file list. A new module that either copy misses stops an update from recovering. The update tables therefore live in `cli/lib/product-update-lifecycles.js`, a test holds them identical to the catalog, and two more tests check that both retained copies include everything their files import.
+- **These guards report instead of refusing, outside tests.** An unknown phase, or any write over a final phase, is always refused. Any other unlisted move is refused in every test run and reported at run time, because refusing a durable write in the middle of a cutover could leave a home worse off than making it. Every move the update test suites make is in the table; the moves they do not exercise were added from reading the code and are the part to review.
+
 ## 3. Still implicit
 
 Ordered by how much a mistake would cost. "Guard" says what currently stops an illegal move.
@@ -41,8 +52,6 @@ These decide whether a home starts after an update. Each persists a phase to dis
 
 | Lifecycle | Where | States in use | Guard |
 | --- | --- | --- | --- |
-| Update apply | `cli/lib/product-update-apply.js` | `accepted`, `claimed`, `quiesced`, `checkpointed`, `selected`, `applying`, `writers_admitted`, `committed`, `retained`, `rolled_back`, `aborted`, `recovery_required` | Ordered code path; resume branches on the stored phase |
-| Home update operation | `cli/lib/product-home-update.js` | `queued`, `checking`, `downloading`, `preparing`, `updating`, `reconnecting`, `completed`, `failed`, `interrupted`, `aborted` | Local `TERMINAL` set |
 | Update feed / staged release | `cli/lib/product-update-feed.js`, `product-release-channel.js` | `absent`, `available`, `copying`, `staged`, `verified`, `current`, `damaged`, `incompatible`, `unavailable` | None |
 | Host lifecycle | `cli/lib/product-host.js` | `absent`, `creating`, `prepared`, `registered`, `starting`, `installed`, `stopped`, `busy`, `degraded`, `move_fenced`, `supervisor_locked`, `recovery_required`, `unavailable` | None; status is partly derived from PM2 |
 | Backup / restore | `cli/lib/product-backup.js` | `claimed`, `fenced`, `stopped`, `backed_up`, `restored`, `runtime_installed`, `rebound`, `committed` | Ordered code path |
@@ -150,4 +159,4 @@ The apps cannot `require` the catalog, but `node cli/home23.js lifecycles --json
 4. Regenerate the reference: `node cli/home23.js lifecycles --markdown > docs/reference/LIFECYCLES.md`.
 5. Lower the matching counts in `HAND_WRITTEN_COPIES` in `tests/shared/lifecycles.test.cjs`, and move the row from section 3 to section 1 here.
 
-Suggested order: update apply and home update (crash-resumable, user-visible), then pursuit and sub-agent run (highest write volume in the engine), then the engine brain-operation readers that still carry their own copy of the terminal set.
+Suggested order: backup/restore and app replacement (the remaining crash-resumable procedures), then pursuit and sub-agent run (highest write volume in the engine), then the engine brain-operation readers that still carry their own copy of the terminal set.

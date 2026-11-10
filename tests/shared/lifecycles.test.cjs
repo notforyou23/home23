@@ -100,6 +100,47 @@ test('the adopted lifecycles keep their published vocabularies', () => {
   assert.deepEqual(LIFECYCLES['work-verification'].states, ['none', 'pending', 'reviewed', 'skipped']);
   assert.deepEqual(LIFECYCLES['brain-operation'].states,
     ['queued', 'running', 'complete', 'partial', 'failed', 'cancelled', 'interrupted']);
+  assert.deepEqual(LIFECYCLES['home-update'].states,
+    ['queued', 'checking', 'downloading', 'preparing', 'updating', 'reconnecting', 'failed', 'completed']);
+  assert.deepEqual(LIFECYCLES['home-update'].views, ['interrupted']);
+  assert.deepEqual(LIFECYCLES['update-journal'].states, [
+    'claimed', 'quiesced', 'checkpointed', 'retained', 'applying', 'selected', 'verifying',
+    'writers_admitted', 'accepted', 'recovery_required', 'committed', 'rolled_back', 'aborted',
+  ]);
+});
+
+test('resting states are settled without being final', () => {
+  const { isSettled, guardTransition, strictTransitions } = lifecycles;
+  // A failed update rests until resumed; only a completed one is final.
+  assert.deepEqual(LIFECYCLES['home-update'].settled, ['completed', 'failed', 'interrupted']);
+  assert.equal(isSettled('home-update', 'failed'), true);
+  assert.equal(isSettled('home-update', 'interrupted'), true);
+  assert.equal(isSettled('home-update', 'updating'), false);
+  assert.equal(isTerminal('home-update', 'failed'), false);
+  assert.doesNotThrow(() => assertTransition('home-update', 'failed', 'queued'));
+  assert.throws(() => assertTransition('home-update', 'completed', 'queued'), { code: 'lifecycle_terminal' });
+  assert.equal(isSettled('update-journal', 'recovery_required'), true);
+  assert.equal(isSettled('async-work', 'running'), false);
+  assert.equal(isSettled('async-work', 'failed'), true);
+  assert.throws(() => defineLifecycle({ ...base, resting: ['done'] }), /also terminal/);
+  assert.throws(() => defineLifecycle({ ...base, resting: ['nowhere'] }), /not declared/);
+
+  // The recovery-safe guard: final and unknown states are always refused;
+  // another unlisted move is refused when strict and reported otherwise.
+  const reported = [];
+  const lenient = { strict: false, report: error => reported.push(error) };
+  assert.equal(guardTransition('update-journal', 'claimed', 'quiesced', lenient), true);
+  assert.equal(guardTransition('update-journal', 'quiesced', 'applying', lenient), false);
+  assert.equal(reported.length, 1);
+  assert.throws(() => guardTransition('update-journal', 'quiesced', 'applying', { strict: true }),
+    { code: 'lifecycle_transition_invalid' });
+  assert.throws(() => guardTransition('update-journal', 'committed', 'claimed', lenient), { code: 'lifecycle_terminal' });
+  assert.throws(() => guardTransition('update-journal', 'claimed', 'finished', lenient), { code: 'lifecycle_state_unknown' });
+  assert.equal(guardTransition('update-journal', 'written_by_another_build', 'recovery_required', { strict: true }), true);
+  assert.equal(strictTransitions({}), false);
+  assert.equal(strictTransitions({ NODE_TEST_CONTEXT: 'child-v8' }), true);
+  assert.equal(strictTransitions({ NODE_TEST_CONTEXT: 'child-v8', HOME23_LIFECYCLE_STRICT: '0' }), false);
+  assert.equal(strictTransitions({ HOME23_LIFECYCLE_STRICT: '1' }), true);
 });
 
 test('moves follow the table', () => {
@@ -149,6 +190,8 @@ test('the type declarations list exactly the catalog states', () => {
     'coding-job': ['CodingJobLifecycleStatus', 'CodingJobTerminalStatus'],
     'work-verification': ['WorkVerificationLifecycleStatus', 'WorkVerificationTerminalStatus'],
     'brain-operation': ['BrainOperationLifecycleState', 'BrainOperationTerminalState'],
+    'home-update': ['HomeUpdateStoredPhase', 'HomeUpdateTerminalPhase', 'HomeUpdateViewPhase'],
+    'update-journal': ['UpdateJournalPhase', 'UpdateJournalTerminalPhase'],
   };
   assert.deepEqual(Object.keys(expected).sort(), [...LIFECYCLE_NAMES].sort());
   for (const [name, [stateType, terminalType, viewType]] of Object.entries(expected)) {

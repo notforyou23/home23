@@ -41,7 +41,7 @@ export function runLifecyclesCommand(args = []) {
     lines.push(`${entry.name}  ${entry.summary}`);
     lines.push(`  authority: ${entry.authority}`);
     for (const state of entry.states) {
-      const kind = state.terminal ? 'final' : state.reserved ? 'reserved' : state.state === entry.initial ? 'start' : 'active';
+      const kind = state.terminal ? 'final' : state.resting ? 'resting' : state.reserved ? 'reserved' : state.state === entry.initial ? 'start' : 'active';
       const next = state.next.length ? ` -> ${state.next.join(', ')}` : '';
       lines.push(`  ${state.state.padEnd(16)} ${kind.padEnd(9)}${next}`.trimEnd());
     }
