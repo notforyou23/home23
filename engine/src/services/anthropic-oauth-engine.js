@@ -14,7 +14,7 @@
 const { resolveProviderKey, managedOAuthCredentials } = require('../core/provider-credentials');
 
 // Claude Code version for stealth mode headers
-const CLAUDE_CODE_VERSION = '2.1.32';
+const CLAUDE_CODE_VERSION = '2.1.319';
 
 /**
  * Detect if a token is an OAuth token

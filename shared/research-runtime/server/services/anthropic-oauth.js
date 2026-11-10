@@ -53,7 +53,7 @@ function getPrisma() {
 }
 
 // Claude Code version for stealth mode (must match actual Claude Code CLI version)
-const CLAUDE_CODE_VERSION = '2.1.32';
+const CLAUDE_CODE_VERSION = '2.1.319';
 
 // Database key for storing OAuth tokens
 const OAUTH_DB_KEY = 'anthropic_oauth';

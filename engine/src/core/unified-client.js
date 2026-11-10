@@ -30,7 +30,7 @@ function getAnthropicStealthHeaders() {
     'accept': 'application/json',
     'anthropic-dangerous-direct-browser-access': 'true',
     'anthropic-beta': ANTHROPIC_OAUTH_BETA,
-    'user-agent': 'claude-cli/2.1.32 (external, cli)',
+    'user-agent': 'claude-cli/2.1.319 (external, cli)',
     'x-app': 'cli',
   };
 }

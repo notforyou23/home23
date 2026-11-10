@@ -176,7 +176,7 @@ function createModelDiscovery({ home23Root, fetchImpl = globalThis.fetch, now = 
     const headers = token ? { authorization: `Bearer ${token}` } : {};
     if (desc.provider === 'anthropic') {
       headers['anthropic-version'] = '2023-06-01';
-      if (desc.authMode === 'oauth') Object.assign(headers, { 'anthropic-beta': 'oauth-2025-04-20', 'user-agent': 'claude-cli/2.1.32 (external, cli)', 'x-app': 'cli', 'anthropic-dangerous-direct-browser-access': 'true' });
+      if (desc.authMode === 'oauth') Object.assign(headers, { 'anthropic-beta': 'oauth-2025-04-20', 'user-agent': 'claude-cli/2.1.319 (external, cli)', 'x-app': 'cli', 'anthropic-dangerous-direct-browser-access': 'true' });
       else { delete headers.authorization; headers['x-api-key'] = token; }
     }
     if (desc.provider === 'openai-codex' && account) headers['chatgpt-account-id'] = account;

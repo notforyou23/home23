@@ -11,7 +11,7 @@
  */
 
 export const ANTHROPIC_OAUTH_BETA = 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,extended-cache-ttl-2025-04-11';
-export const ANTHROPIC_CLI_USER_AGENT = 'claude-cli/2.1.32 (external, cli)';
+export const ANTHROPIC_CLI_USER_AGENT = 'claude-cli/2.1.319 (external, cli)';
 
 export function anthropicOAuthStealthHeaders(): Record<string, string> {
   return {

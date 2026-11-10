@@ -126,7 +126,7 @@ function probeRequest(provider, definition, credentials) {
     Object.assign(headers, {
       'anthropic-version': '2023-06-01',
       'anthropic-beta': 'oauth-2025-04-20',
-      'user-agent': 'claude-cli/2.1.32 (external, cli)',
+      'user-agent': 'claude-cli/2.1.319 (external, cli)',
       'x-app': 'cli',
       'anthropic-dangerous-direct-browser-access': 'true',
     });
