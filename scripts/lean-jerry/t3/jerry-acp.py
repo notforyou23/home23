@@ -13,6 +13,7 @@ from workspace import execute
 sessions = {}
 active = {}
 permissions = {}
+session_grants = {}
 output = threading.Lock()
 
 
@@ -34,14 +35,23 @@ def workspace_call(session, turn, action, cancel):
     response = {}
     permissions[call_id] = (ready, response)
     try:
-        emit(id=call_id, method="session/request_permission", params={"sessionId":session,
-            "toolCall":tool, "options":[{"kind":"allow_once","name":"Run command","optionId":"allow"},
-                {"kind":"reject_once","name":"Decline","optionId":"deny"}]})
-        while not ready.wait(0.1):
-            if cancel.is_set():
-                break
-        outcome = response.get("result", {}).get("outcome", {})
-        if not cancel.is_set() and outcome == {"outcome":"selected","optionId":"allow"}:
+        grants = session_grants[session]
+        grant = (sessions[session], command)
+        allowed = grant in grants
+        if not allowed:
+            emit(id=call_id, method="session/request_permission", params={"sessionId":session,
+                "toolCall":tool, "options":[
+                    {"kind":"allow_once","name":"Run command","optionId":"allow"},
+                    {"kind":"allow_always","name":"Allow this exact command in this session","optionId":"allow-session"},
+                    {"kind":"reject_once","name":"Decline","optionId":"deny"}]})
+            while not ready.wait(0.1):
+                if cancel.is_set():
+                    break
+            outcome = response.get("result", {}).get("outcome", {})
+            allowed = outcome.get("outcome") == "selected" and outcome.get("optionId") in ("allow","allow-session")
+            if allowed and not cancel.is_set() and outcome["optionId"] == "allow-session":
+                grants.add(grant)
+        if not cancel.is_set() and allowed:
             with api("/api/chat/workspace-claim", {"turnId":turn,"callId":call_id}):
                 pass
             update("tool_call_update", status="in_progress")
@@ -162,6 +172,7 @@ def dispatch(msg):
         if not cwd.is_dir():
             raise ValueError("Missing T3 project directory.")
         sessions[session] = str(cwd)
+        session_grants[session] = set()
         return {"sessionId": session, "modes": {"currentModeId": "ask", "availableModes": [
             {"id": key, "name": key} for key in ("ask", "auto")]}}
     if session not in sessions:
@@ -177,8 +188,10 @@ def dispatch(msg):
             active[session].set()
         return None
     if method == "session/set_mode":
+        session_grants[session].clear()
         return {}
     if method == "session/set_config_option" and params.get("configId") == "mode":
+        session_grants[session].clear()
         return {"configOptions": []}
     raise ValueError("Unsupported ACP method: " + method)
 
