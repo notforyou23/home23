@@ -33,6 +33,13 @@ def prompt(request_id, session, parts, cancel):
         if any(part["type"] != "text" for part in parts):
             raise ValueError("Jerry accepts text in T3.")
         message = "\n".join(part["text"] for part in parts)
+        # T3 wraps the composer text with instructions for coding agents.
+        if message.startswith("<t3_code_instructions>"):
+            prefix, separator, request = message.partition("</t3_code_instructions>\n\n<user_request>\n")
+            body, end, suffix = request.rpartition("\n</user_request>")
+            if not separator or not end:
+                raise ValueError("Unrecognized T3 composer envelope.")
+            message = body
         with api("/api/chat/turn", {"chatId": session, "message": message}) as response:
             turn = json.load(response)["turn_id"]
         query = urllib.parse.urlencode({"chatId": session, "turn_id": turn})
@@ -48,16 +55,23 @@ def prompt(request_id, session, parts, cancel):
         threading.Thread(target=stop, daemon=True).start()
         try:
             with api("/api/chat/stream?" + query) as response:
+                delivered = ""
                 for line in response:
                     if not line.startswith(b"data: {"):
                         continue
                     frame = json.loads(line[6:])
                     if frame.get("kind") == "response_chunk":
+                        delivered += frame["data"]["chunk"]
                         emit(method="session/update", params={"sessionId": session, "update": {
                             "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": frame["data"]["chunk"]}}})
                     if frame["type"] == "turn" and frame["status"] != "pending":
                         if frame["status"] not in ("complete", "stopped"):
                             raise ValueError(frame.get("error_message") or frame["status"])
+                        final = frame.get("assistant_content") or ""
+                        if final.startswith(delivered) and len(final) > len(delivered):
+                            emit(method="session/update", params={"sessionId": session, "update": {
+                                "sessionUpdate": "agent_message_chunk", "content": {
+                                    "type": "text", "text": final[len(delivered):]}}})
                         emit(id=request_id, result={"stopReason": "cancelled" if frame["status"] == "stopped" else "end_turn"})
                         return
             raise IOError("Jerry stream ended before a terminal turn.")
