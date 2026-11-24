@@ -30,6 +30,10 @@ export class WorkspaceTurns {
     while (true) {
       checkWriter();
       const raw = await model.generate({model:turn.model,messages:conversation,signal,chunk:()=>{}});
+      const reply = raw.trim();
+      // Gemma can answer conversational turns directly despite the JSON instruction.
+      // Only a structured action can reach the command publisher.
+      if (reply && !/^[{\x60\[]/.test(reply)) return reply;
       const action = JSON.parse(raw.trim().replace(/^\x60\x60\x60(?:json)?\s*/i,'').replace(/\s*\x60\x60\x60$/,''));
       if (!hasReceipt && action.chat === true) return null;
       if (typeof action.answer === 'string' && action.answer.trim()) return action.answer;

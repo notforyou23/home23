@@ -8,19 +8,21 @@ import urllib.error
 import urllib.request
 
 
-def relay():
+def local_api(route, body=None):
     config = json.loads((pathlib.Path.home() / "Library/Application Support/Lean Jerry/service.json").read_text())
-    request = json.loads(sys.stdin.buffer.readline())
-    route = request["route"]
     if not route.startswith("/api/chat/"):
         raise ValueError("Expected a chat API route.")
-    data = request["body"]
     url = "http://127.0.0.1:" + str(config["port"]) + route
     token = pathlib.Path(config["tokenFile"]).read_text().strip()
+    return urllib.request.urlopen(urllib.request.Request(url,
+        json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"}), timeout=330)
+
+
+def relay():
+    request = json.loads(sys.stdin.buffer.readline())
     try:
-        response = urllib.request.urlopen(urllib.request.Request(url,
-            json.dumps(data).encode() if data is not None else None,
-            headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"}), timeout=330)
+        response = local_api(request["route"], request["body"])
     except urllib.error.HTTPError as error:
         print(error.code, flush=True)
         return

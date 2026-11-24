@@ -7,8 +7,11 @@ import threading
 import urllib.parse
 import uuid
 
-from transport import api
+from transport import api, local_api
 from workspace import execute
+
+if "--local-service" in sys.argv[1:]:
+    api = local_api
 
 sessions = {}
 active = {}
@@ -173,10 +176,12 @@ def dispatch(msg):
             raise ValueError("Missing T3 project directory.")
         sessions[session] = str(cwd)
         session_grants[session] = set()
-        return {"sessionId": session, "modes": {"currentModeId": "ask", "availableModes": [
-            {"id": key, "name": key} for key in ("ask", "auto")]}}
+        return {"sessionId": session, "models": {"currentModelId": "default",
+                "availableModels": [{"modelId": "default", "name": "Jerry"}]}}
     if session not in sessions:
         raise ValueError("Unknown Jerry session.")
+    if method == "session/set_model" and params.get("modelId") == "default":
+        return {}
     if method == "session/prompt":
         if session in active:
             raise ValueError("Jerry is already answering.")

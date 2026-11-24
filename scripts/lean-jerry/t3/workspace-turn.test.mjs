@@ -62,3 +62,14 @@ test('a workspace turn can finish after more than 24 approved commands',async ()
   assert.equal(receipts,25);
   assert.equal(answer,'Complete.');
 });
+
+test('a plain model reply is displayed without executing it', async () => {
+  const workspace = new WorkspaceTurns();
+  const result = await workspace.answer({
+    turn: {id:'chat', model:'local'}, messages:[{role:'system',content:'Jerry'}],
+    cwd:'/work', signal:new AbortController().signal, checkWriter:()=>{},
+    model:{generate:async ()=>'marigold'},
+    publish:()=>assert.fail('A chat reply must never execute a command.')
+  });
+  assert.equal(result, 'marigold');
+});
