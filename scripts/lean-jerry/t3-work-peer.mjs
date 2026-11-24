@@ -175,33 +175,36 @@ function threadDestination(work, primaryThreadMachine) {
     .includes(name) ? machine : null;
 }
 
-async function openJerryThread(t3, machine, requestId) {
-  const scope = {environmentId:machine.environmentId};
-  const {links} = await t3.call('t3_environment_links',{});
-  if (!links.some(link => link.environmentId === scope.environmentId && link.status === 'reachable'))
-    return {kind:'error',text:machine.name+' is unavailable in T3.'};
+async function openJerryThread(t3, machine, requestId, localEnvironmentId, runtimeMode) {
+  const local = machine.environmentId === localEnvironmentId;
+  const scope = local ? {} : {environmentId:machine.environmentId};
+  if (!local) {
+    const {links} = await t3.call('t3_environment_links',{});
+    if (!links.some(link => link.environmentId === machine.environmentId && link.status === 'reachable'))
+      return {kind:'error',text:machine.name+' is unavailable in T3.'};
+  }
   const {providers} = await t3.call('orchestrator_capabilities',{...scope,search:'Jerry'});
   const instanceId = 'home23-jerry';
   const model = 'default';
   if (!providers.some(p => p.providerInstanceId === instanceId && p.models?.some(m => m.id === model)))
     return {kind:'error',text:'T3 on '+machine.name+' does not list the Home23 / Jerry provider and model.'};
   const receipt = await t3.call('t3_thread_launch',{...scope,scratch:true,title:'Jerry · Home23',
-    modelSelection:{instanceId,model},clientRequestId:requestId});
+    modelSelection:{instanceId,model},...(runtimeMode ? {runtimeMode} : {}),clientRequestId:requestId});
   const {thread} = await t3.call('t3_thread_read',{...scope,threadId:receipt.threadId,limit:1,maxCharsPerItem:1});
   // Outside-agent MCP clients receive an HTTPS link. In-app callers can
   // receive a Markdown link to the same environment and thread.
   const uri = thread.link?.match(/\]\(([^)]+)\)$/)?.[1] ?? thread.link;
-  const address = scope.environmentId+'/'+receipt.threadId;
+  const address = machine.environmentId+'/'+receipt.threadId;
   const validLink = typeof uri === 'string' && [
     'https://app.t3.codes/threads/'+address, 't3-thread://v2/'+address
   ].includes(decodeURIComponent(uri));
   if (thread.threadId !== receipt.threadId || thread.providerInstanceId !== instanceId ||
-      thread.model !== model || !validLink)
+      thread.model !== model || (runtimeMode && thread.runtimeMode !== runtimeMode) || !validLink)
     return {kind:'error',text:'T3 accepted the request, but I could not verify the new Jerry thread on '+machine.name+'.'};
   return {kind:'result',text:'I opened a Jerry thread on '+machine.name+'. '+thread.link};
 }
 
-export async function syncT3Work({jerry,t3,target,state,save,machine=hostname(),inspectLocal,inspectOtherMachines,primaryThreadMachine}) {
+export async function syncT3Work({jerry,t3,target,state,save,machine=hostname(),inspectLocal,inspectOtherMachines,primaryThreadMachine,localEnvironmentId,newThreadRuntimeMode,environmentByHost}) {
   const rows=await jerry.call('jerry_work_list');
   for (const summary of rows) {
     const id=summary.threadId;
@@ -209,6 +212,12 @@ export async function syncT3Work({jerry,t3,target,state,save,machine=hostname(),
     if (!open(summary) && !local?.run && !local?.selection && !local?.sending) continue;
     const started=Date.now();
     const work=await jerry.call('jerry_thread_read',{threadId:id});
+    // Home enrollment predates moving the connector. A formerly local machine
+    // may have only its hostname on older queued work.
+    for (const target of work.toolRequest?.targets ?? []) {
+      if (target.kind === 'machine' && !target.environmentId && environmentByHost?.[target.host])
+        target.environmentId = environmentByHost[target.host];
+    }
     if (!open(work)) {
       if (local?.run && ['stopped','lease_lost','interrupted','failed'].includes(work.status)) {
         await t3.call('t3_thread_interrupt',{threadId:target,runId:local.run,clientRequestId:key(id,local.run,'stop'),stop:true});
@@ -239,7 +248,7 @@ export async function syncT3Work({jerry,t3,target,state,save,machine=hostname(),
         const fresh = await jerry.call('jerry_thread_read',{threadId:id});
         if (!open(fresh) || !fresh.dispatchable || fresh.revision !== work.revision) continue;
         try {
-          local.openThread = await openJerryThread(t3,destination,requestId);
+          local.openThread = await openJerryThread(t3,destination,requestId,localEnvironmentId,newThreadRuntimeMode);
         } catch (error) {
           if (!error.tool) throw error;
           local.openThread = {kind:'error',text:'T3 declined '+error.tool+' for '+destination.name+
@@ -453,7 +462,8 @@ async function main(file,once) {
             }));
             return results.filter(result=>result.status==='fulfilled').map(result=>result.value);
           } : undefined;
-          try {await syncT3Work({jerry,t3,target:config.t3.threadId,state,save,inspectOtherMachines,primaryThreadMachine:config.t3.primaryThreadMachine});}
+          try {await syncT3Work({jerry,t3,target:config.t3.threadId,state,save,inspectOtherMachines,primaryThreadMachine:config.t3.primaryThreadMachine,
+            localEnvironmentId:config.t3.localEnvironmentId,newThreadRuntimeMode:config.t3.newThreadRuntimeMode,environmentByHost:config.t3.environmentByHost});}
           finally {dispatchLock.exec('ROLLBACK');}
         }});
         if (errors.length) {

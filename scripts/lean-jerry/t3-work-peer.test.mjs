@@ -276,3 +276,20 @@ test('opening an idle Jerry thread uses the enrolled Mini and survives a lost la
   assert.equal(launches[0].message,undefined);
   assert.match(s.posts[0].text,/t3-thread:\/\/v2\/mini-env\/new/);
 });
+
+test('the primary opens a local thread with the configured mode and no remote environment lookup',async()=>{
+  const s=wire();
+  s.work.messages[0].text='Jerry, open a T3 thread.';
+  const machine={name:'Mini',environmentId:'here'};
+  const options={primaryThreadMachine:machine,localEnvironmentId:'here',newThreadRuntimeMode:'full-access',
+    t3:{async call(name,args){
+      if(args.threadId==='fixed-thread')return s.t3.call(name,args);
+      assert.equal(args.environmentId,undefined);
+      if(name==='orchestrator_capabilities')return {providers:[{providerInstanceId:'home23-jerry',models:[{id:'default'}]}]};
+      if(name==='t3_thread_launch'){assert.equal(args.runtimeMode,'full-access');return {threadId:'new'};}
+      assert.equal(name,'t3_thread_read');
+      return {thread:{threadId:'new',model:'default',runtimeMode:'full-access',providerInstanceId:'home23-jerry',link:'https://app.t3.codes/threads/here/new'}};
+    }}};
+  await s.tick(options);
+  assert.equal(s.posts[0].kind,'result');
+});
