@@ -18,13 +18,22 @@ def execute(command, cwd, cancelled):
         roots = [str(root), scratch]
         system = ["/bin", "/sbin", "/usr", "/System", "/Library/Developer",
                   "/opt/homebrew", "/Applications/Xcode.app", "/private/etc", "/dev"]
+        # The /usr/bin developer-tool shims require an external Xcode cache.
+        # Use the selected toolchain directly inside the workspace sandbox.
+        selected = subprocess.run(["/usr/bin/xcode-select", "-p"], capture_output=True, text=True)
+        search_path = ["/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+        if selected.returncode == 0:
+            developer = pathlib.Path(selected.stdout.strip()).resolve(strict=True)
+            system.append(str(developer))
+            search_path.insert(1, str(developer / "usr/bin"))
+
         def subpaths(paths):
             return " ".join("(subpath " + json.dumps(p) + ")" for p in paths)
         policy = ("(version 1)(deny default)(import \"system.sb\")(allow process*)(allow sysctl-read)(allow file-map-executable)"
                   "(allow file-read-metadata)(allow network*)"
                   "(allow file-read* " + subpaths(roots + system) + ")"
                   "(allow file-write* " + subpaths(roots) + ' (literal "/dev/null"))')
-        env = {"PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        env = {"PATH": os.pathsep.join(search_path),
                "HOME": scratch, "TMPDIR": scratch, "LANG": "en_US.UTF-8"}
         process = subprocess.Popen(["/usr/bin/sandbox-exec", "-p", policy,
                                     "/bin/sh", "-c", command], cwd=root, env=env,
