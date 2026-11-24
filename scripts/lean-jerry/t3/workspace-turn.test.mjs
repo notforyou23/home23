@@ -44,3 +44,21 @@ test('denial stops the loop and cancellation invalidates the pending command',as
   });
   await assert.rejects(cancelled.result,{name:'AbortError'});
 });
+
+test('a workspace turn can finish after more than 24 approved commands',async ()=>{
+  const workspace = new WorkspaceTurns();
+  const signal = new AbortController().signal;
+  let receipts = 0;
+  const answer = await workspace.answer({
+    turn:{id:'long',model:'local'}, messages:[{role:'system',content:'Jerry'}],
+    cwd:'/work', signal, checkWriter:()=>signal.throwIfAborted(),
+    model:{generate:async ()=>JSON.stringify(receipts < 25 ? {command:'pwd'} : {answer:'Complete.'})},
+    publish:({callId})=>{
+      assert.equal(workspace.claim('long',callId),true);
+      assert.equal(workspace.receive('long',callId,{exitCode:0,output:'/work'}),true);
+      receipts++;
+    }
+  });
+  assert.equal(receipts,25);
+  assert.equal(answer,'Complete.');
+});

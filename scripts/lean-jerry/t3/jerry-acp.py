@@ -9,7 +9,6 @@ import uuid
 
 from transport import api
 from workspace import execute
-import time
 
 sessions = {}
 active = {}
@@ -38,9 +37,8 @@ def workspace_call(session, turn, action, cancel):
         emit(id=call_id, method="session/request_permission", params={"sessionId":session,
             "toolCall":tool, "options":[{"kind":"allow_once","name":"Run command","optionId":"allow"},
                 {"kind":"reject_once","name":"Decline","optionId":"deny"}]})
-        deadline = time.monotonic() + 100
         while not ready.wait(0.1):
-            if cancel.is_set() or time.monotonic() >= deadline:
+            if cancel.is_set():
                 break
         outcome = response.get("result", {}).get("outcome", {})
         if not cancel.is_set() and outcome == {"outcome":"selected","optionId":"allow"}:
@@ -114,6 +112,13 @@ def prompt(request_id, session, parts, cancel):
         finally:
             finished.set()
     except Exception as error:
+        # If the bridge fails after admission, release any pending workspace action.
+        if turn is not None:
+            try:
+                with api("/api/chat/stop-turn", {"chatId": session, "turn_id": turn}):
+                    pass
+            except OSError:
+                pass
         emit(id=request_id, error={"code": -32603, "message": str(error)})
     finally:
         active.pop(session, None)

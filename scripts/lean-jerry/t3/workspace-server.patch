@@ -1,5 +1,5 @@
 diff --git a/scripts/lean-jerry/server.mjs b/scripts/lean-jerry/server.mjs
-index 397f88d5a9b27a49a8884066826e67ec7cad8fba..ec0e1e54806438faf58aac502eb85ff7e514b7b9 100644
+index 397f88d5a9b27a49a8884066826e67ec7cad8fba..11c01016cd5f9a879977ab7d16900e0c5bace2fc 100644
 --- a/scripts/lean-jerry/server.mjs
 +++ b/scripts/lean-jerry/server.mjs
 @@ -14,6 +14,7 @@ import { createIdleReview } from './idle-review.mjs';
@@ -18,7 +18,7 @@ index 397f88d5a9b27a49a8884066826e67ec7cad8fba..ec0e1e54806438faf58aac502eb85ff7
    const admissions = new Set();
    const evidenceReaders = new Set();
    const reviewSettings = config.idleReview?.enabled === true ? {
-@@ -441,7 +443,7 @@ export async function startServer({config, token, retrieve, model = localModel(c
+@@ -441,10 +443,10 @@ export async function startServer({config, token, retrieve, model = localModel(c
      for (const item of workLog.items.values()) if (!item.reported || activeWork(item)) publishWork(item,lease?.ticket);
    }
  
@@ -26,7 +26,11 @@ index 397f88d5a9b27a49a8884066826e67ec7cad8fba..ec0e1e54806438faf58aac502eb85ff7
 +  async function run(journal, turn, images, workspace) {
      const abort = new AbortController();
      turn.abort = abort;
-     const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(5 * 60_000)]);
+-    const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(5 * 60_000)]);
++    const signal = workspace ? abort.signal : AbortSignal.any([abort.signal, AbortSignal.timeout(5 * 60_000)]);
+     function checkWriter() {
+       if (turn.ticket != null && !lease.valid(turn.ticket)) abort.abort('writer_lease_lost');
+       signal.throwIfAborted();
 @@ -467,8 +469,8 @@ export async function startServer({config, token, retrieve, model = localModel(c
          return message?.kind==='question' && previous?.messageKey===i.id+'/message/'+message.id;
        });

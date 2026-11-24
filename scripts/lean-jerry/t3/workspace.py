@@ -5,10 +5,10 @@ import pathlib
 import signal
 import subprocess
 import tempfile
-import time
+import threading
 
 
-def execute(command, cwd, cancelled, timeout=90):
+def execute(command, cwd, cancelled):
     root = pathlib.Path(cwd).resolve(strict=True)
     if not root.is_dir() or root in (pathlib.Path("/"), pathlib.Path.home()):
         raise ValueError("Choose a project directory in T3.")
@@ -21,30 +21,42 @@ def execute(command, cwd, cancelled, timeout=90):
         def subpaths(paths):
             return " ".join("(subpath " + json.dumps(p) + ")" for p in paths)
         policy = ("(version 1)(deny default)(import \"system.sb\")(allow process*)(allow sysctl-read)(allow file-map-executable)"
-                  "(allow file-read-metadata)"
+                  "(allow file-read-metadata)(allow network*)"
                   "(allow file-read* " + subpaths(roots + system) + ")"
                   "(allow file-write* " + subpaths(roots) + ' (literal "/dev/null"))')
         env = {"PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                "HOME": scratch, "TMPDIR": scratch, "LANG": "en_US.UTF-8"}
-        with tempfile.TemporaryFile(dir=scratch) as log:
-            process = subprocess.Popen(["/usr/bin/sandbox-exec", "-p", policy,
-                                        "/bin/sh", "-c", command], cwd=root, env=env,
-                                       stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                                       start_new_session=True)
-            deadline = time.monotonic() + timeout
-            reason = None
+        process = subprocess.Popen(["/usr/bin/sandbox-exec", "-p", policy,
+                                    "/bin/sh", "-c", command], cwd=root, env=env,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, start_new_session=True)
+        # Keep a bounded receipt without terminating verbose builds.
+        tail = bytearray()
+        total = 0
+
+        def drain():
+            nonlocal total
+            with process.stdout as output:
+                while True:
+                    chunk = output.read1(65536)
+                    if not chunk:
+                        return
+                    total += len(chunk)
+                    tail.extend(chunk)
+                    del tail[:-6000]
+
+        reader = threading.Thread(target=drain)
+        reader.start()
+        try:
+            while process.poll() is None:
+                if cancelled.wait(0.1):
+                    break
+        finally:
             try:
-                while process.poll() is None:
-                    if cancelled.wait(0.1) or time.monotonic() >= deadline or log.tell() > 8_000_000:
-                        reason = "Command cancelled or resource limit reached."
-                        break
-            finally:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                process.wait()
-            size = log.tell()
-            log.seek(max(0, size - 6000))
-            return {"exitCode": process.returncode, "output": log.read().decode(errors="replace"),
-                    "truncated": size > 6000, "error": reason}
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            reader.join()
+        return {"exitCode": process.returncode, "output": tail.decode(errors="replace"),
+                "truncated": total > len(tail), "error": "Cancelled." if cancelled.is_set() else None}
