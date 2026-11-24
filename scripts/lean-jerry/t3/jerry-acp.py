@@ -1,30 +1,64 @@
-"""Serve T3 conversation turns over ACP stdio on Jerry's host."""
+"""Serve T3 conversation turns over ACP stdio in the T3 workspace."""
 import json
 import pathlib
 import re
 import sys
 import threading
 import urllib.parse
-import urllib.request
 import uuid
 
-config = json.loads((pathlib.Path.home() / "Library/Application Support/Lean Jerry/service.json").read_text())
-base = "http://127.0.0.1:" + str(config["port"])
-token = pathlib.Path(config["tokenFile"]).expanduser().read_text().strip()
-sessions = set()
+from transport import api
+from workspace import execute
+import time
+
+sessions = {}
 active = {}
+permissions = {}
 output = threading.Lock()
-
-
-def api(route, body=None):
-    data = json.dumps(body).encode() if body is not None else None
-    return urllib.request.urlopen(urllib.request.Request(base + route, data, headers={
-        "Authorization": "Bearer " + token, "Content-Type": "application/json"}), timeout=90)
 
 
 def emit(**fields):
     with output:
         print(json.dumps({"jsonrpc": "2.0", **fields}), flush=True)
+
+
+def workspace_call(session, turn, action, cancel):
+    call_id = action["callId"]
+    command = action["command"]
+    tool = {"toolCallId": call_id, "title": command, "kind": "execute",
+            "status": "pending", "rawInput": {"command": command, "cwd": sessions[session]}}
+    def update(kind, **fields):
+        emit(method="session/update", params={"sessionId":session, "update":{
+            **tool, "sessionUpdate":kind, **fields}})
+    update("tool_call")
+    ready = threading.Event()
+    response = {}
+    permissions[call_id] = (ready, response)
+    try:
+        emit(id=call_id, method="session/request_permission", params={"sessionId":session,
+            "toolCall":tool, "options":[{"kind":"allow_once","name":"Run command","optionId":"allow"},
+                {"kind":"reject_once","name":"Decline","optionId":"deny"}]})
+        deadline = time.monotonic() + 100
+        while not ready.wait(0.1):
+            if cancel.is_set() or time.monotonic() >= deadline:
+                break
+        outcome = response.get("result", {}).get("outcome", {})
+        if not cancel.is_set() and outcome == {"outcome":"selected","optionId":"allow"}:
+            with api("/api/chat/workspace-claim", {"turnId":turn,"callId":call_id}):
+                pass
+            update("tool_call_update", status="in_progress")
+            receipt = execute(command, sessions[session], cancel)
+        else:
+            receipt = {"denied":True}
+    except Exception as error:
+        receipt = {"exitCode":None,"error":str(error)}
+    finally:
+        permissions.pop(call_id, None)
+    update("tool_call_update", status="completed" if receipt.get("exitCode") == 0 else "failed",
+           rawOutput=receipt, content=[{"type":"content","content":{"type":"text",
+               "text":json.dumps(receipt,ensure_ascii=False)}}])
+    with api("/api/chat/workspace-result", {"turnId":turn,"callId":call_id,"receipt":receipt}):
+        pass
 
 
 def prompt(request_id, session, parts, cancel):
@@ -40,7 +74,7 @@ def prompt(request_id, session, parts, cancel):
             if not separator or not end:
                 raise ValueError("Unrecognized T3 composer envelope.")
             message = body
-        with api("/api/chat/turn", {"chatId": session, "message": message}) as response:
+        with api("/api/chat/turn", {"chatId": session, "message": message, "workspace": sessions[session]}) as response:
             turn = json.load(response)["turn_id"]
         query = urllib.parse.urlencode({"chatId": session, "turn_id": turn})
         # A separate waiter can interrupt even while the stream is waiting for its first token.
@@ -60,6 +94,8 @@ def prompt(request_id, session, parts, cancel):
                     if not line.startswith(b"data: {"):
                         continue
                     frame = json.loads(line[6:])
+                    if frame.get("kind") == "workspace_command":
+                        workspace_call(session, turn, frame["data"], cancel)
                     if frame.get("kind") == "response_chunk":
                         delivered += frame["data"]["chunk"]
                         emit(method="session/update", params={"sessionId": session, "update": {
@@ -117,7 +153,10 @@ def dispatch(msg):
             raise ValueError("Invalid Jerry session.")
         if method == "session/load":
             replay(session)
-        sessions.add(session)
+        cwd = pathlib.Path(params["cwd"]).resolve(strict=True)
+        if not cwd.is_dir():
+            raise ValueError("Missing T3 project directory.")
+        sessions[session] = str(cwd)
         return {"sessionId": session, "modes": {"currentModeId": "ask", "availableModes": [
             {"id": key, "name": key} for key in ("ask", "auto")]}}
     if session not in sessions:
@@ -143,6 +182,12 @@ for line in sys.stdin:
     msg = {}
     try:
         msg = json.loads(line)
+        if "method" not in msg:
+            pending = permissions.get(msg.get("id"))
+            if pending:
+                pending[1].update(msg)
+                pending[0].set()
+            continue
         result = dispatch(msg)
         if result is not None and "id" in msg:
             emit(id=msg["id"], result=result)

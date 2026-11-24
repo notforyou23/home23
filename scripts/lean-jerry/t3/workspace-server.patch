@@ -1,0 +1,92 @@
+diff --git a/scripts/lean-jerry/server.mjs b/scripts/lean-jerry/server.mjs
+index 397f88d5a9b27a49a8884066826e67ec7cad8fba..ec0e1e54806438faf58aac502eb85ff7e514b7b9 100644
+--- a/scripts/lean-jerry/server.mjs
++++ b/scripts/lean-jerry/server.mjs
+@@ -14,6 +14,7 @@ import { createIdleReview } from './idle-review.mjs';
+ import { readIdleEvidence, serveIdleEvidence } from './idle-evidence.mjs';
+ import { createFindingNotifications } from './finding-notification.mjs';
+ import { WriterLease, privateRecordStore } from './writer-lease.mjs';
++import { WorkspaceTurns } from './t3/workspace-turn.mjs';
+ import { Journal, outcomeOf } from './journal.mjs';
+ import { localModel, messagesForTurn } from './model.mjs';
+ import { routeTurn, escalationNote, modelJudge } from './router.mjs';
+@@ -227,6 +228,7 @@ export async function startServer({config, token, retrieve, model = localModel(c
+     writer:() => !lease || lease.valid(lease.ticket), attached:id => Boolean(escalator?.attached(id))});
+   const product = turn => productTurn(turn, workView.turnLinks(turn));
+   const running = new Set();
++  const workspaceTurns = new WorkspaceTurns();
+   const admissions = new Set();
+   const evidenceReaders = new Set();
+   const reviewSettings = config.idleReview?.enabled === true ? {
+@@ -441,7 +443,7 @@ export async function startServer({config, token, retrieve, model = localModel(c
+     for (const item of workLog.items.values()) if (!item.reported || activeWork(item)) publishWork(item,lease?.ticket);
+   }
+ 
+-  async function run(journal, turn, images) {
++  async function run(journal, turn, images, workspace) {
+     const abort = new AbortController();
+     turn.abort = abort;
+     const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(5 * 60_000)]);
+@@ -467,8 +469,8 @@ export async function startServer({config, token, retrieve, model = localModel(c
+         return message?.kind==='question' && previous?.messageKey===i.id+'/message/'+message.id;
+       });
+       const toolPeer=toolPeers.get(turn.chat);
+-      const intent = resolveWorkChoice(turn.input,previous?.workChoice,ownWork) ?? workIntent(turn.input,ownWork,peerNames,latestQuestion?.id,toolPeer);
+-      turn.route = intent ? {route:intent.kind === 'assign' ? 'escalate' : 'local',by:'work',triggers:[]} : await routeTurn(turn.input,{judge});
++      const intent = !workspace && (resolveWorkChoice(turn.input,previous?.workChoice,ownWork) ?? workIntent(turn.input,ownWork,peerNames,latestQuestion?.id,toolPeer));
++      turn.route = workspace ? {route:'local',by:'t3-workspace',triggers:[]} : intent ? {route:intent.kind === 'assign' ? 'escalate' : 'local',by:'work',triggers:[]} : await routeTurn(turn.input,{judge});
+       checkWriter();
+       if (intent && intent.kind !== 'assign') {
+         let text;
+@@ -552,8 +554,12 @@ export async function startServer({config, token, retrieve, model = localModel(c
+         turn.phase = 'streaming';
+         event(turn,'response_chunk',{type:'response_chunk',chunk:value});
+       });
+-      const raw = evidence.catalogReply || await model.generate({model:turn.model, messages, signal, chunk:display.chunk});
+-      if (evidence.catalogReply) display.chunk(raw);
++      const workAnswer = workspace && !evidence.catalogReply ? await workspaceTurns.answer({
++        turn,messages,model,signal,checkWriter,cwd:workspace,
++        publish:data=>event(turn,'workspace_command',data)
++      }) : null;
++      const raw = workAnswer || evidence.catalogReply || await model.generate({model:turn.model, messages, signal, chunk:display.chunk});
++      if (workAnswer || evidence.catalogReply) display.chunk(raw);
+       checkWriter();
+       display.finish();
+       const gated = gateCitations(raw, evidence.text);
+@@ -652,6 +658,17 @@ export async function startServer({config, token, retrieve, model = localModel(c
+       const id = await model.id(AbortSignal.timeout(5000));
+       return sendJSON(res,200,{models:[{alias:id,model:id,provider}],defaultModel:id,defaultProvider:provider,reasoningEffortOptions:[]});
+     }
++    if (action === 'POST /api/chat/workspace-claim') {
++      const {turnId,callId} = await readBody(req,1024);
++      if (!workspaceTurns.claim(turnId,callId)) throw problem(409,'Workspace action expired.');
++      return sendJSON(res,200,{claimed:true});
++    }
++    if (action === 'POST /api/chat/workspace-result') {
++      const {turnId,callId,receipt} = await readBody(req,65536);
++      if (!receipt || typeof receipt !== 'object' || !workspaceTurns.receive(turnId,callId,receipt))
++        throw problem(409,'No matching workspace action.');
++      return sendJSON(res,200,{accepted:true});
++    }
+     if (action === 'POST /api/chat/turn') {
+       if (reviewSettings) {
+         admissions.add(req);
+@@ -660,6 +677,9 @@ export async function startServer({config, token, retrieve, model = localModel(c
+       }
+       const body = await readBody(req);
+       if (typeof body.chatId !== 'string' || !body.chatId.trim() || body.chatId.length>512) throw problem(400,'Invalid chatId.');
++      if (body.workspace !== undefined && (!/^t3-(?:verify-)?[a-f0-9-]{36}$/.test(body.chatId) ||
++          typeof body.workspace !== 'string' || !path.isAbsolute(body.workspace) || body.workspace.length > 4096))
++        throw problem(400,'Invalid T3 workspace.');
+       journal = journalFor(body.chatId);
+       // Enable images only when the deployed model advertises vision in LM Studio.
+       if (config.vision !== true && (body.images?.length || body.attachments?.length)) throw problem(415,'The selected local model accepts text only.');
+@@ -722,7 +742,7 @@ export async function startServer({config, token, retrieve, model = localModel(c
+       const t = journal.start(body.chatId, body.message, body.model || config.model || null, key, hash, images, client);
+       if (ticket != null) { t.ticket = ticket; ownerJobs.add(t); }
+       updates.emit("chat:"+t.chat, t.startSequence);
+-      const job = run(journal, t, images);
++      const job = run(journal, t, images, body.workspace);
+       t.done = job.then(()=>{},()=>{});
+       running.add(job);
+       // An unwritable journal is fatal. launchd can restart after storage is repaired.
